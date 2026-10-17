@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- Web build (experimental), served by `trunk serve` (see `make run-web`). -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tortuga</title>
+    <link data-trunk rel="rust" href="Cargo.toml" data-bin="tortuga" data-cargo-no-default-features data-cargo-features="web" />
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1b1b; }
+      #tortuga_canvas { width: 100%; height: 100%; display: block; }
+    </style>
+  </head>
+  <body>
+    <canvas id="tortuga_canvas"></canvas>
+  </body>
+</html>

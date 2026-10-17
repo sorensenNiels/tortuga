@@ -1,0 +1,10 @@
+format = 1
+name = "My first collection"
+
+[[servers]]
+id = "syncappgateway"
+name = "syncappgateway"
+
+[[servers]]
+id = "synchgateway"
+name = "synchgateway"

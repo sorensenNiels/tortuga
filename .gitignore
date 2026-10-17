@@ -1,0 +1,11 @@
+/target
+/dist
+**/*.rs.bk
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+.env
+.env.*
+# Local Claude Code settings (shared ones live in .claude/settings.json)
+.claude/settings.local.json

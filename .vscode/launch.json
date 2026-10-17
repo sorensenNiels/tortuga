@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug Tortuga (desktop)",
+      "cargo": { "args": ["build", "-p", "tortuga-app", "--bin", "tortuga"] },
+      "cwd": "${workspaceFolder}/crates/tortuga-app"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug tortuga-core tests",
+      "cargo": { "args": ["test", "--no-run", "-p", "tortuga-core"] },
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

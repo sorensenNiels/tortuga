@@ -1,0 +1,70 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/tortuga-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+authors = ["Niels P. Sørensen <niels.p.sorensen@softdesign.dk>"]
+
+[workspace.dependencies]
+tortuga-core = { path = "crates/tortuga-core" }
+tortuga-ui-egui = { path = "crates/tortuga-ui-egui" }
+
+# Bundled fonts, including the emoji fonts that hold the symbols the UI uses (⏵ ⏺ ⚠ 🗙 ⚙ …).
+egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"] }
+# OpenGL (glow) instead of the default wgpu: smaller, faster to build, and works under WSLg.
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli", "deflate", "system-proxy"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+percent-encoding = "2"
+thiserror = "2"
+url = { version = "2", features = ["serde"] }
+tracing = "0.1"
+web-time = "1"
+toml = "1"
+# Native file dialogs. Linux uses the GTK backend (see tortuga-app dialogs.rs).
+rfd = { version = "0.17", default-features = false }
+directories = "6"
+wasm-bindgen-futures = "0.4"
+
+# dev / test
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+egui_kittest = "0.37"
+wiremock = "0.6"
+tempfile = "3"
+
+[workspace.lints.rust]
+# `deny` (not `forbid`) so a single, justified spot could opt out with `#[expect(unsafe_code)]`.
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that are more noise than signal for this project.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.dev]
+# Faster incremental builds; dependencies still optimised a bit for a snappy UI.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

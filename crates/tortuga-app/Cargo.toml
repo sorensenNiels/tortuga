@@ -1,0 +1,43 @@
+[package]
+name = "tortuga-app"
+description = "Tortuga desktop (and later web) application: launches the egui UI from tortuga-ui-egui."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "tortuga"
+path = "src/main.rs"
+
+[dependencies]
+tortuga-core.workspace = true
+tortuga-ui-egui.workspace = true
+eframe.workspace = true
+serde.workspace = true
+
+# Desktop-only: async runtime for sending requests, settings on disk, native file dialogs.
+tokio = { workspace = true, optional = true }
+directories = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+
+# GTK backend on Linux: the xdg-desktop-portal backend fails silently where no portal runs (e.g. WSL).
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { workspace = true, optional = true, features = ["gtk3"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rfd = { workspace = true, optional = true }
+
+# Web-only: run futures in the browser.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = { workspace = true, optional = true }
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tokio", "dep:rfd", "dep:directories", "dep:toml"]
+web = ["dep:wasm-bindgen-futures"]
+
+[lints]
+workspace = true
