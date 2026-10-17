@@ -64,7 +64,7 @@ A requirement moves to [FEATURES.md](FEATURES.md) once it is implemented and ver
 | **M6.5: Workspaces & projects** | Group projects (today's collections) into workspaces, also when several share a repo. Built before M7 (D15). | R-WS-1 to 7 | Done (see FEATURES.md) |
 | **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | |
 | **UI: egui** | Move the UI from Dioxus to egui (`tortuga-ui-egui`) with a modern look. | — | Done (2026-10-17) |
-| **v1 extras** | Decided in D1, plus path variables (requested 2026-10-17). | R-COL-8 · R-HTTP-9 · R-HTTP-10 | R-HTTP-10 done |
+| **v1 extras** | Decided in D1, plus path variables (requested 2026-10-17). | R-COL-8 · R-HTTP-9 · R-HTTP-10 | Done (see FEATURES.md) |
 
 Since M4, credentials belong in secret variables (R-VAR-3). The app warns where a credential is typed as plain text,
 because everything else is written to the collection files and shared through git.

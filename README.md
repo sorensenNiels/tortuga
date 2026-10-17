@@ -3,8 +3,8 @@
 A fast, local-first API client written in Rust. Projects are plain files that teams share through git.
 Runs on Windows, Linux and macOS (web support planned).
 
-**Status:** milestones M1–M6.5 are implemented: sending requests, projects on disk, environments with servers and
-variables, auth and secrets, cookies, live git status, and workspaces. See [docs/FEATURES.md](docs/FEATURES.md) for what
+**Status:** milestones M1–M6.5 and the v1 extras are implemented: sending requests, projects on disk, environments with servers and
+variables, auth and secrets, cookies, live git status, workspaces, kept unsaved edits and copy as curl. See [docs/FEATURES.md](docs/FEATURES.md) for what
 works today and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Getting started
@@ -67,6 +67,8 @@ picker in the title bar switches every project in the workspace that has an envi
 that aren't defined are highlighted, and the request isn't sent until they are.
 
 The scratch request (top of the sidebar) is for quick one-off calls; **Save to project…** keeps it.
+Unsaved edits are kept when you close Tortuga. **Copy as curl** (next to Save) copies the request with variables
+filled in; if it uses secret values, you choose whether to mask them.
 
 ## Make targets
 

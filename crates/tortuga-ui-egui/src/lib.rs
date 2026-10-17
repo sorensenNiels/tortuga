@@ -18,7 +18,7 @@ mod shell;
 mod state;
 mod theme;
 
-pub use host::{BoxTask, Host, LocalState, Workspace};
+pub use host::{BoxTask, DraftConflict, Host, LocalState, SavedDraft, SavedDrafts, Workspace};
 pub use shell::TortugaUi;
 
 #[cfg(test)]
@@ -53,6 +53,8 @@ pub(crate) mod test_host {
         pub cookies: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<PathBuf, String>>>,
         /// The last saved local state; loaded instead of `open` once set.
         pub local: std::rc::Rc<std::cell::RefCell<Option<LocalState>>>,
+        /// The last saved unsaved edits (R-COL-8).
+        pub drafts: std::rc::Rc<std::cell::RefCell<crate::host::SavedDrafts>>,
     }
 
     impl Host for TestHost {
@@ -88,6 +90,13 @@ pub(crate) mod test_host {
         }
         fn save_local(&self, state: &LocalState) -> Result<(), String> {
             *self.local.borrow_mut() = Some(state.clone());
+            Ok(())
+        }
+        fn load_drafts(&self) -> Result<crate::host::SavedDrafts, String> {
+            Ok(self.drafts.borrow().clone())
+        }
+        fn save_drafts(&self, drafts: &crate::host::SavedDrafts) -> Result<(), String> {
+            *self.drafts.borrow_mut() = drafts.clone();
             Ok(())
         }
     }

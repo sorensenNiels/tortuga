@@ -13,13 +13,13 @@ use futures_util::future::{AbortHandle, abortable};
 use tortuga_core::{Item, Request, vars};
 
 use crate::components::{
-    AddProjects, AddProjectsDialog, ConfirmDialog, CreateProjectDialog, DefaultsDialog,
-    DialogResult, EditorAction, EditorContext, EditorState, EnvironmentsDialog, MoveDialog,
-    NameDialog, Outcome, ResponseAction, ResponseState, SaveToCollectionDialog, SettingsDialog,
-    SidebarAction, SidebarState, request_editor, response_panel, sidebar,
+    AddProjects, AddProjectsDialog, ConfirmDialog, CopyCurlDialog, CreateProjectDialog,
+    DefaultsDialog, DialogResult, EditorAction, EditorContext, EditorState, EnvironmentsDialog,
+    MoveDialog, NameDialog, Outcome, ResponseAction, ResponseState, SaveToCollectionDialog,
+    SettingsDialog, SidebarAction, SidebarState, request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
-use crate::host::Host;
+use crate::host::{DraftConflict, Host, SavedDraft, SavedDrafts};
 use crate::state::{AppState, ItemKey};
 use crate::theme;
 
@@ -39,6 +39,7 @@ enum Modal {
     NewWorkspace(NameDialog),
     RenameWorkspace(NameDialog),
     RemoveWorkspace(ConfirmDialog),
+    CopyCurl(CopyCurlDialog),
 }
 
 /// What the user picked in the workspace menu (R-WS-1, R-WS-5).
@@ -93,7 +94,18 @@ pub struct TortugaUi {
     styled: bool,
     /// Requests with unsaved edits whose file changed on disk (R-GIT-11).
     conflicts: HashMap<ItemKey, DiskChange>,
+    /// When a request was last copied as curl (egui time), for the "Copied" feedback.
+    copied_at: Option<f64>,
+    /// Unsaved edits as last written to local data (R-COL-8), and when that was checked.
+    drafts_saved: SavedDrafts,
+    drafts_checked_at: f64,
+    /// Saved versions that restored edits started from, for projects not open yet:
+    /// checked against the disk once their project opens (R-COL-8, R-GIT-11).
+    unchecked_bases: HashMap<ItemKey, Option<Request>>,
 }
+
+/// How often unsaved edits are written to local data, at most (R-COL-8).
+const DRAFTS_SAVE_SECONDS: f64 = 1.0;
 
 /// What happened on disk to a request that has unsaved edits (R-GIT-11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +143,12 @@ impl TortugaUi {
             finished_rx,
             styled: false,
             conflicts: HashMap::new(),
+            copied_at: None,
+            drafts_saved: SavedDrafts::default(),
+            drafts_checked_at: 0.0,
+            unchecked_bases: HashMap::new(),
         };
+        ui.restore_drafts();
         // Back where the user left off (R-WS-1).
         let remembered = ui.state.remembered_selection();
         ui.select(remembered);
@@ -146,6 +163,7 @@ impl TortugaUi {
             self.styled = true;
         }
         self.collect_finished();
+        self.save_drafts_now_and_then(ui.input(|i| i.time));
         for root in self.state.take_changes() {
             self.on_disk_change(&root);
         }
@@ -240,6 +258,141 @@ impl TortugaUi {
             .show(ui, |ui| self.workspace(ui));
 
         self.show_modal(ui.ctx());
+    }
+
+    /// Call when the app closes: keeps unsaved edits for next time (R-COL-8).
+    pub fn on_exit(&mut self) {
+        self.save_drafts();
+    }
+
+    // ---------------------------------------------------------------- unsaved edits (R-COL-8)
+
+    /// Unsaved edits as they should be kept now.
+    fn drafts_snapshot(&self) -> SavedDrafts {
+        let mut edited = self.drafts.clone();
+        if let Some(k) = &self.selection {
+            if self.is_dirty(k, &self.current) {
+                edited.insert(k.clone(), self.current.clone());
+            } else {
+                edited.remove(k);
+            }
+        }
+        let mut drafts: Vec<SavedDraft> = edited
+            .into_iter()
+            .map(|(key, request)| {
+                let base = if self.state.collection(&key.root).is_some() {
+                    self.state.saved_request(&key)
+                } else {
+                    self.unchecked_bases.get(&key).cloned().flatten()
+                };
+                let conflict = self.conflicts.get(&key).map(|c| match c {
+                    DiskChange::Changed => DraftConflict::Changed,
+                    DiskChange::Deleted => DraftConflict::Deleted,
+                });
+                SavedDraft {
+                    root: key.root,
+                    path: key.path,
+                    request,
+                    base,
+                    conflict,
+                }
+            })
+            .collect();
+        // A stable order, so an unchanged set is never written again.
+        drafts.sort_by(|a, b| (&a.root, &a.path).cmp(&(&b.root, &b.path)));
+        let scratch = if self.selection.is_none() {
+            &self.current
+        } else {
+            &self.scratch
+        };
+        SavedDrafts {
+            scratch: (*scratch != Request::default()).then(|| scratch.clone()),
+            drafts,
+        }
+    }
+
+    /// Keeps unsaved edits for next time, checking at most every [`DRAFTS_SAVE_SECONDS`].
+    fn save_drafts_now_and_then(&mut self, now: f64) {
+        if now - self.drafts_checked_at >= DRAFTS_SAVE_SECONDS {
+            self.drafts_checked_at = now;
+            self.save_drafts();
+        }
+    }
+
+    /// Writes unsaved edits to local data if they changed since the last write.
+    fn save_drafts(&mut self) {
+        let snapshot = self.drafts_snapshot();
+        if snapshot == self.drafts_saved {
+            return;
+        }
+        if let Err(e) = self.state.host.save_drafts(&snapshot) {
+            self.state.notify(format!(
+                "Unsaved edits could not be kept for next time: {e}"
+            ));
+        }
+        self.drafts_saved = snapshot;
+    }
+
+    /// Brings back the unsaved edits of the last session.
+    fn restore_drafts(&mut self) {
+        let saved = match self.state.host.load_drafts() {
+            Ok(saved) => saved,
+            Err(e) => {
+                self.state.notify(format!(
+                    "Could not read the unsaved edits of last time: {e}"
+                ));
+                return;
+            }
+        };
+        self.scratch = saved.scratch.clone().unwrap_or_default();
+        self.load(self.scratch.clone());
+        for draft in &saved.drafts {
+            let key = ItemKey::new(&draft.root, draft.path.clone());
+            self.drafts.insert(key.clone(), draft.request.clone());
+            let change = match draft.conflict {
+                Some(DraftConflict::Changed) => Some(DiskChange::Changed),
+                Some(DraftConflict::Deleted) => Some(DiskChange::Deleted),
+                None => None,
+            };
+            match change {
+                Some(change) => {
+                    self.conflicts.insert(key, change);
+                }
+                None => {
+                    self.unchecked_bases.insert(key, draft.base.clone());
+                }
+            }
+        }
+        self.drafts_saved = saved;
+        self.check_restored_drafts();
+    }
+
+    /// Compares restored edits with the disk once their project is open: a file that
+    /// changed while the app was closed gets the conflict banner (R-GIT-11); edits
+    /// that now equal the file are dropped.
+    fn check_restored_drafts(&mut self) {
+        let open: Vec<ItemKey> = self
+            .unchecked_bases
+            .keys()
+            .filter(|k| self.state.collection(&k.root).is_some())
+            .cloned()
+            .collect();
+        for key in open {
+            let Some(base) = self.unchecked_bases.remove(&key) else {
+                continue;
+            };
+            let saved = self.state.saved_request(&key);
+            if saved != base {
+                let change = if saved.is_some() {
+                    DiskChange::Changed
+                } else {
+                    DiskChange::Deleted
+                };
+                self.conflicts.insert(key, change);
+            } else if saved.as_ref() == self.drafts.get(&key) {
+                self.drafts.remove(&key);
+            }
+        }
     }
 
     // ---------------------------------------------------------------- layout
@@ -395,6 +548,7 @@ impl TortugaUi {
     fn switch_workspace(&mut self, change: impl FnOnce(&mut AppState)) {
         self.select_and_remember(None, false);
         change(&mut self.state);
+        self.check_restored_drafts();
         let remembered = self.state.remembered_selection();
         self.select_and_remember(remembered, false);
     }
@@ -580,13 +734,17 @@ impl TortugaUi {
                     {
                         self.save();
                     }
+                    if copy_curl_button(ui, self.copied_at) {
+                        self.copy_as_curl(ui.ctx());
+                    }
                 },
             );
             ui.add_space(8.0);
             return;
         };
         let crumb = breadcrumb(&self.state, k);
-        let ((), (save, revert)) = egui::Sides::new().height(46.0).shrink_left().show(
+        let copied_at = self.copied_at;
+        let ((), (save, revert, copy)) = egui::Sides::new().height(46.0).shrink_left().show(
             ui,
             |ui| {
                 ui.vertical(|ui| {
@@ -622,9 +780,13 @@ impl TortugaUi {
                     .on_hover_text("Save (Ctrl+S)")
                     .clicked();
                 let revert = current_dirty && ui.button("Revert").clicked();
-                (save, revert)
+                let copy = copy_curl_button(ui, copied_at);
+                (save, revert, copy)
             },
         );
+        if copy {
+            self.copy_as_curl(ui.ctx());
+        }
         if save {
             self.save();
         }
@@ -634,6 +796,23 @@ impl TortugaUi {
         ui.add_space(8.0);
         let key = k.clone();
         self.conflict_banner(ui, &key);
+    }
+
+    /// Copies the request as curl; asks first if it contains secret values (R-HTTP-9).
+    fn copy_as_curl(&mut self, egui_ctx: &egui::Context) {
+        let root = self.selection.as_ref().map(|k| k.root.clone());
+        let ctx = self.state.context(root.as_deref());
+        match tortuga_core::curl::command(&self.current, &ctx, &self.state.settings) {
+            Err(e) => {
+                self.copied_at = None;
+                self.state.notify(format!("Could not copy as curl: {e}"));
+            }
+            Ok(command) if command.masked.is_none() => {
+                egui_ctx.copy_text(command.full);
+                self.copied_at = Some(egui_ctx.input(|i| i.time));
+            }
+            Ok(command) => self.modal = Some(Modal::CopyCurl(CopyCurlDialog::new(command))),
+        }
     }
 
     // ---------------------------------------------------------------- requests
@@ -1265,6 +1444,14 @@ impl TortugaUi {
                 }
                 result => result == DialogResult::Open,
             },
+            Modal::CopyCurl(d) => match d.show(ctx) {
+                DialogResult::Done(text) => {
+                    ctx.copy_text(text);
+                    self.copied_at = Some(ctx.input(|i| i.time));
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
             Modal::CreateProject(_)
             | Modal::AddProjects(_)
             | Modal::NewWorkspace(_)
@@ -1353,6 +1540,21 @@ impl TortugaUi {
     }
 }
 
+/// "Copy as curl" (R-HTTP-9); shows "Copied" for a moment after `copied_at`. Returns whether it was clicked.
+fn copy_curl_button(ui: &mut Ui, copied_at: Option<f64>) -> bool {
+    const FEEDBACK_SECONDS: f64 = 2.0;
+    let now = ui.input(|i| i.time);
+    let copied = copied_at.is_some_and(|t| now - t < FEEDBACK_SECONDS);
+    if copied {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(FEEDBACK_SECONDS));
+    }
+    let label = if copied { "Copied" } else { "Copy as curl" };
+    ui.add(theme::ghost_button(label))
+        .on_hover_text("Copy this request as a curl command, with variables filled in")
+        .clicked()
+}
+
 fn breadcrumb(state: &AppState, key: &ItemKey) -> String {
     let Some(c) = state.collection(&key.root) else {
         return String::new();
@@ -1378,8 +1580,24 @@ mod tests {
     use super::*;
     use crate::test_host::TestHost;
 
+    type Shared<T> = std::rc::Rc<std::cell::RefCell<T>>;
+
     /// A collection on disk with one request, opened in a fresh UI with that request selected.
     fn setup(name: &str) -> (TortugaUi, PathBuf, ItemKey) {
+        let (ui, root, key, _, _) = setup_shared(name);
+        (ui, root, key)
+    }
+
+    /// Like [`setup`], plus the host's saved local state and unsaved edits, to start again.
+    fn setup_shared(
+        name: &str,
+    ) -> (
+        TortugaUi,
+        PathBuf,
+        ItemKey,
+        Shared<Option<crate::host::LocalState>>,
+        Shared<SavedDrafts>,
+    ) {
         let root = std::env::temp_dir().join(format!("tortuga-disk-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let collection = Collection::create(&FsStorage, &root, "C").expect("create");
@@ -1388,13 +1606,15 @@ mod tests {
         let path = collection
             .new_request(&FsStorage, Path::new(""), &request)
             .expect("request");
-        let mut ui = TortugaUi::new(Box::new(TestHost {
+        let host = TestHost {
             open: vec![root.clone()],
             ..TestHost::default()
-        }));
+        };
+        let (local, drafts) = (host.local.clone(), host.drafts.clone());
+        let mut ui = TortugaUi::new(Box::new(host));
         let key = ItemKey::new(&root, path);
         ui.select(Some(key.clone()));
-        (ui, root, key)
+        (ui, root, key, local, drafts)
     }
 
     /// Simulates a teammate's change arriving through `git pull`.
@@ -1440,6 +1660,82 @@ mod tests {
         ui.save();
         let on_disk = std::fs::read_to_string(root.join(&key.path)).expect("read");
         assert!(on_disk.contains("mine-again"), "{on_disk}");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-8: unsaved edits (and the scratch request) are back after a restart.
+    #[test]
+    fn unsaved_edits_survive_a_restart() {
+        let (mut ui, root, key, local, drafts) = setup_shared("restart");
+        ui.current.set_display_url("https://a.test/unsaved");
+        ui.select(None);
+        ui.current.set_display_url("https://scratch.test/");
+        ui.select(Some(key.clone()));
+        ui.on_exit();
+
+        let mut again = TortugaUi::new(Box::new(TestHost {
+            local,
+            drafts: drafts.clone(),
+            ..TestHost::default()
+        }));
+        assert_eq!(again.selection, Some(key.clone()), "selection restored");
+        assert_eq!(again.current.url, "https://a.test/unsaved");
+        assert!(again.dirty_keys().contains(&key), "still marked unsaved");
+        assert!(again.conflicts.is_empty());
+        again.select(None);
+        assert_eq!(again.current.url, "https://scratch.test/");
+
+        // Saved: nothing is kept for next time any more.
+        again.select(Some(key.clone()));
+        again.save();
+        again.on_exit();
+        assert_eq!(drafts.borrow().drafts.len(), 0);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-8 + R-GIT-11: a file that changed while the app was closed gets the banner.
+    #[test]
+    fn edits_of_a_file_changed_while_closed_conflict() {
+        let (mut ui, root, key, local, drafts) = setup_shared("closed");
+        ui.current.set_display_url("https://a.test/mine");
+        ui.on_exit();
+        change_on_disk(&root, &key, "https://a.test/theirs");
+
+        let again = TortugaUi::new(Box::new(TestHost {
+            local,
+            drafts,
+            ..TestHost::default()
+        }));
+        assert_eq!(again.current.url, "https://a.test/mine", "edits kept");
+        assert_eq!(again.conflicts.get(&key), Some(&DiskChange::Changed));
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-HTTP-9: without secrets the command is copied right away; with secrets the
+    /// user chooses first.
+    #[test]
+    fn copy_as_curl_asks_only_when_secrets_are_used() {
+        let (mut ui, root, _) = setup("curl");
+        let egui_ctx = egui::Context::default();
+        ui.copy_as_curl(&egui_ctx);
+        assert!(ui.copied_at.is_some(), "copied without asking");
+        assert!(ui.modal.is_none());
+
+        ui.current.headers = vec![tortuga_core::KeyValue::new("X-Key", "{{api_key}}")];
+        let mut secrets = tortuga_core::secrets::SecretValues::default();
+        secrets
+            .values
+            .insert((None, "api_key".into()), "k-123".into());
+        ui.state.run(&root, |c, s| {
+            let manifest = tortuga_core::Manifest {
+                secrets: vec!["api_key".into()],
+                ..c.manifest.clone()
+            };
+            c.save_config(s, &manifest, &c.environments)
+        });
+        ui.state.save_secrets(&root, secrets).expect("secrets");
+        ui.copy_as_curl(&egui_ctx);
+        assert!(matches!(ui.modal, Some(Modal::CopyCurl(_))), "asks first");
         std::fs::remove_dir_all(root).expect("clean up");
     }
 

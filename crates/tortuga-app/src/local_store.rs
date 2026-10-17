@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tortuga_core::ClientSettings;
-use tortuga_ui_egui::LocalState;
+use tortuga_ui_egui::{LocalState, SavedDrafts};
 
 fn dirs() -> Option<directories::ProjectDirs> {
     directories::ProjectDirs::from("dk", "SoftDesign", "Tortuga")
@@ -107,6 +107,30 @@ pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Unsaved request edits (R-COL-8). They may hold credentials typed into a request,
+/// so the file is private to the user like cookies and secrets.
+fn drafts_path() -> Option<PathBuf> {
+    dirs().map(|d| d.data_dir().join("drafts.json"))
+}
+
+pub fn load_drafts() -> Result<SavedDrafts, String> {
+    let Some(path) = drafts_path() else {
+        return Ok(SavedDrafts::default());
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map_err(|e| format!("Could not read {}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SavedDrafts::default()),
+        Err(e) => Err(format!("Could not read {}: {e}", path.display())),
+    }
+}
+
+pub fn save_drafts(drafts: &SavedDrafts) -> Result<(), String> {
+    let path = drafts_path().ok_or("No app-data directory available")?;
+    let text = serde_json::to_string(drafts).map_err(|e| e.to_string())?;
+    write_private(&path, &text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 pub fn load_settings() -> Result<ClientSettings, String> {
     load(settings_path())
 }
@@ -134,6 +158,35 @@ mod tests {
         // Known FNV-1a test vector: the empty input.
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
         assert_ne!(fnv1a(b"/repo/a"), fnv1a(b"/repo/b"));
+    }
+
+    /// R-COL-8: unsaved edits round-trip through the drafts file.
+    #[test]
+    fn drafts_round_trip() {
+        use tortuga_core::{HttpMethod, Request, RequestBody};
+        use tortuga_ui_egui::{DraftConflict, SavedDraft};
+
+        let mut edited = Request::new(HttpMethod::Post, "https://api.test/users?x=1");
+        edited.body = RequestBody::Json("{\"a\": 1}".into());
+        let drafts = SavedDrafts {
+            scratch: Some(Request::new(HttpMethod::Get, "https://scratch.test/")),
+            drafts: vec![SavedDraft {
+                root: "/repo/api".into(),
+                path: "users/create.toml".into(),
+                request: edited,
+                base: Some(Request::new(HttpMethod::Post, "https://api.test/users")),
+                conflict: Some(DraftConflict::Changed),
+            }],
+        };
+        let text = serde_json::to_string(&drafts).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<SavedDrafts>(&text).expect("parse"),
+            drafts
+        );
+        assert_eq!(
+            serde_json::from_str::<SavedDrafts>("{}").expect("empty"),
+            SavedDrafts::default()
+        );
     }
 
     #[test]

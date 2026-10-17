@@ -152,6 +152,14 @@ impl Host for DesktopHost {
         local_store::save_local(state)
     }
 
+    fn load_drafts(&self) -> Result<tortuga_ui_egui::SavedDrafts, String> {
+        local_store::load_drafts()
+    }
+
+    fn save_drafts(&self, drafts: &tortuga_ui_egui::SavedDrafts) -> Result<(), String> {
+        local_store::save_drafts(drafts)
+    }
+
     fn can_pick_folders(&self) -> bool {
         true
     }

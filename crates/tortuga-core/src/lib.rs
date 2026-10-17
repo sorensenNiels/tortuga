@@ -5,6 +5,7 @@
 
 pub mod collection;
 pub mod cookies;
+pub mod curl;
 pub mod error;
 pub mod format;
 pub mod git;

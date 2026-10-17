@@ -430,6 +430,50 @@ impl AddProjectsDialog {
     }
 }
 
+// ---------------------------------------------------------------- copy as curl
+
+/// The request uses secret values: copy them masked, or include them (R-HTTP-9, P6).
+#[derive(Debug, Clone)]
+pub struct CopyCurlDialog {
+    command: tortuga_core::curl::CurlCommand,
+}
+
+impl CopyCurlDialog {
+    pub fn new(command: tortuga_core::curl::CurlCommand) -> Self {
+        Self { command }
+    }
+
+    /// Done with the text to copy.
+    pub fn show(&mut self, ctx: &Context) -> DialogResult<String> {
+        let names = self.command.secrets.join(", ");
+        dialog(ctx, "copy-curl", "Copy as curl", 460.0, true, |ui| {
+            ui.label(format!(
+                "This request uses secret values ({names}). Copy it with them shown as <secret:name>, or include the real values?"
+            ));
+            ui.add_space(6.0);
+            theme::hint(
+                ui,
+                "Commands you paste into chats, tickets or shell history may be kept for a long time.",
+            );
+            ui.add_space(16.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let masked = ui.add(theme::primary_button(ui, "Copy masked")).clicked();
+                let full = ui.button("Include secret values").clicked();
+                let cancel = ui.button("Cancel").clicked();
+                let done = if masked {
+                    self.command.masked.clone()
+                } else if full {
+                    Some(self.command.full.clone())
+                } else {
+                    None
+                };
+                finish(cancel, done)
+            })
+            .inner
+        })
+    }
+}
+
 // ---------------------------------------------------------------- name
 
 /// Asks for a name, e.g. of a workspace.

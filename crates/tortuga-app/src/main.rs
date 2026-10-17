@@ -35,6 +35,10 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         self.0.ui(ui);
     }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.0.on_exit();
+    }
 }
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]

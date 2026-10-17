@@ -10,11 +10,11 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
-use tortuga_core::ClientSettings;
 use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
 use tortuga_core::workspace::ProjectRef;
+use tortuga_core::{ClientSettings, Request};
 
 /// What is remembered on this machine only, never in a project (R-LOC-1): the
 /// workspaces (R-WS-1) and which one is active.
@@ -77,6 +77,43 @@ pub struct Workspace {
     /// Project root (as text) → environment id, for projects without an environment
     /// named like the workspace's (R-WS-6).
     pub project_environments: BTreeMap<String, String>,
+}
+
+/// Unsaved request edits, kept across restarts (R-COL-8). Local data only (§6.7): it
+/// may hold credentials typed into a request, so the app keeps it private to the user.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedDrafts {
+    /// The scratch request, if it is not empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<Request>,
+    pub drafts: Vec<SavedDraft>,
+}
+
+/// One request with unsaved edits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedDraft {
+    /// Project root.
+    pub root: PathBuf,
+    /// Path of the request file in the project.
+    pub path: PathBuf,
+    /// The edited request.
+    pub request: Request,
+    /// The saved version the edits started from (`None`: the file was gone), so a
+    /// change on disk while the app was closed is noticed (R-GIT-11).
+    #[serde(default)]
+    pub base: Option<Request>,
+    /// A conflict the user had not answered yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<DraftConflict>,
+}
+
+/// What happened on disk to a request with unsaved edits (R-GIT-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DraftConflict {
+    Changed,
+    Deleted,
 }
 
 /// Background work started by the UI (sending a request).
@@ -177,6 +214,16 @@ pub trait Host {
     /// Workspace state (R-LOC-1); missing state gives the default.
     fn load_local(&self) -> Result<LocalState, String>;
     fn save_local(&self, state: &LocalState) -> Result<(), String>;
+
+    /// Unsaved edits from the last session (R-COL-8); missing gives none.
+    fn load_drafts(&self) -> Result<SavedDrafts, String> {
+        Ok(SavedDrafts::default())
+    }
+
+    /// Keeps unsaved edits for the next session, privately (R-COL-8, R-LOC-1).
+    fn save_drafts(&self, _drafts: &SavedDrafts) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Whether [`Host::pick_folder`] works, i.e. collections can be opened.
     fn can_pick_folders(&self) -> bool {

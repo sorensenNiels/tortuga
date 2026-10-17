@@ -113,6 +113,8 @@ What was called a collection is now a **project** in the UI and the docs (D12); 
 
 | Requirement | Feature | Verified on | How it was verified |
 |---|---|---|---|
+| R-COL-8 | Unsaved edits (and the scratch request) are kept across restarts: written about once a second while they change, and when the app closes, to `drafts.json` in the app-data folder (owner-only, never in a project). On the next start they come back marked "Unsaved", with the selection. A request whose file changed or was deleted while the app was closed gets the "Keep mine / Take theirs" banner (R-GIT-11). | Linux | Automated tests (restart, scratch, saved edits not kept, change while closed, file round trip). In the app: an edit survived killing the app; after changing the file while closed, the banner appeared; "Take theirs" emptied the drafts file (`-rw-------`). |
+| R-HTTP-9 | "Copy as curl" next to Save: method, URL with params, project headers, auth, body, Content-Type, timeout, and `-L` / `-k` from the settings, with all variables resolved (POSIX quoting). Basic auth is written as `-u user:password`. If the request uses secret values, a dialog offers "Copy masked" (shown as `<secret:name>`) or "Include secret values". Undefined variables stop the copy, like sending. Cookies from the jar are not included. | Linux | Automated tests (methods, headers, bodies, quoting, masking). In the app: masked and full copies read back from the clipboard; "Copied" feedback; undefined variable reported. |
 | R-HTTP-10 | Path variables: `:name` segments in the URL path get a "Path variables" table on the Params tab that follows the URL. Values take `{{variables}}`, are URL-encoded when sent and saved as `[[path_vars]]`; an empty value stops the send ("Path variables without a value: id, name"). `host:8080` is never a variable. | Linux | Automated tests (parsing, encoding, server base URL, file round trip, mock server path). In the app: `/users/:id/files/:name` sent as `/users/42/files/my%20report.pdf`; saved request file checked. |
 
 ## In progress
@@ -126,6 +128,5 @@ What was called a collection is now a **project** in the UI and the docs (D12); 
 
 ## Known limitations
 
-- Unsaved edits are kept only while the app is open; closing the app does not warn about them yet.
 - Windows and macOS builds are checked by CI but have not been run by a person yet.
 - Form URL-encoded bodies are covered by automated tests; in the app only switching to the form editor was checked, not sending a form.
