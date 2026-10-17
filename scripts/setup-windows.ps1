@@ -30,6 +30,6 @@ if (-not (Have 'cargo-binstall')) {
 }
 
 Write-Host '==> Installing cargo tools'
-cargo binstall -y cargo-deny cargo-nextest
+cargo binstall -y cargo-deny cargo-nextest cargo-packager
 
 Write-Host '==> Done. Open a new terminal, then: make run'

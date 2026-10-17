@@ -535,7 +535,7 @@ fn tree_item(
                 name: new_name,
             });
         }
-    } else {
+    } else if !skip_hidden_row(ui) {
         let p = theme::palette(ui);
         let mut atoms = vec![match item {
             Item::Request(r) => {
@@ -863,6 +863,17 @@ fn tree_row<'a, T>(
     )
 }
 
+/// A row scrolled out of view only takes up its space, so a project with thousands of
+/// requests costs next to nothing per frame (R-NF-1, P2). Returns whether the row was skipped.
+fn skip_hidden_row(ui: &mut Ui) -> bool {
+    let size = egui::vec2(ui.available_width(), ROW_HEIGHT);
+    if ui.is_rect_visible(egui::Rect::from_min_size(ui.cursor().min, size)) {
+        return false;
+    }
+    ui.allocate_space(size);
+    true
+}
+
 fn toggle(set: &mut HashSet<ItemKey>, key: &ItemKey) {
     if !set.remove(key) {
         set.insert(key.clone());
@@ -904,4 +915,46 @@ fn rename_row(ui: &mut Ui, depth: usize, tree: &mut Tree<'_>, key: &ItemKey) -> 
     let changed = !cancelled && !name.is_empty() && name != rename.original;
     tree.st.rename = None;
     changed.then_some(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::*;
+
+    /// R-NF-1: a skipped row takes exactly the space of a drawn one, so the scroll bar doesn't jump.
+    #[test]
+    fn hidden_rows_take_the_space_of_drawn_rows() {
+        let drawn = Rc::new(Cell::new(0.0));
+        let skipped = Rc::new(Cell::new(0.0));
+        let (d, s) = (drawn.clone(), skipped.clone());
+        let mut harness = crate::test_host::harness(move |ui| {
+            let key = ItemKey::new(Path::new("/p"), "get-user.toml");
+            let top = ui.cursor().min.y;
+            let atoms = [
+                Atom::from(RichText::new("GET  ").monospace().size(10.5)),
+                Atom::from("Get user"),
+                Atom::grow(),
+            ];
+            tree_row(ui, 2, false, atoms, |ui| {
+                menu_button(ui, |ui: &mut Ui| item_menu(ui, &key, false))
+            });
+            d.set(ui.cursor().min.y - top);
+
+            ui.scope(|ui| {
+                ui.set_clip_rect(egui::Rect::NOTHING);
+                let top = ui.cursor().min.y;
+                assert!(skip_hidden_row(ui));
+                s.set(ui.cursor().min.y - top);
+            });
+        });
+        harness.run();
+        assert!(drawn.get() > 0.0);
+        assert!(
+            (drawn.get() - skipped.get()).abs() < 0.01,
+            "{drawn:?} vs {skipped:?}"
+        );
+    }
 }

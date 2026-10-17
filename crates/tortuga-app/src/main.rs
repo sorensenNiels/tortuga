@@ -4,6 +4,9 @@
 //! platform services ([`tortuga_ui_egui::Host`]) the UI needs. UI code belongs in
 //! `tortuga-ui-egui`; anything that could be reused by a CLI belongs in `tortuga-core`.
 
+// Release builds on Windows are GUI apps: no console window opens next to Tortuga.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 mod desktop;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]

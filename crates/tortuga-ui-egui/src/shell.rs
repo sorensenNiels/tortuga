@@ -1777,6 +1777,38 @@ mod tests {
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
+    /// R-NF-1: only the rows in view are built, so big projects cost little per frame.
+    #[test]
+    fn big_projects_build_only_the_rows_in_view() {
+        use egui_kittest::kittest::Queryable;
+
+        let root = std::env::temp_dir().join(format!("tortuga-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let collection = Collection::create(&FsStorage, &root, "Big").expect("create");
+        for i in 0..300 {
+            let mut request = Request::new(tortuga_core::HttpMethod::Get, "https://a.test/");
+            request.name = format!("Request {i:03}");
+            std::fs::write(
+                root.join(format!("request-{i:03}.toml")),
+                tortuga_core::format::write_request(&request, Some(i)),
+            )
+            .expect("write");
+        }
+        drop(collection);
+        let mut ui = TortugaUi::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let mut harness = crate::test_host::harness(move |egui_ui| ui.ui(egui_ui));
+        harness.run();
+        harness.get_by_label_contains("Request 000");
+        assert!(
+            harness.query_by_label_contains("Request 299").is_none(),
+            "rows out of view are not built"
+        );
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
     /// R-GIT-11: a request deleted on disk while edited can be restored with the edits.
     #[test]
     fn deleted_request_with_edits_can_be_restored() {

@@ -36,11 +36,13 @@ rfd = { version = "0.17", default-features = false }
 directories = "6"
 # OS credential store for secret variables (R-LOC-2): Keychain, Credential Manager, Secret Service.
 keyring = "4.2"
-# Live git collaboration (M6): file watching, git status without a git executable, opening folders.
-notify-debouncer-mini = "0.7"
+# Live git collaboration (M6): file watching (debounced in tortuga-app watch.rs), git status without a git executable, opening folders.
+notify = "8.2"
 gix = { version = "0.89", default-features = false, features = ["status", "sha1", "max-performance-safe"] }
 open = "5"
 wasm-bindgen-futures = "0.4"
+# Windows icon and version information in tortuga.exe (build script).
+winresource = { version = "0.1", default-features = false }
 
 # dev / test
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

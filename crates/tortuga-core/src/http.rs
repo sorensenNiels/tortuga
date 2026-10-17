@@ -162,11 +162,13 @@ impl Client {
                 KeyValue::new(name.as_str(), String::from_utf8_lossy(value.as_bytes()))
             })
             .collect();
-        let body = response
-            .bytes()
-            .await
-            .map_err(|e| map_send_error(&e, timeout))?
-            .to_vec();
+        // Takes over the received buffer instead of copying it (bodies can be 50 MB, R-NF-2).
+        let body = Vec::from(
+            response
+                .bytes()
+                .await
+                .map_err(|e| map_send_error(&e, timeout))?,
+        );
         let elapsed = started.elapsed();
 
         tracing::debug!(%status, ?elapsed, "request completed");

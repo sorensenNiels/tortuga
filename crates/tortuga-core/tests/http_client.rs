@@ -505,3 +505,22 @@ async fn manual_cookie_header_is_always_sent() {
         ["mine=1", "mine=1"]
     );
 }
+
+/// R-NF-2: a 50 MB body arrives complete.
+#[tokio::test]
+async fn receives_a_50_mb_body() {
+    const SIZE: usize = 50 * 1024 * 1024;
+    let body: Vec<u8> = (0..SIZE).map(|i| b"0123456789abcdef\n"[i % 17]).collect();
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.clone(), "text/plain"))
+        .mount(&server)
+        .await;
+
+    let res = Client::default()
+        .execute(&Request::new(HttpMethod::Get, server.uri()))
+        .await
+        .expect("request succeeds");
+    assert_eq!(res.body.len(), SIZE);
+    assert!(res.body == body, "body arrives unchanged");
+}

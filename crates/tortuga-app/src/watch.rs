@@ -2,21 +2,25 @@
 //! repository however many of its projects are open (R-WS-4).
 //!
 //! Events are debounced, so a `git pull` or branch switch that touches many files
-//! results in one reload. The repository's `.git` folder is watched too (not
-//! recursively), so a commit or checkout refreshes the git status of every project
-//! in it even when no project file changed. Where the OS gives no change events
-//! (Windows drives under WSL), the files are polled instead.
+//! results in one reload. Reading a file is not a change: otherwise every reload
+//! (and every git status) would trigger the next one. The repository's `.git` folder
+//! is watched too (not recursively), so a commit or checkout refreshes the git status
+//! of every project in it even when no project file changed. Where the OS gives no
+//! change events (Windows drives under WSL), the files are polled instead.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use notify_debouncer_mini::notify::{self, RecursiveMode};
-use notify_debouncer_mini::{Config, DebounceEventResult, Debouncer, new_debouncer_opt};
+use notify::event::{AccessKind, AccessMode};
+use notify::{EventKind, RecursiveMode, Watcher as _};
 
 /// Quiet time before a burst of changes is reported.
 const DEBOUNCE: Duration = Duration::from_millis(400);
+/// Longest wait before reporting, for changes that never stop (e.g. a build writing files).
+const MAX_DELAY: Duration = Duration::from_secs(2);
 /// How often files are checked where there are no change events.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -26,17 +30,17 @@ pub type OnChange = Box<dyn Fn() + Send + Sync>;
 /// The open projects of one watcher: (canonical root, callback).
 type Projects = Arc<Mutex<Vec<(PathBuf, OnChange)>>>;
 
-/// Dropping a debouncer stops it.
+/// Dropping the watcher stops it, and with it the thread that reports its changes.
 enum Handle {
-    Native(Debouncer<notify::RecommendedWatcher>),
-    Polling(Debouncer<notify::PollWatcher>),
+    Native(notify::RecommendedWatcher),
+    Polling(notify::PollWatcher),
 }
 
 impl Handle {
     fn watcher(&mut self) -> &mut dyn notify::Watcher {
         match self {
-            Self::Native(d) => d.watcher(),
-            Self::Polling(d) => d.watcher(),
+            Self::Native(w) => w,
+            Self::Polling(w) => w,
         }
     }
 }
@@ -97,7 +101,7 @@ impl Watchers {
             projects.len()
         };
         if left == 0 {
-            // Dropping the debouncer stops it.
+            // Dropping the watcher stops it.
             active.remove(&key);
         } else {
             let _ = watch.handle.watcher().unwatch(&canonical);
@@ -114,42 +118,72 @@ impl Watchers {
 /// Starts a watcher that passes each burst of changes to the projects it concerns.
 fn start(root: &Path, git_dir: Option<&Path>) -> Result<Watch, String> {
     let projects: Projects = Arc::default();
-    let for_handler = projects.clone();
-    let git = git_dir.map(Path::to_path_buf);
-    let handler = move |result: DebounceEventResult| {
-        let Ok(events) = result else {
-            return;
-        };
-        let projects = lock(&for_handler);
-        for (root, on_change) in projects.iter() {
-            let concerned = events.iter().any(|e| {
-                e.path.starts_with(root) || git.as_ref().is_some_and(|g| e.path.starts_with(g))
-            });
-            if concerned {
-                on_change();
+    let (tx, rx) = mpsc::channel::<PathBuf>();
+    let handler = move |result: notify::Result<notify::Event>| {
+        if let Ok(event) = result
+            && is_change(event.kind)
+        {
+            for path in event.paths {
+                // Fails only when the reporting thread is gone, i.e. while stopping.
+                let _ = tx.send(path);
             }
         }
     };
     let mut handle = if needs_polling(root) {
-        let config = Config::default()
-            .with_timeout(DEBOUNCE)
-            .with_notify_config(notify::Config::default().with_poll_interval(POLL_INTERVAL));
-        Handle::Polling(
-            new_debouncer_opt::<_, notify::PollWatcher>(config, handler)
-                .map_err(|e| e.to_string())?,
-        )
+        let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
+        Handle::Polling(notify::PollWatcher::new(handler, config).map_err(|e| e.to_string())?)
     } else {
-        let config = Config::default().with_timeout(DEBOUNCE);
         Handle::Native(
-            new_debouncer_opt::<_, notify::RecommendedWatcher>(config, handler)
+            notify::RecommendedWatcher::new(handler, notify::Config::default())
                 .map_err(|e| e.to_string())?,
         )
     };
+    let for_reports = projects.clone();
+    let git = git_dir.map(Path::to_path_buf);
+    std::thread::Builder::new()
+        .name("tortuga-watch".into())
+        .spawn(move || report_bursts(&rx, &for_reports, git.as_deref()))
+        .map_err(|e| e.to_string())?;
     if let Some(git_dir) = git_dir {
         // HEAD and index change on commit, checkout and staging. Not fatal if it fails.
         let _ = handle.watcher().watch(git_dir, RecursiveMode::NonRecursive);
     }
     Ok(Watch { handle, projects })
+}
+
+/// Opening, reading and closing a file unchanged are not changes. Tortuga reads the
+/// files itself (reload, git status), so counting them would reload forever.
+fn is_change(kind: EventKind) -> bool {
+    match kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
+    }
+}
+
+/// Collects changed paths until it has been quiet for [`DEBOUNCE`] (or [`MAX_DELAY`]
+/// passed), then tells each concerned project once. Ends when the watcher is dropped.
+fn report_bursts(rx: &mpsc::Receiver<PathBuf>, projects: &Projects, git: Option<&Path>) {
+    while let Ok(first) = rx.recv() {
+        let started = Instant::now();
+        let mut paths = vec![first];
+        loop {
+            let wait = DEBOUNCE.min(MAX_DELAY.saturating_sub(started.elapsed()));
+            match rx.recv_timeout(wait) {
+                Ok(path) => paths.push(path),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        for (root, on_change) in lock(projects).iter() {
+            let concerned = paths
+                .iter()
+                .any(|p| p.starts_with(root) || git.is_some_and(|g| p.starts_with(g)));
+            if concerned {
+                on_change();
+            }
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -181,7 +215,7 @@ mod tests {
         )
     }
 
-    /// Waits until `count` is non-zero (or a timeout), then for the debouncer to settle.
+    /// Waits until `count` is non-zero (or a timeout), then for the burst to settle.
     fn settle(count: &AtomicUsize) {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while count.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
@@ -202,10 +236,7 @@ mod tests {
             std::fs::write(dir.join(format!("r{i}.toml")), "url = \"/\"\n").expect("write");
         }
         settle(&count);
-        // Each file is debounced on its own, so a burst can be split in two under load;
-        // the UI takes in all reports once per frame anyway.
-        let reports = count.load(Ordering::SeqCst);
-        assert!((1..=2).contains(&reports), "five writes, {reports} reports");
+        assert_eq!(count.load(Ordering::SeqCst), 1, "five writes, one report");
         watchers.unwatch(&dir);
         assert_eq!(watchers.count(), 0);
         std::fs::remove_dir_all(dir).expect("clean up");
@@ -248,6 +279,30 @@ mod tests {
         assert_eq!(watchers.count(), 1, "b still watched");
         watchers.unwatch(&dir.join("b"));
         assert_eq!(watchers.count(), 0);
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-GIT-10: reading files is not a change, or every reload would trigger the next one.
+    #[test]
+    fn reading_files_is_not_a_change() {
+        let dir = std::env::temp_dir().join(format!("tortuga-watch-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("folder")).expect("mkdir");
+        std::fs::write(dir.join("folder/r.toml"), "url = \"/\"\n").expect("write");
+        let (count, on_change) = counter();
+        let watchers = Watchers::default();
+        watchers.watch(&dir, on_change).expect("watch");
+        // What a reload does: list the folders and read every file.
+        for entry in std::fs::read_dir(dir.join("folder")).expect("list") {
+            std::fs::read_to_string(entry.expect("entry").path()).expect("read");
+        }
+        std::thread::sleep(DEBOUNCE * 3);
+        assert_eq!(count.load(Ordering::SeqCst), 0, "reads are not reported");
+
+        std::fs::write(dir.join("folder/r.toml"), "url = \"/new\"\n").expect("write");
+        settle(&count);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "a write is");
+        watchers.unwatch(&dir);
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 

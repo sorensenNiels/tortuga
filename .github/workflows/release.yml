@@ -1,0 +1,124 @@
+name: Release
+
+# Builds the installers (R-NF-4) on each OS.
+# - Push a tag `vX.Y.Z` (matching the version in Cargo.toml): a draft GitHub release is created
+#   with every installer attached. Check it, then publish it by hand.
+# - Run it by hand (Actions → Release → Run workflow): the installers are only kept as
+#   artifacts of the run, to try them without releasing.
+# See docs/RELEASING.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PACKAGER_VERSION: 0.11.8
+
+jobs:
+  package:
+    name: package (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Ubuntu, so the packages run on its glibc and anything newer.
+          - name: linux-x64
+            os: ubuntu-22.04
+            formats: deb,appimage
+          - name: windows-x64
+            os: windows-latest
+            formats: wix
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            formats: dmg
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            formats: dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The tag matches the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+
+      - name: Linux system deps (GTK 3 for native file dialogs)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-x11-0 libfuse2
+
+      - run: rustup show active-toolchain || rustup toolchain install
+      - if: matrix.target
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager@${{ env.CARGO_PACKAGER_VERSION }}
+
+      - name: Build
+        shell: bash
+        run: cargo build -p tortuga-app --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      - name: The binary starts
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target && format('{0}/', matrix.target) || '' }}release/tortuga
+          "$bin" --version
+
+      - name: Package
+        shell: bash
+        env:
+          # linuxdeploy is itself an AppImage; this avoids needing FUSE for it.
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: cargo packager -p tortuga-app --release -f ${{ matrix.formats }} ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tortuga-${{ matrix.name }}
+          path: |
+            target/packages/*.deb
+            target/packages/*.AppImage
+            target/packages/*.msi
+            target/packages/*.dmg
+          if-no-files-found: error
+
+  release:
+    name: draft GitHub release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Checksums
+        run: cd packages && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" packages/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "Tortuga ${GITHUB_REF_NAME#v}" \
+            --generate-notes

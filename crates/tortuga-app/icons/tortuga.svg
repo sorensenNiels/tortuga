@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Tortuga app icon: a turtle seen from above on the app's teal accent. Source for the PNG/ICO files next to it. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14b8a6"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+    <clipPath id="shell">
+      <ellipse cx="256" cy="276" rx="132" ry="148"/>
+    </clipPath>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bg)"/>
+  <g fill="#ccfbf1">
+    <ellipse cx="256" cy="110" rx="40" ry="48"/>
+    <ellipse cx="128" cy="168" rx="34" ry="64" transform="rotate(-55 128 168)"/>
+    <ellipse cx="384" cy="168" rx="34" ry="64" transform="rotate(55 384 168)"/>
+    <ellipse cx="146" cy="394" rx="30" ry="52" transform="rotate(42 146 394)"/>
+    <ellipse cx="366" cy="394" rx="30" ry="52" transform="rotate(-42 366 394)"/>
+    <path d="M234 404 L256 452 L278 404 Z"/>
+  </g>
+  <ellipse cx="256" cy="276" rx="132" ry="148" fill="#ffffff"/>
+  <g clip-path="url(#shell)" fill="none" stroke="#0d9488" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+    <polygon points="256,214 310,245 310,307 256,338 202,307 202,245"/>
+    <path d="M256 214 L256 100 M310 245 L420 182 M310 307 L420 370 M256 338 L256 452 M202 307 L92 370 M202 245 L92 182"/>
+  </g>
+  <ellipse cx="256" cy="276" rx="125" ry="141" fill="none" stroke="#ffffff" stroke-width="14"/>
+</svg>

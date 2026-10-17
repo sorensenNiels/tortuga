@@ -3,11 +3,25 @@
 A fast, local-first API client written in Rust. Projects are plain files that teams share through git.
 Runs on Windows, Linux and macOS (web support planned).
 
-**Status:** milestones M1–M6.5 and the v1 extras are implemented: sending requests, projects on disk, environments with servers and
-variables, auth and secrets, cookies, live git status, workspaces, kept unsaved edits and copy as curl. See [docs/FEATURES.md](docs/FEATURES.md) for what
+**Status:** milestones M1–M7 and the v1 extras are implemented: sending requests, projects on disk, environments with servers and
+variables, auth and secrets, cookies, live git status, workspaces, kept unsaved edits, copy as curl, and installers for
+Windows, macOS and Linux. See [docs/FEATURES.md](docs/FEATURES.md) for what
 works today and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
-## Getting started
+## Install
+
+Download the installer for your OS from the [releases page](https://github.com/sorensenNiels/tortuga/releases):
+
+| OS | File | Install |
+|---|---|---|
+| **Windows** | `.msi` | Run it. If SmartScreen warns, choose **More info → Run anyway**. |
+| **macOS** | `.dmg`, one for Apple silicon (`aarch64`) and one for Intel | Drag Tortuga to Applications. The first time, right-click it and choose **Open**: the app is not signed yet. |
+| **Linux** (Debian, Ubuntu) | `.deb` | `sudo apt install ./tortuga_*.deb` |
+| **Linux** (other) | `.AppImage` | `chmod +x tortuga_*.AppImage`, then run it. |
+
+Tortuga needs no account and works offline. To build installers yourself, see [docs/RELEASING.md](docs/RELEASING.md).
+
+## Getting started (development)
 
 ### 1. Install the prerequisites (once per machine)
 
@@ -83,6 +97,8 @@ filled in; if it uses secret values, you choose whether to mask them.
 | `make fmt` | Format all code. |
 | `make deny` | Check dependency licences and security advisories. |
 | `make build` / `make release` | Debug / optimised build of the desktop app. |
+| `make package` | Installers for this OS in `target/packages/` (see [docs/RELEASING.md](docs/RELEASING.md)). |
+| `make startup-time` | Open the optimised app with your workspace, print how long start-up took, and quit. |
 | `make doc` | Build and open the API documentation. |
 | `make clean` | Remove build output. |
 

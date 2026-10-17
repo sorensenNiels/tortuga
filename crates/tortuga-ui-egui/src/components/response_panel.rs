@@ -51,30 +51,48 @@ enum Body {
 
 impl ResponseView {
     pub fn new(response: Response) -> Self {
-        // Pretty-printing huge bodies would take too long (R-NF-2).
-        let view = if response.body.len() > format::MAX_DISPLAY_BYTES {
-            match std::str::from_utf8(&response.body) {
-                Ok(text) => BodyView::Text(text.to_owned()),
-                Err(_) => BodyView::Binary,
+        let body = if response.body.len() > format::MAX_DISPLAY_BYTES {
+            // Pretty-printing huge bodies would take too long, and only the start is
+            // shown: copy just that (R-NF-2).
+            match text_start(&response.body, format::MAX_DISPLAY_BYTES) {
+                Some(text) => Body::text(text.to_owned(), true),
+                None => Body::Binary,
             }
         } else {
-            response.body_view()
-        };
-        let body = match view {
-            BodyView::Empty => Body::Empty,
-            BodyView::Binary => Body::Binary,
-            BodyView::Json(text) | BodyView::Text(text) => {
-                let (shown, truncated) = format::truncate(&text, format::MAX_DISPLAY_BYTES);
-                let rows = rows(shown);
-                let text = if truncated { shown.to_owned() } else { text };
-                Body::Text {
-                    text,
-                    rows,
-                    truncated,
+            match response.body_view() {
+                BodyView::Empty => Body::Empty,
+                BodyView::Binary => Body::Binary,
+                BodyView::Json(text) | BodyView::Text(text) => {
+                    // Pretty-printing can make the text longer than the limit.
+                    let (shown, truncated) = format::truncate(&text, format::MAX_DISPLAY_BYTES);
+                    let text = if truncated { shown.to_owned() } else { text };
+                    Body::text(text, truncated)
                 }
             }
         };
         Self { response, body }
+    }
+}
+
+impl Body {
+    fn text(text: String, truncated: bool) -> Self {
+        Self::Text {
+            rows: rows(&text),
+            text,
+            truncated,
+        }
+    }
+}
+
+/// The first `max` bytes of `body` as text, cut on a character boundary.
+/// `None` if they are not UTF-8.
+fn text_start(body: &[u8], max: usize) -> Option<&str> {
+    let head = &body[..max.min(body.len())];
+    match std::str::from_utf8(head) {
+        Ok(text) => Some(text),
+        // Only the last character was cut in two.
+        Err(e) if e.error_len().is_none() => std::str::from_utf8(&head[..e.valid_up_to()]).ok(),
+        Err(_) => None,
     }
 }
 
@@ -356,6 +374,49 @@ mod tests {
         assert!(truncated);
         assert!(rows.len() > 1, "a single long line is split into rows");
         render(Some(outcome)).get_by_label_contains("Showing the first 2.0 MB");
+    }
+
+    /// R-NF-2: a 50 MB response keeps only what is shown, and drawing it stays quick.
+    #[test]
+    fn a_50_mb_body_is_prepared_and_drawn_quickly() {
+        let mut res = json_response();
+        let item = r#"{"id": 12345, "name": "Ærøskøbing", "tags": ["a", "b"]},"#;
+        res.body = format!("[{}]", item.repeat(50 * 1024 * 1024 / item.len())).into_bytes();
+        assert!(res.body.len() > 50 * 1000 * 1000);
+
+        let started = std::time::Instant::now();
+        let outcome = Outcome::from_result(Ok(res));
+        let prepared = started.elapsed();
+        let Outcome::Response(view) = &outcome else {
+            panic!("expected response")
+        };
+        let Body::Text {
+            text, truncated, ..
+        } = &view.body
+        else {
+            panic!("expected text")
+        };
+        assert!(truncated);
+        assert!(
+            text.len() <= format::MAX_DISPLAY_BYTES,
+            "only the shown part is kept"
+        );
+
+        let mut harness = render(Some(outcome));
+        harness.get_by_label_contains("Showing the first 2.0 MB");
+        let started = std::time::Instant::now();
+        harness.run();
+        let drawn = started.elapsed();
+        println!("50 MB body: prepared in {prepared:?}, frames drawn in {drawn:?}");
+        // Preparing runs off the UI thread; drawing must never freeze it.
+        assert!(drawn < Duration::from_millis(500), "drawing took {drawn:?}");
+    }
+
+    #[test]
+    fn text_start_cuts_on_a_character_boundary() {
+        assert_eq!(text_start("aé".as_bytes(), 2), Some("a"));
+        assert_eq!(text_start("aé".as_bytes(), 3), Some("aé"));
+        assert_eq!(text_start(&[0xff, b'a'], 2), None);
     }
 
     #[test]

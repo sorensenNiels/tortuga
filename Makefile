@@ -32,7 +32,7 @@ endif
 RUN_ENV := $(if $(IS_WSL),GALLIUM_DRIVER=$${GALLIUM_DRIVER:-d3d12} ,)
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run run-web build release test test-core test-ui \
+.PHONY: help setup run run-web build release package startup-time icons test test-core test-ui \
         lint lint-desktop lint-web fmt fmt-check deny verify doc clean
 
 help:
@@ -55,6 +55,9 @@ help:
 	@echo "  Building"
 	@echo "    build         Debug build of the desktop app"
 	@echo "    release       Optimised build of the desktop app"
+	@echo "    package       Installers for this OS in target/packages (needs cargo-packager)"
+	@echo "    startup-time  Measure start-up of the optimised build (R-NF-1)"
+	@echo "    icons         Render the app icon from crates/tortuga-app/icons/tortuga.svg (needs resvg)"
 	@echo "    doc           Build and open the API docs"
 	@echo "    clean         Remove build output"
 
@@ -85,6 +88,21 @@ build: require-desktop-deps
 
 release: require-desktop-deps
 	cargo build -p $(APP) --release
+
+# Installers (R-NF-4): .deb and .AppImage on Linux, .msi on Windows, .dmg on macOS.
+PACKAGE_FORMATS_linux := deb,appimage
+PACKAGE_FORMATS_windows := wix
+PACKAGE_FORMATS_macos := dmg
+
+package: release
+	cargo packager -p $(APP) --release -f $(PACKAGE_FORMATS_$(PLATFORM))
+
+# Opens the app with your workspace, prints how long start-up took, and quits (R-NF-1).
+startup-time: release
+	$(RUN_ENV)cargo run -p $(APP) --release -- --startup-time
+
+icons:
+	python3 scripts/render-icons.py
 
 doc:
 	cargo doc --workspace --no-deps --open

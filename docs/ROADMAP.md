@@ -62,7 +62,7 @@ A requirement moves to [FEATURES.md](FEATURES.md) once it is implemented and ver
 | **M5: Cookies** | Session-based APIs work, with per-request control. | R-CK-1 to 4 | Done (see FEATURES.md) |
 | **M6: Live git collaboration** | Teammates' changes appear automatically, and the git state is visible. | R-GIT-10 to 14 | Done (see FEATURES.md) |
 | **M6.5: Workspaces & projects** | Group projects (today's collections) into workspaces, also when several share a repo. Built before M7 (D15). | R-WS-1 to 7 | Done (see FEATURES.md) |
-| **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | |
+| **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | Built; verified on Linux. Installers for Windows and macOS are built by the release workflow and still need a check on those OSes (see FEATURES.md, [RELEASING.md](RELEASING.md)) |
 | **UI: egui** | Move the UI from Dioxus to egui (`tortuga-ui-egui`) with a modern look. | — | Done (2026-10-17) |
 | **v1 extras** | Decided in D1, plus path variables (requested 2026-10-17). | R-COL-8 · R-HTTP-9 · R-HTTP-10 | Done (see FEATURES.md) |
 
@@ -375,6 +375,8 @@ These were discussed and agreed as worth doing, but are not needed for v1.
 | IDEA-11 | Web version of the app. | The architecture already keeps this possible (R-P-3). |
 | IDEA-12 | Warn about unsaved edits when closing the app, or keep them across restarts. | **Moved to v1 as R-COL-8** (D1). |
 | IDEA-13 | Drag environments and variables to reorder them in the environments table. | Today environments keep their creation order and variables are sorted by name. |
+| IDEA-14 | Signed installers: Apple Developer ID signing and notarization for the `.dmg`, Authenticode for the `.msi`. | Removes the "unidentified developer" and SmartScreen warnings. Needs paid certificates; see D17. |
+| IDEA-15 | Automatic update check and in-app updates. | Would contact a server, so it must be opt-in (R-P-4). |
 
 ### Under consideration
 
@@ -431,7 +433,10 @@ Not decided. Needs a real user need before it moves up.
 | D14 | How do environments work across projects (IDEA-37)? | **Switch by name across the workspace**; environments stay defined per project (2026-10-17). | Per project only (as today); workspace-level environments that projects inherit (a file format change). |
 | D15 | When are workspaces built? | **Before M7**, so the first release ships the final names (2026-10-17). | After the release, in Phase 2. |
 
-New questions go here as `D16`, `D17`, … with options, until they are decided.
+| D16 | How are the installers built (R-NF-4)? | **cargo-packager**: one tool and one config for `.msi`, `.dmg`, `.deb` and `.AppImage`, run by a release workflow on each OS (2026-10-17). | cargo-dist (no `.dmg`, `.deb` or `.AppImage`); one tool per format (cargo-wix, cargo-bundle, cargo-deb, appimagetool). |
+| D17 | Are the v1 installers signed? | **Open.** Recommended: release v1 unsigned with instructions to open it anyway, and sign later (IDEA-14). | Sign from the first release (Apple Developer Program, about USD 99 a year, plus a Windows code-signing certificate); sign only the macOS build. |
+
+New questions go here as `D18`, `D19`, … with options, until they are decided.
 
 ## 9. How to change this roadmap
 

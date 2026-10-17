@@ -6,7 +6,7 @@
 > Add an entry only when the requirement is fully met, has automated tests where practical, and has
 > been checked in the running app on at least one OS. Note which OSes were checked.
 
-**Verified on:** Linux = Ubuntu 24.04 under WSL2/WSLg (desktop build). Windows and macOS have not been run yet.
+**Verified on:** Linux = Ubuntu 24.04 under WSL2/WSLg (desktop build). Windows: start-up only (M7). macOS has not been run yet.
 
 **UI rewrite (2026-10-16):** the UI moved from Dioxus to egui (`tortuga-ui-egui`). The engine and file formats did
 not change. Re-checked in the running egui app (Linux, X11 via WSLg): sending, URL/params sync, pretty JSON,
@@ -89,7 +89,7 @@ after a restart. Not yet re-checked in the egui app: the body editor types and s
 
 | Requirement | Feature | Verified on | How it was verified |
 |---|---|---|---|
-| R-GIT-10 | Open collections are watched; changes on disk (another editor, `git pull`, branch switch) reload automatically, debounced so a burst reloads once. An open request without unsaved edits shows the new version. Windows drives under WSL are polled. | Linux | Automated tests (one report per burst; follow the disk). In the app: changed, deleted and new files appeared without any click. |
+| R-GIT-10 | Open collections are watched; changes on disk (another editor, `git pull`, branch switch) reload automatically, debounced so a burst reloads once. Reading files is not a change. An open request without unsaved edits shows the new version. Windows drives under WSL are polled. | Linux | Automated tests (one report per burst; reads not reported; follow the disk). In the app: changed, deleted and new files appeared without any click. **Fixed with M7 (2026-10-17):** the app's own reads (reload, git status) counted as changes, so an open project reloaded about four times a second while idle; now 0 reloads in 6 s idle, 1 after an outside edit. |
 | R-GIT-11 | A request with unsaved edits whose file changed shows a banner: "Keep mine" (save to overwrite) or "Take theirs"; if the file was deleted: "Restore with my edits" or "Discard my edits". The tree marks it ⚠. | Linux | Automated tests for all four answers. In the app: banner shown, "Take theirs" loaded the new version. |
 | R-GIT-12 | Current branch next to the collection name; M / N / D / C markers on requests and folders (a folder shows the most important state inside); deleted requests stay visible as struck-through rows until the deletion is committed. Unreadable conflicted files show as ⚠ with C. | Linux | Automated tests against real repositories (modified, new, deleted, conflict). In the app: markers, a commit clearing them, branch switch, a merge conflict. |
 | R-GIT-13 | "Open in file manager" and "Open in terminal" in the collection menu. Terminal: Windows Terminal/cmd, Terminal.app, `$TERMINAL` or common Linux terminals; under WSL, Windows Explorer and Windows Terminal running WSL in the folder. | Linux (WSL) | In the app: Windows Terminal started; no error for the file manager (the Windows window itself was not visible to the test). |
@@ -117,6 +117,19 @@ What was called a collection is now a **project** in the UI and the docs (D12); 
 | R-HTTP-9 | "Copy as curl" next to Save: method, URL with params, project headers, auth, body, Content-Type, timeout, and `-L` / `-k` from the settings, with all variables resolved (POSIX quoting). Basic auth is written as `-u user:password`. If the request uses secret values, a dialog offers "Copy masked" (shown as `<secret:name>`) or "Include secret values". Undefined variables stop the copy, like sending. Cookies from the jar are not included. | Linux | Automated tests (methods, headers, bodies, quoting, masking). In the app: masked and full copies read back from the clipboard; "Copied" feedback; undefined variable reported. |
 | R-HTTP-10 | Path variables: `:name` segments in the URL path get a "Path variables" table on the Params tab that follows the URL. Values take `{{variables}}`, are URL-encoded when sent and saved as `[[path_vars]]`; an empty value stops the send ("Path variables without a value: id, name"). `host:8080` is never a variable. | Linux | Automated tests (parsing, encoding, server base URL, file round trip, mock server path). In the app: `/users/:id/files/:name` sent as `/users/42/files/my%20report.pdf`; saved request file checked. |
 
+### M7: Release
+
+Measured on this machine: Linux = Ubuntu 24.04 under WSL2/WSLg (OpenGL through `d3d12`); Windows = the Windows 11
+host of that WSL (build 26100), running a release build cross-compiled with MinGW. Times are to the first frame
+shown, from `tortuga --startup-time` (release build).
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-NF-1 | Cold start under 1 s; a project with 1,000 requests opens in under 1 s. Only the sidebar rows in view are built, so a frame takes about 1 ms however big the projects are. `tortuga --startup-time` (or `make startup-time`) prints the start-up times and how long a frame takes, then quits. | Linux, Windows | Automated tests: 1,000 requests open in 40 ms (unoptimised build); only rows in view are built; a skipped row takes the space of a drawn one. Empty workspace: Linux 0.35–0.49 s, Windows 0.27–0.49 s (first launch slowest). With 1,000 requests (40 folders × 25, all expanded): Linux 0.38–0.40 s, Windows 0.42–0.52 s; frames 1.3 ms (were 6.5 ms before only visible rows were built). |
+| R-NF-2 | Response bodies of 50 MB arrive and are shown without freezing the UI: bodies over 2 MB are shown as their first 2 MB, prepared off the UI thread without copying the rest; "Save to file…" saves the whole body. | Linux | Automated tests: a 50 MB body arrives unchanged through the client; a 50 MB JSON body is prepared in 44 ms (unoptimised, off the UI thread), keeps only 2 MB and draws in about 1 ms. In the app: a 50 MB JSON response (200 OK in 123 ms), scrolled through the shown part and clicked around without delay; "Save to file…" wrote a file byte-identical to the served one. |
+| R-NF-3 | Fully usable offline: nothing is downloaded or contacted at start or while working; fonts and icons are built in. | Linux | In the app, started in a network namespace with only a loopback interface: started in 0.38 s, a request to a local server returned 200, a request to a public host failed with a DNS error message and the app carried on. |
+| R-P-3 | The same code builds and runs on Windows, macOS and Linux (CI builds and tests all three). | Linux, Windows | Linux: everything in this file. Windows: the release build started, opened its window and drew frames (start-up measured above). |
+
 ## In progress
 
 | Requirement | State |
@@ -124,9 +137,11 @@ What was called a collection is now a **project** in the UI and the docs (D12); 
 | R-P-4 | No telemetry or analytics code exists, and the app only sends requests the user makes. Not yet confirmed with a network monitor. |
 | R-HTTP-8 | Proxy settings from the Windows and macOS system settings are expected to work (handled by the HTTP library), but have not been tested on those OSes. |
 | R-LOC-2 | The OS credential store (Keychain, Credential Manager, Secret Service via `keyring`) is used when available; otherwise values go to `secrets.toml` in the app-data folder with owner-only permissions (0600 on Unix) and the environments dialog shows a warning. **Verified:** the fallback on Linux/WSL (no Secret Service), including file permissions. **Not yet checked:** the OS credential store itself, on any OS. |
-| R-NF-2 | Partly done: bodies over 2 MB are not pretty-printed and are truncated in the viewer, with the full body available through "Save to file…". Not yet measured with 50 MB responses. |
+| R-NF-4 | Installers are built with cargo-packager (D16): `make package` locally, and the **Release** workflow on each OS for a `v*` tag (draft GitHub release) or by hand (artifacts); see [RELEASING.md](RELEASING.md). The app has an icon (window, `.exe`, packages), version information in the `.exe`, no console window on Windows, and `--version`. **Verified:** on Linux the `.deb` (dependencies, desktop entry, icons) and `.AppImage` were built and both started, within the start-up budget; the Windows `.exe` shows the icon and version information. **Not yet checked:** the `.msi` and `.dmg` (built only by the workflow, which has not run yet) and installing the `.deb` with `apt`. |
+| R-P-3 | macOS has not been run yet (built and tested by CI only). |
 
 ## Known limitations
 
-- Windows and macOS builds are checked by CI but have not been run by a person yet.
+- macOS builds are checked by CI but have not been run yet. On Windows only start-up was checked (M7), not the features themselves.
+- The installers are not signed (D17): macOS and Windows warn before opening them the first time.
 - Form URL-encoded bodies are covered by automated tests; in the app only switching to the form editor was checked, not sending a form.
