@@ -302,6 +302,7 @@ impl TortugaUi {
         let collection_auth = root.as_ref().map(|_| ctx.auth.clone());
         let inherited_headers: Vec<tortuga_core::KeyValue> =
             ctx.inherited_headers(&self.current).cloned().collect();
+        let cookie_count = self.state.cookie_jar(root.as_deref()).len();
         let sending = self.sending() == Some(&key);
         let default_timeout_ms = self.state.settings.default_timeout_ms;
         let action = Panel::top("request")
@@ -328,6 +329,8 @@ impl TortugaUi {
                         default_timeout_ms,
                         collection_auth: collection_auth.as_ref(),
                         inherited_headers: &inherited_headers,
+                        cookie_count,
+                        in_collection: root.is_some(),
                     },
                 )
             })
@@ -559,10 +562,13 @@ impl TortugaUi {
         self.next_send_id += 1;
         let id = self.next_send_id;
         let client = self.state.client.clone();
+        let jar = self
+            .state
+            .cookie_jar(key.as_ref().map(|k| k.root.as_path()));
         let tx = self.finished_tx.clone();
         let repaint = egui_ctx.clone();
         let (task, abort) = abortable(async move {
-            let result = client.execute(&prepared).await;
+            let result = client.execute_with_cookies(&prepared, Some(&jar)).await;
             // Prepared here, off the UI thread: pretty-printing big bodies takes a while (R-NF-2).
             let outcome = Outcome::from_result(result);
             // The receiver only goes away with the app.
@@ -579,6 +585,9 @@ impl TortugaUi {
     fn cancel(&mut self) {
         if let Some(f) = self.in_flight.take() {
             f.abort.abort();
+            // A redirect may already have set cookies.
+            self.state
+                .save_cookies(f.key.as_ref().map(|k| k.root.as_path()));
             self.outcomes.insert(f.key, Outcome::Cancelled);
         }
     }
@@ -589,6 +598,8 @@ impl TortugaUi {
                 if f.key == self.selection {
                     self.response = ResponseState::default();
                 }
+                self.state
+                    .save_cookies(f.key.as_ref().map(|k| k.root.as_path()));
                 self.outcomes.insert(f.key, done.outcome);
             }
         }
@@ -687,6 +698,7 @@ impl TortugaUi {
                 self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
             }
             SidebarAction::Reload(root) => self.state.reload(&root),
+            SidebarAction::ClearCookies(root) => self.state.clear_cookies(&root),
             SidebarAction::Close(root) => {
                 self.forget(&root, Path::new(""));
                 self.state.close_collection(&root);

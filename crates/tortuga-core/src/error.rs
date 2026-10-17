@@ -66,6 +66,10 @@ pub enum Error {
     #[error("server `{0}` is not defined in this collection")]
     UnknownServer(String),
 
+    /// R-CK-3
+    #[error("could not read the saved cookies: {0}")]
+    InvalidCookies(String),
+
     /// R-VAR-3, R-LOC-2
     #[error("could not access secret values: {0}")]
     SecretStore(String),

@@ -60,6 +60,14 @@ impl Host for DesktopHost {
         self.secrets_warning.as_deref()
     }
 
+    fn load_cookies(&self, root: &std::path::Path) -> Result<Option<String>, String> {
+        local_store::load_cookies(root)
+    }
+
+    fn save_cookies(&self, root: &std::path::Path, json: &str) -> Result<(), String> {
+        local_store::save_cookies(root, json)
+    }
+
     fn spawn(&self, task: BoxTask) {
         drop(self.runtime.spawn(task));
     }

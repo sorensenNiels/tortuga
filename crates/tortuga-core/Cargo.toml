@@ -19,6 +19,12 @@ toml.workspace = true
 tracing.workspace = true
 # `std::time::Instant` panics on wasm32; this is a drop-in that works everywhere.
 web-time.workspace = true
+# Cookie jars (R-CK-1).
+cookie_store.workspace = true
+
+# `time` needs the browser clock on wasm32.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+cookie_store = { workspace = true, features = ["wasm-bindgen"] }
 
 [dev-dependencies]
 tokio.workspace = true

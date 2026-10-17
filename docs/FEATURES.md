@@ -74,7 +74,16 @@ through a server base URL.
 | R-COL-4 | Collection defaults dialog (collection menu → "Defaults (headers, auth)…"): default headers and auth in `tortuga.toml`. A request header with the same name replaces a default; adding it switched off leaves it out. Inherited headers are listed read-only on the request's Headers tab. | Linux | Automated tests (inheritance, override, opt-out, exact file output). In the app: header and auth saved and inherited. |
 | R-VAR-3 | Variables can be marked secret (🔒) in the environments table. `tortuga.toml` lists only the names (`secrets = ["token"]`); values (default and per environment) are stored on this machine and masked in the table. Marking a variable secret moves its values out of the files. | Linux | Automated tests (values go to the local store, never the files). In the app: secret saved; `grep` found the value in no collection file; still used after a restart. |
 | R-VAR-4 | Local secret value, then environment, then collection default. | Linux | Automated tests. |
-| R-LOC-1 | Secret values, open collections and active environments are stored in the user's app-data folder, keyed by collection path; nothing is written into the collection. | Linux | Files inspected on disk. (Cookies arrive in M5.) |
+| R-LOC-1 | Secret values, cookie jars, open collections and active environments are stored in the user's app-data folder, keyed by collection path; nothing is written into the collection. | Linux | Files inspected on disk. |
+
+### M5: Cookies
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-CK-1 | Each collection has a cookie jar, on by default. Cookies from responses — also those set during redirects — are sent with later matching requests, with browser rules for domain, path, expiry and `Secure` (via the `cookie_store` crate). The jar is kept across restarts, session cookies included. The scratch request has its own jar for the session. | Linux | Automated tests (domain/path matching, redirect hop, JSON round trip). In the app: `/login` redirect set `session=abc123`; the next request sent it; still sent after a restart. |
+| R-CK-2 | "Use cookies from this collection's cookie jar" on the request's Options tab; when off, nothing is sent from the jar and response cookies are not stored. Saved as `cookies = false` in the request file. | Linux | Automated tests. In the app: with it off the server got no cookie; request file checked. |
+| R-CK-3 | Jars are saved in the app-data folder (`cookies/<hash>.json`, owner-only), never in the collection. "Clear cookies (N)" in the collection menu empties the jar. | Linux | Automated tests. In the app: jar file `-rw-------`, emptied by Clear; no cookie files in the collection. |
+| R-CK-4 | A `Cookie` header set on the request is always sent, also with the jar off, and then replaces the jar's cookies. | Linux | Automated test for both switch positions. In the app: `Cookie: mine=1` sent with the jar off. |
 
 ### v1 extras
 

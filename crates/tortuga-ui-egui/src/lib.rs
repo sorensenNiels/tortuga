@@ -49,6 +49,8 @@ pub(crate) mod test_host {
         pub open: Vec<PathBuf>,
         pub spawned: std::rc::Rc<std::cell::Cell<usize>>,
         pub secrets: MemorySecretStore,
+        /// Saved cookie jars, by collection root.
+        pub cookies: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<PathBuf, String>>>,
     }
 
     impl Host for TestHost {
@@ -57,6 +59,15 @@ pub(crate) mod test_host {
         }
         fn secrets(&self) -> &dyn SecretStore {
             &self.secrets
+        }
+        fn load_cookies(&self, root: &std::path::Path) -> Result<Option<String>, String> {
+            Ok(self.cookies.borrow().get(root).cloned())
+        }
+        fn save_cookies(&self, root: &std::path::Path, json: &str) -> Result<(), String> {
+            self.cookies
+                .borrow_mut()
+                .insert(root.to_owned(), json.to_owned());
+            Ok(())
         }
         fn spawn(&self, _task: BoxTask) {
             self.spawned.set(self.spawned.get() + 1);

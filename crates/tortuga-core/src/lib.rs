@@ -4,6 +4,7 @@
 //! desktop app, a future web build and a future CLI runner.
 
 pub mod collection;
+pub mod cookies;
 pub mod error;
 pub mod format;
 pub mod http;
@@ -16,6 +17,7 @@ pub mod storage;
 pub mod vars;
 
 pub use collection::{Collection, Direction, Item};
+pub use cookies::CookieJar;
 pub use error::{Error, Result};
 pub use format::{Environment, Manifest, Server};
 pub use http::{Client, ClientSettings};

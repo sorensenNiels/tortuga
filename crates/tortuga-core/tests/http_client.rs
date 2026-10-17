@@ -393,3 +393,115 @@ async fn sends_filled_path_variables() {
         "/users/42/files/my%20report.pdf"
     );
 }
+
+/// A server that sets a session cookie at `/login` (via a redirect to `/home`)
+/// and answers 200 everywhere else.
+async fn server_with_login() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(path("/login"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("set-cookie", "session=abc; Path=/")
+                .insert_header("location", "/home"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn cookie_headers_received(requests: &[wiremock::Request], at: &str) -> Vec<String> {
+    requests
+        .iter()
+        .filter(|r| r.url.path() == at)
+        .flat_map(|r| header_values(r, "cookie"))
+        .collect()
+}
+
+/// R-CK-1: cookies from responses (also during redirects) are sent with later requests.
+#[tokio::test]
+async fn cookie_jar_keeps_cookies_set_during_a_redirect() {
+    let server = server_with_login().await;
+    let jar = tortuga_core::CookieJar::default();
+    let client = Client::default();
+    let login = Request::new(HttpMethod::Get, format!("{}/login", server.uri()));
+    let res = client
+        .execute_with_cookies(&login, Some(&jar))
+        .await
+        .expect("login");
+    assert_eq!(res.status, 200, "redirect followed");
+    let me = Request::new(HttpMethod::Get, format!("{}/me", server.uri()));
+    client
+        .execute_with_cookies(&me, Some(&jar))
+        .await
+        .expect("me");
+
+    let received = server.received_requests().await.expect("recording");
+    assert_eq!(
+        cookie_headers_received(&received, "/home"),
+        ["session=abc"],
+        "redirect hop"
+    );
+    assert_eq!(cookie_headers_received(&received, "/me"), ["session=abc"]);
+    assert_eq!(jar.len(), 1);
+}
+
+/// R-CK-2: with cookies off, nothing is sent from the jar or stored in it.
+#[tokio::test]
+async fn requests_with_cookies_off_ignore_the_jar() {
+    let server = server_with_login().await;
+    let jar = tortuga_core::CookieJar::default();
+    let client = Client::default();
+    let mut login = Request::new(HttpMethod::Get, format!("{}/login", server.uri()));
+    login.cookies = false;
+    client
+        .execute_with_cookies(&login, Some(&jar))
+        .await
+        .expect("login");
+    assert!(jar.is_empty(), "response cookies are not stored");
+
+    jar.store_response_cookies(
+        ["session=abc"],
+        &url::Url::parse(&server.uri()).expect("url"),
+    );
+    let mut me = Request::new(HttpMethod::Get, format!("{}/me", server.uri()));
+    me.cookies = false;
+    client
+        .execute_with_cookies(&me, Some(&jar))
+        .await
+        .expect("me");
+    let received = server.received_requests().await.expect("recording");
+    assert!(
+        cookie_headers_received(&received, "/me").is_empty(),
+        "jar cookies are not sent"
+    );
+}
+
+/// R-CK-4: a Cookie header set by hand is always sent, also with cookies off.
+#[tokio::test]
+async fn manual_cookie_header_is_always_sent() {
+    let server = server_with_login().await;
+    let jar = tortuga_core::CookieJar::default();
+    jar.store_response_cookies(
+        ["session=abc"],
+        &url::Url::parse(&server.uri()).expect("url"),
+    );
+    let client = Client::default();
+    for cookies in [true, false] {
+        let mut me = Request::new(HttpMethod::Get, format!("{}/me", server.uri()));
+        me.cookies = cookies;
+        me.headers.push(KeyValue::new("Cookie", "mine=1"));
+        client
+            .execute_with_cookies(&me, Some(&jar))
+            .await
+            .expect("me");
+    }
+    let received = server.received_requests().await.expect("recording");
+    assert_eq!(
+        cookie_headers_received(&received, "/me"),
+        ["mine=1", "mine=1"]
+    );
+}

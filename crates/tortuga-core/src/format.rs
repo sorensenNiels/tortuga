@@ -94,6 +94,9 @@ struct RequestFile {
     url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout_ms: Option<u64>,
+    /// Written only when off (R-CK-2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cookies: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     params: Vec<KeyValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -135,6 +138,7 @@ pub fn parse_request(text: &str, stem: &str) -> Result<(Request, Option<i64>), S
     request.server = file.server.filter(|s| !s.is_empty());
     request.headers = file.headers;
     request.timeout_ms = file.timeout_ms;
+    request.cookies = file.cookies.unwrap_or(true);
     request.auth = file.auth;
     // Values saved for the URL's path variables; stale ones are dropped (R-HTTP-10).
     request.path_vars = file.path_vars;
@@ -186,6 +190,7 @@ pub fn write_request(request: &Request, seq: Option<i64>) -> String {
         server: request.server.clone(),
         url: request.url.clone(),
         timeout_ms: request.timeout_ms,
+        cookies: (!request.cookies).then_some(false),
         params: request.params.clone(),
         // Only variables that have a value are worth writing.
         path_vars: request
@@ -354,6 +359,19 @@ content = """
             "only filled values are written: {text}"
         );
         assert_eq!(parse_request(&text, "x").expect("parse").0, r);
+    }
+
+    #[test]
+    fn cookies_off_is_saved_in_the_request_file() {
+        let mut r = Request::new(HttpMethod::Get, "https://a.test");
+        assert!(
+            !write_request(&r, None).contains("cookies"),
+            "on is the default"
+        );
+        r.cookies = false;
+        let text = write_request(&r, None);
+        assert!(text.contains("\ncookies = false\n"), "{text}");
+        assert!(!parse_request(&text, "x").expect("parse").0.cookies);
     }
 
     #[test]

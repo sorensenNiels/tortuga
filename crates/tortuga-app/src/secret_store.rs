@@ -6,7 +6,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use tortuga_core::secrets::{SecretKey, SecretStore};
 use tortuga_core::{Error, Result};
@@ -111,7 +111,7 @@ impl FileStore {
     fn write(&self) -> Result<()> {
         let text = toml::to_string(&*self.values.borrow())
             .map_err(|e| Error::SecretStore(e.to_string()))?;
-        write_private(&self.path, &text).map_err(|source| Error::Io {
+        crate::local_store::write_private(&self.path, &text).map_err(|source| Error::Io {
             path: self.path.clone(),
             source,
         })
@@ -138,32 +138,10 @@ impl SecretStore for FileStore {
     }
 }
 
-/// Writes `text` to `path` through a temporary file, so a failed write never
-/// leaves half a file. On Unix the file is created with mode 0600; on Windows
-/// the per-user app-data folder is already private to the user.
-fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::io::Write as _;
-
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("toml.tmp");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&tmp)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, path)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]

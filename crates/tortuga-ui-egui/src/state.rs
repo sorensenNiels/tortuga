@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use tortuga_core::CookieJar;
 use tortuga_core::secrets::SecretValues;
 use tortuga_core::storage::Storage;
 use tortuga_core::{Client, ClientSettings, Collection, Request, vars};
@@ -56,6 +57,10 @@ pub struct AppState {
     pub local: LocalState,
     /// Secret variable values of each open collection, loaded when it opens (R-VAR-3).
     pub secrets: BTreeMap<PathBuf, SecretValues>,
+    /// Cookie jar of each open collection (R-CK-1), saved locally (R-CK-3).
+    pub cookies: BTreeMap<PathBuf, CookieJar>,
+    /// Jar of the scratch request; kept for the session only.
+    pub scratch_cookies: CookieJar,
     /// Last problem or message to show the user; cleared when dismissed.
     pub notice: Option<String>,
 }
@@ -89,6 +94,7 @@ impl AppState {
         });
         let mut collections = Vec::new();
         let mut secrets = BTreeMap::new();
+        let mut cookies = BTreeMap::new();
         local
             .open_collections
             .retain(|root| match Collection::open(host.storage(), root) {
@@ -97,6 +103,9 @@ impl AppState {
                         Ok(values) => drop(secrets.insert(root.clone(), values)),
                         Err(e) => problems.push(format!("Could not read secret values: {e}")),
                     }
+                    let (jar, problem) = load_jar(host.as_ref(), root);
+                    problems.extend(problem);
+                    cookies.insert(root.clone(), jar);
                     collections.push(c);
                     true
                 }
@@ -112,6 +121,8 @@ impl AppState {
             collections,
             local,
             secrets,
+            cookies,
+            scratch_cookies: CookieJar::default(),
             notice: (!problems.is_empty()).then(|| problems.join("\n")),
         }
     }
@@ -184,6 +195,11 @@ impl AppState {
             Ok(values) => drop(self.secrets.insert(root.to_owned(), values)),
             Err(e) => self.notify(format!("Could not read secret values: {e}")),
         }
+        let (jar, problem) = load_jar(self.host.as_ref(), root);
+        if let Some(problem) = problem {
+            self.notify(problem);
+        }
+        self.cookies.insert(root.to_owned(), jar);
         self.collections.push(collection);
         self.local.open_collections.push(root.to_owned());
         self.save_local();
@@ -196,8 +212,10 @@ impl AppState {
     }
 
     pub fn close_collection(&mut self, root: &Path) {
+        self.save_cookies(Some(root));
         self.collections.retain(|c| c.root != root);
         self.secrets.remove(root);
+        self.cookies.remove(root);
         self.local.open_collections.retain(|r| r != root);
         self.local.active_environments.remove(&root_key(root));
         self.save_local();
@@ -237,6 +255,31 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// The cookie jar requests of the collection at `root` use; the scratch jar for `None` (R-CK-1).
+    pub fn cookie_jar(&self, root: Option<&Path>) -> CookieJar {
+        root.and_then(|r| self.cookies.get(r))
+            .unwrap_or(&self.scratch_cookies)
+            .clone()
+    }
+
+    /// Writes a collection's jar to local data after a send changed it (R-CK-3).
+    pub fn save_cookies(&mut self, root: Option<&Path>) {
+        let Some((root, jar)) = root.and_then(|r| self.cookies.get_key_value(r)) else {
+            return;
+        };
+        if let Err(e) = self.host.save_cookies(root, &jar.to_json()) {
+            self.notify(format!("Could not save cookies: {e}"));
+        }
+    }
+
+    /// Empties a collection's jar and saves it (R-CK-3).
+    pub fn clear_cookies(&mut self, root: &Path) {
+        if let Some(jar) = self.cookies.get(root) {
+            jar.clear();
+        }
+        self.save_cookies(Some(root));
+    }
+
     /// Stores new secret values for the collection at `root` on this machine (R-VAR-3).
     pub fn save_secrets(&mut self, root: &Path, values: SecretValues) -> Result<(), String> {
         let old = self.secrets.get(root).cloned().unwrap_or_default();
@@ -253,6 +296,21 @@ impl AppState {
     }
 }
 
+/// Loads the saved jar of `root`; a broken file gives an empty jar and a problem to report.
+fn load_jar(host: &dyn Host, root: &Path) -> (CookieJar, Option<String>) {
+    match host.load_cookies(root) {
+        Ok(None) => (CookieJar::default(), None),
+        Ok(Some(text)) => match CookieJar::from_json(&text) {
+            Ok(jar) => (jar, None),
+            Err(e) => (CookieJar::default(), Some(e.to_string())),
+        },
+        Err(e) => (
+            CookieJar::default(),
+            Some(format!("Could not read saved cookies: {e}")),
+        ),
+    }
+}
+
 fn root_key(root: &Path) -> String {
     root.to_string_lossy().into_owned()
 }
@@ -260,6 +318,52 @@ fn root_key(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-CK-3: jars are saved as local data and come back when the collection opens again.
+    #[test]
+    fn cookie_jars_are_saved_locally_and_cleared() {
+        use tortuga_core::storage::FsStorage;
+
+        let root = std::env::temp_dir().join(format!("tortuga-cookies-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Collection::create(&FsStorage, &root, "C").expect("create");
+        let host = crate::test_host::TestHost {
+            open: vec![root.clone()],
+            ..Default::default()
+        };
+        let saved = host.cookies.clone();
+
+        let mut state = AppState::new(Box::new(host));
+        let url = url::Url::parse("http://api.test/").expect("url");
+        state
+            .cookie_jar(Some(&root))
+            .store_response_cookies(["session=abc"], &url);
+        state.save_cookies(Some(&root));
+        assert!(saved.borrow()[&root].contains("session"));
+
+        let reopened = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![root.clone()],
+            cookies: saved.clone(),
+            ..Default::default()
+        }));
+        assert_eq!(reopened.cookie_jar(Some(&root)).len(), 1);
+
+        state.clear_cookies(&root);
+        assert!(state.cookie_jar(Some(&root)).is_empty());
+        assert!(
+            !saved.borrow()[&root].contains("session"),
+            "cleared jar is saved"
+        );
+        assert!(
+            !std::fs::read_dir(&root).expect("collection dir").any(|e| e
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("cookie")),
+            "nothing about cookies in the collection directory"
+        );
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
 
     #[test]
     fn keys_follow_moved_items() {

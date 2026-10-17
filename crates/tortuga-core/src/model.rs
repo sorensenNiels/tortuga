@@ -209,6 +209,9 @@ pub struct Request {
     /// `None` = use the collection's default auth (R-HTTP-5, R-COL-4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<Auth>,
+    /// Use the collection's cookie jar: send its cookies and store new ones (R-CK-2).
+    #[serde(default = "enabled_by_default", skip_serializing_if = "is_true")]
+    pub cookies: bool,
 }
 
 impl Default for Request {
@@ -232,6 +235,7 @@ impl Request {
             body: RequestBody::None,
             timeout_ms: None,
             auth: None,
+            cookies: true,
         };
         request.sync_path_variables();
         request
@@ -395,6 +399,7 @@ mod tests {
         req.auth = Some(Auth::Bearer {
             token: "{{token}}".into(),
         });
+        req.cookies = false;
 
         let json = serde_json::to_string(&req).expect("serialize");
         let back: Request = serde_json::from_str(&json).expect("deserialize");

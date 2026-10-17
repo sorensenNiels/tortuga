@@ -38,6 +38,8 @@ pub enum SidebarAction {
     EditEnvironments(PathBuf),
     /// Default headers and auth of a collection (R-COL-4).
     EditDefaults(PathBuf),
+    /// Empty the collection's cookie jar (R-CK-3).
+    ClearCookies(PathBuf),
     Reload(PathBuf),
     Close(PathBuf),
     OpenFolder,
@@ -143,7 +145,7 @@ pub fn sidebar(
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for c in &state.collections {
-                ui.push_id(&c.root, |ui| collection(ui, c, &mut tree));
+                ui.push_id(&c.root, |ui| collection(ui, c, state.cookie_jar(Some(&c.root)).len(), &mut tree));
             }
             if state.collections.is_empty() {
                 ui.add_space(4.0);
@@ -157,13 +159,13 @@ pub fn sidebar(
     tree.actions
 }
 
-fn collection(ui: &mut Ui, c: &Collection, tree: &mut Tree<'_>) {
+fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<'_>) {
     let root = c.root.clone();
     let key = ItemKey::new(&root, "");
     let collapsed = tree.st.collapsed.contains(&key);
     let read_only = c.read_only;
 
-    let menu = |ui: &mut Ui| collection_menu(ui, c);
+    let menu = |ui: &mut Ui| collection_menu(ui, c, cookie_count);
     if is_renaming(tree, &key) {
         if let Some(name) = rename_row(ui, 0, tree, &key) {
             tree.actions.push(SidebarAction::RenameCollection {
@@ -345,7 +347,7 @@ fn apply(tree: &mut Tree<'_>, choice: Option<MenuChoice>, key: &ItemKey, name: &
 }
 
 /// Actions for a collection.
-fn collection_menu(ui: &mut Ui, c: &Collection) -> Option<MenuChoice> {
+fn collection_menu(ui: &mut Ui, c: &Collection, cookie_count: usize) -> Option<MenuChoice> {
     let root = &c.root;
     let mut choice = None;
     let mut item = |ui: &mut Ui, label: String, pick: &dyn Fn() -> MenuChoice| {
@@ -375,12 +377,24 @@ fn collection_menu(ui: &mut Ui, c: &Collection) -> Option<MenuChoice> {
     item(ui, "Defaults (headers, auth)…".into(), &|| {
         MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
     });
+    let clear = ui
+        .add_enabled(
+            cookie_count > 0,
+            egui::Button::new(format!("Clear cookies ({cookie_count})")),
+        )
+        .on_hover_text("Cookies are kept on this machine, never in the collection");
+    let clear_clicked = clear.clicked();
     item(ui, "Reload from disk".into(), &|| {
         MenuChoice::Action(SidebarAction::Reload(root.clone()))
     });
     item(ui, "Close".into(), &|| {
         MenuChoice::Action(SidebarAction::Close(root.clone()))
     });
+    if clear_clicked {
+        return Some(MenuChoice::Action(SidebarAction::ClearCookies(
+            root.clone(),
+        )));
+    }
     choice
 }
 

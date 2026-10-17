@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,16 @@ pub trait Host {
     /// Set when secrets can't go to the OS credential store, e.g. "kept in a file instead" (R-LOC-2).
     fn secrets_warning(&self) -> Option<&str> {
         None
+    }
+
+    /// The saved cookie jar (JSON) of the collection at `root`, `None` if there is none (R-CK-3).
+    fn load_cookies(&self, _root: &Path) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    /// Saves the cookie jar of the collection at `root`, outside the collection (R-CK-3, R-LOC-1).
+    fn save_cookies(&self, _root: &Path, _json: &str) -> Result<(), String> {
+        Ok(())
     }
 
     /// Runs `task` in the background. The UI cancels it by dropping it (it is abortable).

@@ -15,6 +15,7 @@ futures-util.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+url.workspace = true
 egui_kittest.workspace = true
 
 [lints]

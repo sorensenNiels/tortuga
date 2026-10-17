@@ -9,6 +9,7 @@ use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use web_time::Instant;
 
+use crate::cookies::CookieJar;
 use crate::model::{HttpMethod, KeyValue, Request, RequestBody, Response};
 use crate::{Error, Result, query};
 
@@ -47,6 +48,11 @@ impl ClientSettings {
 pub struct Client {
     inner: reqwest::Client,
     settings: ClientSettings,
+    /// One client per cookie jar, created on first use (R-CK-1). Each keeps its
+    /// jar alive, so the key (the jar's address) cannot be reused by another jar.
+    #[cfg(not(target_arch = "wasm32"))]
+    jar_clients:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, reqwest::Client>>>,
 }
 
 impl Default for Client {
@@ -57,26 +63,63 @@ impl Default for Client {
 
 impl Client {
     pub fn new(settings: ClientSettings) -> Result<Self> {
-        let builder = reqwest::Client::builder();
-        #[cfg(not(target_arch = "wasm32"))]
-        let builder = builder
-            .redirect(if settings.follow_redirects {
-                reqwest::redirect::Policy::limited(ClientSettings::MAX_REDIRECTS)
-            } else {
-                reqwest::redirect::Policy::none()
-            })
-            .tls_danger_accept_invalid_certs(!settings.verify_tls);
-        let inner = builder
+        let inner = builder(&settings)
             .build()
             .map_err(|e| Error::ClientSetup(e.to_string()))?;
-        Ok(Self { inner, settings })
+        Ok(Self {
+            inner,
+            settings,
+            #[cfg(not(target_arch = "wasm32"))]
+            jar_clients: std::sync::Arc::default(),
+        })
+    }
+
+    /// The client that sends `request`: with `jar` unless the request has cookies
+    /// switched off (R-CK-2). Without a jar, no cookies are sent or stored.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn client_for(&self, request: &Request, jar: Option<&CookieJar>) -> Result<reqwest::Client> {
+        let Some(jar) = jar.filter(|_| request.cookies) else {
+            return Ok(self.inner.clone());
+        };
+        let mut clients = self
+            .jar_clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(client) = clients.get(&jar.id()) {
+            return Ok(client.clone());
+        }
+        let client = builder(&self.settings)
+            .cookie_provider(std::sync::Arc::new(jar.clone()))
+            .build()
+            .map_err(|e| Error::ClientSetup(e.to_string()))?;
+        clients.insert(jar.id(), client.clone());
+        Ok(client)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[expect(clippy::unnecessary_wraps, reason = "same signature as native")]
+    fn client_for(&self, _request: &Request, _jar: Option<&CookieJar>) -> Result<reqwest::Client> {
+        Ok(self.inner.clone())
     }
 
     pub fn settings(&self) -> &ClientSettings {
         &self.settings
     }
 
+    /// Sends `request` without a cookie jar.
     pub async fn execute(&self, request: &Request) -> Result<Response> {
+        self.execute_with_cookies(request, None).await
+    }
+
+    /// Sends `request`, using and filling `jar` unless the request has cookies
+    /// switched off (R-CK-1, R-CK-2). A `Cookie` header set on the request is
+    /// always sent and then replaces the jar's cookies (R-CK-4).
+    pub async fn execute_with_cookies(
+        &self,
+        request: &Request,
+        jar: Option<&CookieJar>,
+    ) -> Result<Response> {
+        let client = self.client_for(request, jar)?;
         let full_url = query::join_url(&request.url, &request.params);
         let url = url::Url::parse(full_url.trim()).map_err(|source| Error::InvalidUrl {
             url: full_url.clone(),
@@ -86,8 +129,7 @@ impl Client {
         let timeout = request
             .timeout()
             .unwrap_or_else(|| self.settings.default_timeout());
-        let mut builder = self
-            .inner
+        let mut builder = client
             .request(to_reqwest_method(request.method), url)
             .timeout(timeout);
 
@@ -137,6 +179,21 @@ impl Client {
             elapsed,
         })
     }
+}
+
+fn builder(settings: &ClientSettings) -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder();
+    #[cfg(not(target_arch = "wasm32"))]
+    let builder = builder
+        .redirect(if settings.follow_redirects {
+            reqwest::redirect::Policy::limited(ClientSettings::MAX_REDIRECTS)
+        } else {
+            reqwest::redirect::Policy::none()
+        })
+        .tls_danger_accept_invalid_certs(!settings.verify_tls);
+    #[cfg(target_arch = "wasm32")]
+    let _ = settings;
+    builder
 }
 
 fn map_send_error(err: &reqwest::Error, timeout: Duration) -> Error {

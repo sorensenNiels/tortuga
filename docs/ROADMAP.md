@@ -59,7 +59,7 @@ A requirement moves to [FEATURES.md](FEATURES.md) once it is implemented and ver
 | **M2: Collections on disk** | Organise requests in collections that are saved as TOML files and can be committed to git. | R-COL-1, 2, 3, 5, 6 · R-GIT-1 to 8 · R-P-1 | Done (see FEATURES.md) |
 | **M3: Environments, servers & variables** | Switch between dev/staging/prod: each server gets its own address per environment, and `{{variables}}` fill in the rest. | R-SRV-1 to 5 · R-VAR-1, 2, 4, 5, 7 · R-COL-4 (variables) | Done (see FEATURES.md) |
 | **M4: Auth & secrets** | Share collections without leaking credentials. | R-VAR-3 · R-HTTP-5 · R-COL-4 (headers, auth) · R-LOC-1, 2 | Done, except R-LOC-2 on a real OS credential store (see FEATURES.md) |
-| **M5: Cookies** | Session-based APIs work, with per-request control. | R-CK-1 to 4 | |
+| **M5: Cookies** | Session-based APIs work, with per-request control. | R-CK-1 to 4 | Done (see FEATURES.md) |
 | **M6: Live git collaboration** | Teammates' changes appear automatically, and the git state is visible. | R-GIT-10 to 14 | |
 | **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | |
 | **UI: egui** | Move the UI from Dioxus to egui (`tortuga-ui-egui`) with a modern look. | — | Done (2026-10-17) |

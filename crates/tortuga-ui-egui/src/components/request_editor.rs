@@ -55,6 +55,10 @@ pub struct EditorContext<'a> {
     pub collection_auth: Option<&'a Auth>,
     /// Collection headers this request inherits (R-COL-4), shown read-only.
     pub inherited_headers: &'a [KeyValue],
+    /// Cookies in the jar this request uses (R-CK-1).
+    pub cookie_count: usize,
+    /// The request belongs to a collection (its jar is saved); `false` for the scratch request.
+    pub in_collection: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +164,7 @@ pub fn request_editor(
                 }
             }
             Tab::Body => body_editor(ui, request, &mut st.body, cx.undefined),
-            Tab::Options => request_options(ui, request, st, cx.default_timeout_ms),
+            Tab::Options => request_options(ui, request, st, cx),
         });
 
     action
@@ -377,7 +381,13 @@ fn url_field(
 }
 
 /// Per-request options: timeout (R-HTTP-7).
-fn request_options(ui: &mut Ui, request: &mut Request, st: &mut EditorState, default_ms: u64) {
+fn request_options(
+    ui: &mut Ui,
+    request: &mut Request,
+    st: &mut EditorState,
+    cx: EditorContext<'_>,
+) {
+    let default_ms = cx.default_timeout_ms;
     ui.horizontal(|ui| {
         ui.label("Timeout (ms)");
         let edit = TextEdit::singleline(&mut st.timeout_text)
@@ -389,6 +399,26 @@ fn request_options(ui: &mut Ui, request: &mut Request, st: &mut EditorState, def
         }
     });
     theme::hint(ui, "Leave empty to use the default from Settings.");
+
+    // R-CK-2: per request, saved in the request file.
+    ui.add_space(12.0);
+    let jar = if cx.in_collection {
+        "this collection's cookie jar"
+    } else {
+        "the scratch cookie jar (kept until the app closes)"
+    };
+    ui.checkbox(&mut request.cookies, format!("Use cookies from {jar}"));
+    let stored = match cx.cookie_count {
+        1 => "1 cookie stored".to_owned(),
+        n => format!("{n} cookies stored"),
+    };
+    theme::hint(
+        ui,
+        format!(
+            "{stored}. When off, no cookies from the jar are sent and cookies in the response are not \
+             stored. A Cookie header you add yourself is always sent."
+        ),
+    );
 }
 
 /// A positive number of milliseconds; anything else means "use the default".
@@ -421,6 +451,8 @@ mod tests {
                         default_timeout_ms: 1000,
                         collection_auth: None,
                         inherited_headers: &[],
+                        cookie_count: 0,
+                        in_collection: false,
                     },
                 );
             });

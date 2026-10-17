@@ -19,11 +19,13 @@ egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"
 # OpenGL (glow) instead of the default wgpu: smaller, faster to build, and works under WSLg.
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli", "deflate", "system-proxy"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli", "deflate", "system-proxy", "cookies"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 percent-encoding = "2"
 base64 = "0.22"
+# Cookie jars (R-CK-1); the same version reqwest uses.
+cookie_store = "0.22"
 thiserror = "2"
 url = { version = "2", features = ["serde"] }
 tracing = "0.1"
