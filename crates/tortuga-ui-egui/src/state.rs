@@ -1,10 +1,13 @@
 //! App-wide state: settings, the HTTP client and the open collections.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, OnceLock};
 
 use tortuga_core::CookieJar;
+use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretValues;
 use tortuga_core::storage::Storage;
 use tortuga_core::{Client, ClientSettings, Collection, Request, vars};
@@ -61,6 +64,9 @@ pub struct AppState {
     pub cookies: BTreeMap<PathBuf, CookieJar>,
     /// Jar of the scratch request; kept for the session only.
     pub scratch_cookies: CookieJar,
+    /// Git status of each open collection that is in a git repository (R-GIT-12).
+    pub git: BTreeMap<PathBuf, GitStatus>,
+    live: Live,
     /// Last problem or message to show the user; cleared when dismissed.
     pub notice: Option<String>,
 }
@@ -114,7 +120,7 @@ impl AppState {
                     false
                 }
             });
-        Self {
+        let mut state = Self {
             host,
             settings,
             client,
@@ -123,8 +129,15 @@ impl AppState {
             secrets,
             cookies,
             scratch_cookies: CookieJar::default(),
+            git: BTreeMap::new(),
+            live: Live::default(),
             notice: (!problems.is_empty()).then(|| problems.join("\n")),
+        };
+        let roots: Vec<PathBuf> = state.collections.iter().map(|c| c.root.clone()).collect();
+        for root in roots {
+            state.start_watching(&root);
         }
+        state
     }
 
     pub fn storage(&self) -> &dyn Storage {
@@ -201,6 +214,7 @@ impl AppState {
         }
         self.cookies.insert(root.to_owned(), jar);
         self.collections.push(collection);
+        self.start_watching(root);
         self.local.open_collections.push(root.to_owned());
         self.save_local();
         Ok(())
@@ -213,6 +227,8 @@ impl AppState {
 
     pub fn close_collection(&mut self, root: &Path) {
         self.save_cookies(Some(root));
+        self.host.unwatch(root);
+        self.git.remove(root);
         self.collections.retain(|c| c.root != root);
         self.secrets.remove(root);
         self.cookies.remove(root);
@@ -255,6 +271,79 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    // ------------------------------------------------------------ live changes (M6)
+
+    /// Lets background threads wake the UI. Call once the egui context exists.
+    pub fn set_repaint(&self, ctx: &egui::Context) {
+        let _ = self.live.repaint.set(ctx.clone());
+    }
+
+    /// Watches a collection's files and git state (R-GIT-10) and reads its git status.
+    fn start_watching(&mut self, root: &Path) {
+        let tx = self.live.changed_tx.clone();
+        let repaint = self.live.repaint.clone();
+        let changed_root = root.to_owned();
+        let on_change = move || {
+            let _ = tx.send(changed_root.clone());
+            if let Some(ctx) = repaint.get() {
+                ctx.request_repaint();
+            }
+        };
+        if let Err(e) = self.host.watch(root, Box::new(on_change)) {
+            self.notify(format!(
+                "Changes on disk won't show automatically (use \u{201c}Reload from disk\u{201d}): {e}"
+            ));
+        }
+        self.refresh_git(root);
+    }
+
+    /// Reads the git status of a collection again, in the background (R-GIT-12).
+    pub fn refresh_git(&mut self, root: &Path) {
+        if !self.live.git_in_flight.insert(root.to_owned()) {
+            // Already reading: read once more when that finishes, to see the latest state.
+            self.live.git_again.insert(root.to_owned());
+            return;
+        }
+        let tx = self.live.git_tx.clone();
+        let repaint = self.live.repaint.clone();
+        let for_root = root.to_owned();
+        self.host.git_status(
+            root,
+            Box::new(move |result| {
+                let _ = tx.send((for_root, result));
+                if let Some(ctx) = repaint.get() {
+                    ctx.request_repaint();
+                }
+            }),
+        );
+    }
+
+    /// Takes in finished git statuses and returns the collections whose files changed
+    /// on disk since the last call (each once).
+    pub fn take_changes(&mut self) -> Vec<PathBuf> {
+        while let Ok((root, result)) = self.live.git_rx.try_recv() {
+            self.live.git_in_flight.remove(&root);
+            match result {
+                Ok(Some(status)) => drop(self.git.insert(root.clone(), status)),
+                Ok(None) => drop(self.git.remove(&root)),
+                Err(e) => {
+                    self.git.remove(&root);
+                    self.notify(format!("Could not read the git status: {e}"));
+                }
+            }
+            if self.live.git_again.remove(&root) && self.collection(&root).is_some() {
+                self.refresh_git(&root);
+            }
+        }
+        let mut changed = BTreeSet::new();
+        while let Ok(root) = self.live.changed_rx.try_recv() {
+            if self.collection(&root).is_some() {
+                changed.insert(root);
+            }
+        }
+        changed.into_iter().collect()
+    }
+
     /// The cookie jar requests of the collection at `root` use; the scratch jar for `None` (R-CK-1).
     pub fn cookie_jar(&self, root: Option<&Path>) -> CookieJar {
         root.and_then(|r| self.cookies.get(r))
@@ -292,6 +381,33 @@ impl AppState {
     fn save_local(&mut self) {
         if let Err(e) = self.host.save_local(&self.local) {
             self.notify(e);
+        }
+    }
+}
+
+/// Results from background threads: changed collections and finished git statuses.
+struct Live {
+    changed_tx: Sender<PathBuf>,
+    changed_rx: Receiver<PathBuf>,
+    git_tx: Sender<(PathBuf, Result<Option<GitStatus>, String>)>,
+    git_rx: Receiver<(PathBuf, Result<Option<GitStatus>, String>)>,
+    repaint: Arc<OnceLock<egui::Context>>,
+    git_in_flight: BTreeSet<PathBuf>,
+    git_again: BTreeSet<PathBuf>,
+}
+
+impl Default for Live {
+    fn default() -> Self {
+        let (changed_tx, changed_rx) = channel();
+        let (git_tx, git_rx) = channel();
+        Self {
+            changed_tx,
+            changed_rx,
+            git_tx,
+            git_rx,
+            repaint: Arc::default(),
+            git_in_flight: BTreeSet::new(),
+            git_again: BTreeSet::new(),
         }
     }
 }

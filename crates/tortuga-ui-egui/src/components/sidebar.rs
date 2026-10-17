@@ -1,9 +1,10 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::text::{CCursor, CCursorRange};
 use egui::{Atom, Button, Key, RichText, ScrollArea, Sides, TextEdit, Ui};
 use tortuga_core::collection::Direction;
+use tortuga_core::git::{FileStatus, GitStatus};
 use tortuga_core::{Collection, Item};
 
 use crate::state::{AppState, ItemKey};
@@ -40,6 +41,9 @@ pub enum SidebarAction {
     EditDefaults(PathBuf),
     /// Empty the collection's cookie jar (R-CK-3).
     ClearCookies(PathBuf),
+    /// Open the collection folder outside the app (R-GIT-13).
+    OpenInFileManager(PathBuf),
+    OpenInTerminal(PathBuf),
     Reload(PathBuf),
     Close(PathBuf),
     OpenFolder,
@@ -88,6 +92,11 @@ struct Tree<'a> {
     st: &'a mut SidebarState,
     selected: Option<&'a ItemKey>,
     dirty: &'a HashSet<ItemKey>,
+    /// Requests whose file changed on disk while they had unsaved edits (R-GIT-11).
+    conflicts: &'a HashSet<ItemKey>,
+    /// Git status of the collection being drawn (R-GIT-12).
+    git: Option<&'a GitStatus>,
+    can_open_folders: bool,
     actions: Vec<SidebarAction>,
 }
 
@@ -98,11 +107,15 @@ pub fn sidebar(
     st: &mut SidebarState,
     selected: Option<&ItemKey>,
     dirty: &HashSet<ItemKey>,
+    conflicts: &HashSet<ItemKey>,
 ) -> Vec<SidebarAction> {
     let mut tree = Tree {
         st,
         selected,
         dirty,
+        conflicts,
+        git: None,
+        can_open_folders: state.host.can_open_folders(),
         actions: Vec::new(),
     };
 
@@ -145,7 +158,10 @@ pub fn sidebar(
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             for c in &state.collections {
-                ui.push_id(&c.root, |ui| collection(ui, c, state.cookie_jar(Some(&c.root)).len(), &mut tree));
+                ui.push_id(&c.root, |ui| {
+                    tree.git = state.git.get(&c.root);
+                    collection(ui, c, state.cookie_jar(Some(&c.root)).len(), &mut tree);
+                });
             }
             if state.collections.is_empty() {
                 ui.add_space(4.0);
@@ -165,7 +181,8 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<
     let collapsed = tree.st.collapsed.contains(&key);
     let read_only = c.read_only;
 
-    let menu = |ui: &mut Ui| collection_menu(ui, c, cookie_count);
+    let can_open = tree.can_open_folders;
+    let menu = |ui: &mut Ui| collection_menu(ui, c, cookie_count, can_open);
     if is_renaming(tree, &key) {
         if let Some(name) = rename_row(ui, 0, tree, &key) {
             tree.actions.push(SidebarAction::RenameCollection {
@@ -181,9 +198,22 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<
         if read_only {
             atoms.push(Atom::from(RichText::new("read-only").small().weak()));
         }
+        // R-GIT-12: the current branch.
+        let branch = tree.git.and_then(|g| g.branch.clone());
+        if let Some(branch) = &branch {
+            atoms.push(Atom::from(
+                RichText::new(branch)
+                    .small()
+                    .color(theme::palette(ui).muted),
+            ));
+        }
         atoms.push(Atom::grow());
         let (row, from_button) = tree_row(ui, 0, false, atoms, |ui| menu_button(ui, menu));
-        let row = row.on_hover_text(root.display().to_string());
+        let mut hover = root.display().to_string();
+        if let Some(branch) = branch {
+            hover = format!("{hover}\nGit branch: {branch}");
+        }
+        let row = row.on_hover_text(hover);
         if row.clicked() {
             toggle(&mut tree.st.collapsed, &key);
         }
@@ -192,7 +222,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<
     }
 
     if !collapsed {
-        items(ui, &root, &c.items, 1, read_only, tree);
+        items(ui, &root, Path::new(""), &c.items, 1, read_only, tree);
         for b in &c.broken_environments {
             let label = Atom::from(format!("⚠ {}", b.path.display()));
             let (row, ()) = tree_row(ui, 1, false, [label, Atom::grow()], |_| {});
@@ -210,6 +240,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<
 fn items(
     ui: &mut Ui,
     root: &std::path::Path,
+    folder: &Path,
     list: &[Item],
     depth: usize,
     read_only: bool,
@@ -219,6 +250,58 @@ fn items(
         ui.push_id(item.path(), |ui| {
             tree_item(ui, root, item, depth, read_only, tree);
         });
+    }
+    // Requests deleted in git are still shown where they were (R-GIT-12, D10).
+    let deleted = tree
+        .git
+        .map(|g| g.deleted_requests(folder))
+        .unwrap_or_default();
+    for path in deleted
+        .iter()
+        .filter(|p| !list.iter().any(|i| i.path() == p.as_path()))
+    {
+        ui.push_id(path, |ui| deleted_row(ui, path, depth));
+    }
+}
+
+/// A request whose file was deleted (in git terms): greyed and struck through.
+fn deleted_row(ui: &mut Ui, path: &Path, depth: usize) {
+    let p = theme::palette(ui);
+    let name = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let atoms = [
+        Atom::from(RichText::new("     ").monospace().size(10.5)),
+        Atom::from(RichText::new(name).strikethrough().color(p.muted)),
+        Atom::grow(),
+        git_marker(ui, FileStatus::Deleted),
+    ];
+    let (row, ()) = tree_row(ui, depth, false, atoms, |_| {});
+    row.on_hover_text(
+        "Deleted since the last commit. Commit the deletion, or restore the file with git.",
+    );
+}
+
+/// The one-letter git marker of a row (R-GIT-12).
+fn git_marker(ui: &Ui, status: FileStatus) -> Atom<'static> {
+    let p = theme::palette(ui);
+    let (letter, color) = match status {
+        FileStatus::Modified => ("M", p.redirect),
+        FileStatus::New => ("N", p.ok),
+        FileStatus::Deleted => ("D", p.fail),
+        FileStatus::Conflicted => ("C", p.purple),
+    };
+    Atom::from(theme::semibold(letter).size(11.0).color(color))
+}
+
+fn git_description(status: FileStatus) -> &'static str {
+    match status {
+        FileStatus::Modified => "Git: modified since the last commit",
+        FileStatus::New => "Git: new, not committed yet",
+        FileStatus::Deleted => "Git: deleted",
+        FileStatus::Conflicted => "Git: merge conflict — fix it, then commit",
     }
 }
 
@@ -233,25 +316,7 @@ fn tree_item(
     let key = ItemKey::new(root, item.path());
 
     if let Item::Broken(b) = item {
-        let file = b.path.file_name().unwrap_or_default().to_string_lossy();
-        let atoms = [Atom::from(format!("⚠ {file}")), Atom::grow()];
-        let (row, delete) = tree_row(ui, depth, false, atoms, |ui| {
-            !read_only
-                && ui
-                    .add(theme::icon_button(ui, "🗙"))
-                    .on_hover_text("Delete this file")
-                    .clicked()
-        });
-        if row.on_hover_text(&b.error).clicked() {
-            tree.actions.push(SidebarAction::ShowError(format!(
-                "Could not read {}: {}. Fix the file in an editor, then use “Reload from disk”.",
-                b.path.display(),
-                b.error
-            )));
-        }
-        if delete {
-            tree.actions.push(SidebarAction::Delete(key));
-        }
+        broken_row(ui, b, key, depth, read_only, tree);
         return;
     }
 
@@ -294,6 +359,20 @@ fn tree_item(
         if dirty {
             atoms.push(Atom::from(RichText::new("⏺").size(9.0).color(p.accent)));
         }
+        let conflict = tree.conflicts.contains(&key);
+        if conflict {
+            atoms.push(Atom::from(RichText::new("⚠").color(p.redirect)));
+        }
+        let git_status = tree.git.and_then(|g| {
+            if is_folder {
+                g.folder(&key.path)
+            } else {
+                g.file(&key.path)
+            }
+        });
+        if let Some(status) = git_status {
+            atoms.push(git_marker(ui, status));
+        }
         let selected = tree.selected == Some(&key);
         let menu = |ui: &mut Ui| item_menu(ui, &key, is_folder);
         let (mut row, from_button) = tree_row(ui, depth, selected, atoms, |ui| {
@@ -303,10 +382,20 @@ fn tree_item(
                 menu_button(ui, menu)
             }
         });
+        let mut hover: Vec<&str> = Vec::new();
         if let Some(err) = folder_error {
-            row = row.on_hover_text(err);
+            hover.push(err);
+        }
+        if conflict {
+            hover.push("Changed on disk while you had unsaved edits: open it to choose");
         } else if dirty {
-            row = row.on_hover_text("Unsaved changes");
+            hover.push("Unsaved changes");
+        }
+        if let Some(status) = git_status {
+            hover.push(git_description(status));
+        }
+        if !hover.is_empty() {
+            row = row.on_hover_text(hover.join("\n"));
         }
         if row.clicked() {
             if is_folder {
@@ -326,7 +415,7 @@ fn tree_item(
     if let Item::Folder(f) = item
         && !collapsed
     {
-        items(ui, root, &f.items, depth + 1, read_only, tree);
+        items(ui, root, &key.path, &f.items, depth + 1, read_only, tree);
     }
 }
 
@@ -347,7 +436,12 @@ fn apply(tree: &mut Tree<'_>, choice: Option<MenuChoice>, key: &ItemKey, name: &
 }
 
 /// Actions for a collection.
-fn collection_menu(ui: &mut Ui, c: &Collection, cookie_count: usize) -> Option<MenuChoice> {
+fn collection_menu(
+    ui: &mut Ui,
+    c: &Collection,
+    cookie_count: usize,
+    can_open_folders: bool,
+) -> Option<MenuChoice> {
     let root = &c.root;
     let mut choice = None;
     let mut item = |ui: &mut Ui, label: String, pick: &dyn Fn() -> MenuChoice| {
@@ -387,6 +481,15 @@ fn collection_menu(ui: &mut Ui, c: &Collection, cookie_count: usize) -> Option<M
     item(ui, "Reload from disk".into(), &|| {
         MenuChoice::Action(SidebarAction::Reload(root.clone()))
     });
+    // R-GIT-13: commit, pull and push happen outside the app.
+    if can_open_folders {
+        item(ui, "Open in file manager".into(), &|| {
+            MenuChoice::Action(SidebarAction::OpenInFileManager(root.clone()))
+        });
+        item(ui, "Open in terminal".into(), &|| {
+            MenuChoice::Action(SidebarAction::OpenInTerminal(root.clone()))
+        });
+    }
     item(ui, "Close".into(), &|| {
         MenuChoice::Action(SidebarAction::Close(root.clone()))
     });
@@ -396,6 +499,39 @@ fn collection_menu(ui: &mut Ui, c: &Collection, cookie_count: usize) -> Option<M
         )));
     }
     choice
+}
+
+/// A request file that could not be read (R-GIT-8), e.g. with merge-conflict markers.
+fn broken_row(
+    ui: &mut Ui,
+    b: &tortuga_core::collection::Broken,
+    key: ItemKey,
+    depth: usize,
+    read_only: bool,
+    tree: &mut Tree<'_>,
+) {
+    let file = b.path.file_name().unwrap_or_default().to_string_lossy();
+    let mut atoms = vec![Atom::from(format!("⚠ {file}")), Atom::grow()];
+    if let Some(status) = tree.git.and_then(|g| g.file(&key.path)) {
+        atoms.push(git_marker(ui, status));
+    }
+    let (row, delete) = tree_row(ui, depth, false, atoms, |ui| {
+        !read_only
+            && ui
+                .add(theme::icon_button(ui, "🗙"))
+                .on_hover_text("Delete this file")
+                .clicked()
+    });
+    if row.on_hover_text(&b.error).clicked() {
+        tree.actions.push(SidebarAction::ShowError(format!(
+            "Could not read {}: {}. Fix the file in an editor, then use “Reload from disk”.",
+            b.path.display(),
+            b.error
+        )));
+    }
+    if delete {
+        tree.actions.push(SidebarAction::Delete(key));
+    }
 }
 
 /// Actions for a request or folder.

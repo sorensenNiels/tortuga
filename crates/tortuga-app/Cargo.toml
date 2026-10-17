@@ -22,6 +22,9 @@ serde.workspace = true
 tokio = { workspace = true, optional = true }
 directories = { workspace = true, optional = true }
 keyring = { workspace = true, optional = true }
+notify-debouncer-mini = { workspace = true, optional = true }
+gix = { workspace = true, optional = true }
+open = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 
 # GTK backend on Linux: the xdg-desktop-portal backend fails silently where no portal runs (e.g. WSL).
@@ -37,7 +40,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 
 [features]
 default = ["desktop"]
-desktop = ["dep:tokio", "dep:rfd", "dep:directories", "dep:toml", "dep:keyring"]
+desktop = ["dep:tokio", "dep:rfd", "dep:directories", "dep:toml", "dep:keyring", "dep:notify-debouncer-mini", "dep:gix", "dep:open"]
 web = ["dep:wasm-bindgen-futures"]
 
 [lints]

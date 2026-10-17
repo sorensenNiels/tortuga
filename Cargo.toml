@@ -36,6 +36,10 @@ rfd = { version = "0.17", default-features = false }
 directories = "6"
 # OS credential store for secret variables (R-LOC-2): Keychain, Credential Manager, Secret Service.
 keyring = "4.2"
+# Live git collaboration (M6): file watching, git status without a git executable, opening folders.
+notify-debouncer-mini = "0.7"
+gix = { version = "0.89", default-features = false, features = ["status", "sha1", "max-performance-safe"] }
+open = "5"
 wasm-bindgen-futures = "0.4"
 
 # dev / test

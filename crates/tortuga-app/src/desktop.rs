@@ -8,7 +8,7 @@ use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
 use tortuga_ui_egui::{BoxTask, Host, LocalState, TortugaUi};
 
-use crate::{App, dialogs, local_store, secret_store};
+use crate::{App, dialogs, folders, git, local_store, secret_store, watch};
 
 pub fn run() -> eframe::Result {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -34,6 +34,7 @@ pub fn run() -> eframe::Result {
                 runtime,
                 secrets,
                 secrets_warning,
+                watchers: watch::Watchers::default(),
             };
             Ok(Box::new(App(TortugaUi::new(Box::new(host)))))
         }),
@@ -45,6 +46,7 @@ struct DesktopHost {
     runtime: tokio::runtime::Runtime,
     secrets: Box<dyn SecretStore>,
     secrets_warning: Option<String>,
+    watchers: watch::Watchers,
 }
 
 impl Host for DesktopHost {
@@ -66,6 +68,43 @@ impl Host for DesktopHost {
 
     fn save_cookies(&self, root: &std::path::Path, json: &str) -> Result<(), String> {
         local_store::save_cookies(root, json)
+    }
+
+    fn watch(
+        &self,
+        root: &std::path::Path,
+        changed: Box<dyn Fn() + Send + Sync>,
+    ) -> Result<(), String> {
+        self.watchers.watch(root, changed)
+    }
+
+    fn unwatch(&self, root: &std::path::Path) {
+        self.watchers.unwatch(root);
+    }
+
+    fn git_status(
+        &self,
+        root: &std::path::Path,
+        done: Box<dyn FnOnce(Result<Option<tortuga_core::git::GitStatus>, String>) + Send>,
+    ) {
+        // Reading a big repository can take a moment: never on the UI thread.
+        let root = root.to_owned();
+        drop(
+            self.runtime
+                .spawn_blocking(move || done(git::status(&root))),
+        );
+    }
+
+    fn can_open_folders(&self) -> bool {
+        true
+    }
+
+    fn open_in_file_manager(&self, path: &std::path::Path) -> Result<(), String> {
+        folders::open_in_file_manager(path)
+    }
+
+    fn open_in_terminal(&self, path: &std::path::Path) -> Result<(), String> {
+        folders::open_in_terminal(path)
     }
 
     fn spawn(&self, task: BoxTask) {

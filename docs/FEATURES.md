@@ -85,6 +85,16 @@ through a server base URL.
 | R-CK-3 | Jars are saved in the app-data folder (`cookies/<hash>.json`, owner-only), never in the collection. "Clear cookies (N)" in the collection menu empties the jar. | Linux | Automated tests. In the app: jar file `-rw-------`, emptied by Clear; no cookie files in the collection. |
 | R-CK-4 | A `Cookie` header set on the request is always sent, also with the jar off, and then replaces the jar's cookies. | Linux | Automated test for both switch positions. In the app: `Cookie: mine=1` sent with the jar off. |
 
+### M6: Live git collaboration
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-GIT-10 | Open collections are watched; changes on disk (another editor, `git pull`, branch switch) reload automatically, debounced so a burst reloads once. An open request without unsaved edits shows the new version. Windows drives under WSL are polled. | Linux | Automated tests (one report per burst; follow the disk). In the app: changed, deleted and new files appeared without any click. |
+| R-GIT-11 | A request with unsaved edits whose file changed shows a banner: "Keep mine" (save to overwrite) or "Take theirs"; if the file was deleted: "Restore with my edits" or "Discard my edits". The tree marks it ⚠. | Linux | Automated tests for all four answers. In the app: banner shown, "Take theirs" loaded the new version. |
+| R-GIT-12 | Current branch next to the collection name; M / N / D / C markers on requests and folders (a folder shows the most important state inside); deleted requests stay visible as struck-through rows until the deletion is committed. Unreadable conflicted files show as ⚠ with C. | Linux | Automated tests against real repositories (modified, new, deleted, conflict). In the app: markers, a commit clearing them, branch switch, a merge conflict. |
+| R-GIT-13 | "Open in file manager" and "Open in terminal" in the collection menu. Terminal: Windows Terminal/cmd, Terminal.app, `$TERMINAL` or common Linux terminals; under WSL, Windows Explorer and Windows Terminal running WSL in the folder. | Linux (WSL) | In the app: Windows Terminal started; no error for the file manager (the Windows window itself was not visible to the test). |
+| R-GIT-14 | Git status is read with gitoxide (`gix`); no `git` executable is used. | Linux | In the app started with `PATH=/nonexistent`: branch and conflict marker still shown. |
+
 ### v1 extras
 
 | Requirement | Feature | Verified on | How it was verified |
@@ -103,6 +113,5 @@ through a server base URL.
 ## Known limitations
 
 - Unsaved edits are kept only while the app is open; closing the app does not warn about them yet.
-- Files changed outside the app (e.g. `git pull`) appear after "Reload from disk" in the collection menu. Automatic reloading is planned (M6).
 - Windows and macOS builds are checked by CI but have not been run by a person yet.
 - Form URL-encoded bodies are covered by automated tests; in the app only switching to the form editor was checked, not sending a form.

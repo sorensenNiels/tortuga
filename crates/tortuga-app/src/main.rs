@@ -9,9 +9,15 @@ mod desktop;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 mod dialogs;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+mod folders;
+#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+mod git;
+#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 mod local_store;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 mod secret_store;
+#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+mod watch;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod web;
 

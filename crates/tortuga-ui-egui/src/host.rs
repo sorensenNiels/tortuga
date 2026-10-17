@@ -11,6 +11,7 @@ use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
 use tortuga_core::ClientSettings;
+use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
 
@@ -52,6 +53,39 @@ pub trait Host {
     /// Saves the cookie jar of the collection at `root`, outside the collection (R-CK-3, R-LOC-1).
     fn save_cookies(&self, _root: &Path, _json: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Starts watching the collection at `root`; `changed` is called (from any thread)
+    /// after its files, or its git state, changed (R-GIT-10). Without file watching
+    /// this does nothing and changes appear after "Reload from disk".
+    fn watch(&self, _root: &Path, _changed: Box<dyn Fn() + Send + Sync>) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unwatch(&self, _root: &Path) {}
+
+    /// Reads the git status of the collection at `root` in the background and passes it
+    /// to `done` (from any thread); `Ok(None)` when it is not in a git repository
+    /// (R-GIT-12, R-GIT-14). Without git support, `done` gets `Ok(None)` right away.
+    fn git_status(
+        &self,
+        _root: &Path,
+        done: Box<dyn FnOnce(Result<Option<GitStatus>, String>) + Send>,
+    ) {
+        done(Ok(None));
+    }
+
+    /// Whether the collection folder can be opened in the file manager and a terminal (R-GIT-13).
+    fn can_open_folders(&self) -> bool {
+        false
+    }
+
+    fn open_in_file_manager(&self, _path: &Path) -> Result<(), String> {
+        Err("Not available here.".into())
+    }
+
+    fn open_in_terminal(&self, _path: &Path) -> Result<(), String> {
+        Err("Not available here.".into())
     }
 
     /// Runs `task` in the background. The UI cancels it by dropping it (it is abortable).

@@ -24,6 +24,8 @@ allow = [
   "MPL-2.0",
   # Windows clipboard support in eframe (clipboard-win, error-code).
   "BSL-1.0",
+  # File watching (notify): a public-domain dedication, no conditions.
+  "CC0-1.0",
   # Fonts bundled with egui (epaint_default_fonts): may be embedded in any app.
   "OFL-1.1",
   "Ubuntu-font-1.0",

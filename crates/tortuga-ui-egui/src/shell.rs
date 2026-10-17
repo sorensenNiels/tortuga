@@ -76,6 +76,22 @@ pub struct TortugaUi {
     finished_rx: Receiver<Finished>,
     /// Fonts and style are installed on the first frame.
     styled: bool,
+    /// Requests with unsaved edits whose file changed on disk (R-GIT-11).
+    conflicts: HashMap<ItemKey, DiskChange>,
+}
+
+/// What happened on disk to a request that has unsaved edits (R-GIT-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiskChange {
+    Changed,
+    Deleted,
+}
+
+/// The user's answer in the conflict banner (D9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictChoice {
+    KeepMine,
+    TakeTheirs,
 }
 
 impl TortugaUi {
@@ -99,6 +115,7 @@ impl TortugaUi {
             finished_tx,
             finished_rx,
             styled: false,
+            conflicts: HashMap::new(),
         }
     }
 
@@ -106,9 +123,13 @@ impl TortugaUi {
     pub fn ui(&mut self, ui: &mut Ui) {
         if !self.styled {
             theme::install(ui.ctx());
+            self.state.set_repaint(ui.ctx());
             self.styled = true;
         }
         self.collect_finished();
+        for root in self.state.take_changes() {
+            self.on_disk_change(&root);
+        }
         if self.modal.is_none() {
             let (save, send) =
                 ui.input_mut(|i| (i.consume_shortcut(&SAVE), i.consume_shortcut(&SEND)));
@@ -166,6 +187,7 @@ impl TortugaUi {
         }
 
         let dirty = self.dirty_keys();
+        let conflicts: HashSet<ItemKey> = self.conflicts.keys().cloned().collect();
         let actions = Panel::left("sidebar")
             .resizable(true)
             .default_size(270.0)
@@ -182,6 +204,7 @@ impl TortugaUi {
                     &mut self.sidebar,
                     self.selection.as_ref(),
                     &dirty,
+                    &conflicts,
                 )
             })
             .inner;
@@ -443,6 +466,8 @@ impl TortugaUi {
             self.revert();
         }
         ui.add_space(8.0);
+        let key = k.clone();
+        self.conflict_banner(ui, &key);
     }
 
     // ---------------------------------------------------------------- requests
@@ -526,12 +551,23 @@ impl TortugaUi {
         {
             self.selection = Some(to);
         }
+        let moved: Vec<_> = self
+            .conflicts
+            .keys()
+            .filter_map(|k| Some((k.clone(), k.moved(root, old, new)?)))
+            .collect();
+        for (from, to) in moved {
+            if let Some(v) = self.conflicts.remove(&from) {
+                self.conflicts.insert(to, v);
+            }
+        }
     }
 
     /// Drops state of deleted or closed items (`prefix` "" = the whole collection).
     fn forget(&mut self, root: &Path, prefix: &Path) {
         let gone = |k: &ItemKey| k.root == root && k.path.starts_with(prefix);
         self.drafts.retain(|k, _| !gone(k));
+        self.conflicts.retain(|k, _| !gone(k));
         self.outcomes.retain(|k, _| !k.as_ref().is_some_and(gone));
         if self.selection.as_ref().is_some_and(gone) {
             self.selection = None;
@@ -619,6 +655,8 @@ impl TortugaUi {
             .run(&key.root, |c, s| c.save_request(s, &key.path, &request))
         {
             self.drafts.remove(&key);
+            // Saving answers a pending conflict with "keep mine".
+            self.conflicts.remove(&key);
             self.remap(&key.root, &key.path, &new_path);
         }
     }
@@ -627,6 +665,133 @@ impl TortugaUi {
         if let Some(key) = self.selection.clone() {
             self.drafts.remove(&key);
             self.load(self.state.saved_request(&key).unwrap_or_default());
+        }
+    }
+
+    // ---------------------------------------------------------------- changes on disk (M6)
+
+    /// A collection changed on disk (git pull, branch switch, another editor): reload
+    /// it and bring open requests up to date (R-GIT-10). Requests with unsaved edits
+    /// are not overwritten; the user chooses in a banner (R-GIT-11).
+    fn on_disk_change(&mut self, root: &Path) {
+        let in_root = |k: &ItemKey| k.root == root;
+        let mut watched: Vec<ItemKey> =
+            self.drafts.keys().filter(|k| in_root(k)).cloned().collect();
+        if let Some(k) = self.selection.as_ref().filter(|k| in_root(k))
+            && !watched.contains(k)
+        {
+            watched.push(k.clone());
+        }
+        let before: Vec<(ItemKey, Option<Request>, bool)> = watched
+            .into_iter()
+            .map(|k| {
+                let saved = self.state.saved_request(&k);
+                let dirty = self.drafts.contains_key(&k)
+                    || (self.selection.as_ref() == Some(&k)
+                        && saved.as_ref() != Some(&self.current));
+                (k, saved, dirty)
+            })
+            .collect();
+
+        self.state.reload(root);
+        self.state.refresh_git(root);
+
+        for (key, old, dirty) in before {
+            let new = self.state.saved_request(&key);
+            if new == old {
+                continue;
+            }
+            if dirty {
+                let change = if new.is_some() {
+                    DiskChange::Changed
+                } else {
+                    DiskChange::Deleted
+                };
+                self.conflicts.insert(key, change);
+            } else if self.selection.as_ref() == Some(&key) {
+                match new {
+                    Some(request) => self.load(request),
+                    None => self.forget(&key.root, &key.path),
+                }
+            }
+        }
+    }
+
+    /// Answers the conflict banner of the selected request (R-GIT-11, D9).
+    fn resolve_conflict(&mut self, key: &ItemKey, choice: ConflictChoice) {
+        let Some(change) = self.conflicts.remove(key) else {
+            return;
+        };
+        match (change, choice) {
+            // Keep the edits; saving will write them over the new version.
+            (DiskChange::Changed, ConflictChoice::KeepMine) => {}
+            (DiskChange::Changed, ConflictChoice::TakeTheirs) => {
+                self.drafts.remove(key);
+                if self.selection.as_ref() == Some(key) {
+                    self.load(self.state.saved_request(key).unwrap_or_default());
+                }
+            }
+            // The file is gone: restore it, with the edits, where it was.
+            (DiskChange::Deleted, ConflictChoice::KeepMine) => {
+                let request = if self.selection.as_ref() == Some(key) {
+                    self.current.clone()
+                } else {
+                    self.drafts.get(key).cloned().unwrap_or_default()
+                };
+                let parent = key.path.parent().map(Path::to_path_buf).unwrap_or_default();
+                if let Some(path) = self
+                    .state
+                    .run(&key.root, |c, s| c.new_request(s, &parent, &request))
+                {
+                    self.drafts.remove(key);
+                    let restored = ItemKey::new(&key.root, path);
+                    if self.selection.as_ref() == Some(key) {
+                        self.selection = Some(restored);
+                        self.current = request;
+                    }
+                }
+            }
+            (DiskChange::Deleted, ConflictChoice::TakeTheirs) => self.forget(&key.root, &key.path),
+        }
+    }
+
+    /// The banner shown above a request with a pending conflict.
+    fn conflict_banner(&mut self, ui: &mut Ui, key: &ItemKey) {
+        let Some(change) = self.conflicts.get(key).copied() else {
+            return;
+        };
+        let p = theme::palette(ui);
+        let (message, keep, take) = match change {
+            DiskChange::Changed => (
+                "This request changed on disk (for example after git pull) while you had unsaved edits.",
+                "Keep mine",
+                "Take theirs",
+            ),
+            DiskChange::Deleted => (
+                "This request was deleted on disk while you had unsaved edits.",
+                "Restore with my edits",
+                "Discard my edits",
+            ),
+        };
+        let mut choice = None;
+        theme::banner_frame(ui, false)
+            .corner_radius(egui::CornerRadius::same(8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("⚠").color(p.warning_text));
+                    ui.label(RichText::new(message).color(p.warning_text));
+                    if ui.button(keep).clicked() {
+                        choice = Some(ConflictChoice::KeepMine);
+                    }
+                    if ui.button(take).clicked() {
+                        choice = Some(ConflictChoice::TakeTheirs);
+                    }
+                });
+            });
+        ui.add_space(8.0);
+        if let Some(choice) = choice {
+            self.resolve_conflict(key, choice);
         }
     }
 
@@ -697,7 +862,17 @@ impl TortugaUi {
             SidebarAction::EditDefaults(root) => {
                 self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
             }
-            SidebarAction::Reload(root) => self.state.reload(&root),
+            SidebarAction::Reload(root) => self.on_disk_change(&root),
+            SidebarAction::OpenInFileManager(root) => {
+                if let Err(e) = self.state.host.open_in_file_manager(&root) {
+                    self.state.notify(e);
+                }
+            }
+            SidebarAction::OpenInTerminal(root) => {
+                if let Err(e) = self.state.host.open_in_terminal(&root) {
+                    self.state.notify(e);
+                }
+            }
             SidebarAction::ClearCookies(root) => self.state.clear_cookies(&root),
             SidebarAction::Close(root) => {
                 self.forget(&root, Path::new(""));
@@ -902,4 +1077,94 @@ fn breadcrumb(state: &AppState, key: &ItemKey) -> String {
         }
     }
     parts.join(" / ") + " /"
+}
+
+#[cfg(test)]
+mod tests {
+    use tortuga_core::Collection;
+    use tortuga_core::storage::FsStorage;
+
+    use super::*;
+    use crate::test_host::TestHost;
+
+    /// A collection on disk with one request, opened in a fresh UI with that request selected.
+    fn setup(name: &str) -> (TortugaUi, PathBuf, ItemKey) {
+        let root = std::env::temp_dir().join(format!("tortuga-disk-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let collection = Collection::create(&FsStorage, &root, "C").expect("create");
+        let mut request = Request::new(tortuga_core::HttpMethod::Get, "https://a.test/old");
+        request.name = "Get user".into();
+        let path = collection
+            .new_request(&FsStorage, Path::new(""), &request)
+            .expect("request");
+        let mut ui = TortugaUi::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let key = ItemKey::new(&root, path);
+        ui.select(Some(key.clone()));
+        (ui, root, key)
+    }
+
+    /// Simulates a teammate's change arriving through `git pull`.
+    fn change_on_disk(root: &Path, key: &ItemKey, url: &str) {
+        let mut request = Request::new(tortuga_core::HttpMethod::Get, url);
+        request.name = "Get user".into();
+        std::fs::write(
+            root.join(&key.path),
+            tortuga_core::format::write_request(&request, Some(100)),
+        )
+        .expect("write");
+    }
+
+    /// R-GIT-10: without unsaved edits, the open request shows the new version.
+    #[test]
+    fn requests_without_edits_follow_the_disk() {
+        let (mut ui, root, key) = setup("follow");
+        change_on_disk(&root, &key, "https://a.test/new");
+        ui.on_disk_change(&root);
+        assert_eq!(ui.current.url, "https://a.test/new");
+        assert!(ui.conflicts.is_empty());
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-GIT-11: with unsaved edits, the user chooses: take theirs, or keep mine and save.
+    #[test]
+    fn unsaved_edits_are_not_overwritten() {
+        let (mut ui, root, key) = setup("conflict");
+        ui.current.set_display_url("https://a.test/mine");
+        change_on_disk(&root, &key, "https://a.test/theirs");
+        ui.on_disk_change(&root);
+        assert_eq!(ui.current.url, "https://a.test/mine", "edits kept");
+        assert_eq!(ui.conflicts.get(&key), Some(&DiskChange::Changed));
+
+        ui.resolve_conflict(&key, ConflictChoice::TakeTheirs);
+        assert_eq!(ui.current.url, "https://a.test/theirs");
+        assert!(ui.conflicts.is_empty());
+
+        ui.current.set_display_url("https://a.test/mine-again");
+        change_on_disk(&root, &key, "https://a.test/theirs-again");
+        ui.on_disk_change(&root);
+        ui.resolve_conflict(&key, ConflictChoice::KeepMine);
+        ui.save();
+        let on_disk = std::fs::read_to_string(root.join(&key.path)).expect("read");
+        assert!(on_disk.contains("mine-again"), "{on_disk}");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-GIT-11: a request deleted on disk while edited can be restored with the edits.
+    #[test]
+    fn deleted_request_with_edits_can_be_restored() {
+        let (mut ui, root, key) = setup("deleted");
+        ui.current.set_display_url("https://a.test/mine");
+        std::fs::remove_file(root.join(&key.path)).expect("delete");
+        ui.on_disk_change(&root);
+        assert_eq!(ui.conflicts.get(&key), Some(&DiskChange::Deleted));
+
+        ui.resolve_conflict(&key, ConflictChoice::KeepMine);
+        let restored = ui.selection.clone().expect("still selected");
+        let saved = ui.state.saved_request(&restored).expect("restored on disk");
+        assert_eq!(saved.url, "https://a.test/mine");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
 }

@@ -7,6 +7,7 @@ pub mod collection;
 pub mod cookies;
 pub mod error;
 pub mod format;
+pub mod git;
 pub mod http;
 pub mod json;
 pub mod model;
