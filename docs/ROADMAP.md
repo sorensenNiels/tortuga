@@ -60,7 +60,8 @@ A requirement moves to [FEATURES.md](FEATURES.md) once it is implemented and ver
 | **M3: Environments, servers & variables** | Switch between dev/staging/prod: each server gets its own address per environment, and `{{variables}}` fill in the rest. | R-SRV-1 to 5 · R-VAR-1, 2, 4, 5, 7 · R-COL-4 (variables) | Done (see FEATURES.md) |
 | **M4: Auth & secrets** | Share collections without leaking credentials. | R-VAR-3 · R-HTTP-5 · R-COL-4 (headers, auth) · R-LOC-1, 2 | Done, except R-LOC-2 on a real OS credential store (see FEATURES.md) |
 | **M5: Cookies** | Session-based APIs work, with per-request control. | R-CK-1 to 4 | Done (see FEATURES.md) |
-| **M6: Live git collaboration** | Teammates' changes appear automatically, and the git state is visible. | R-GIT-10 to 14 | |
+| **M6: Live git collaboration** | Teammates' changes appear automatically, and the git state is visible. | R-GIT-10 to 14 | Done (see FEATURES.md) |
+| **M6.5: Workspaces & projects** | Group projects (today's collections) into workspaces, also when several share a repo. Built before M7 (D15). | R-WS-1 to 7 | |
 | **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | |
 | **UI: egui** | Move the UI from Dioxus to egui (`tortuga-ui-egui`) with a modern look. | — | Done (2026-10-17) |
 | **v1 extras** | Decided in D1, plus path variables (requested 2026-10-17). | R-COL-8 · R-HTTP-9 · R-HTTP-10 | R-HTTP-10 done |
@@ -207,6 +208,20 @@ added.
 | R-COL-6 | Unsaved request edits are clearly marked. Saving writes to disk; sending a request does not save it. |
 | R-COL-7 | Requests can be sent ad hoc without being saved to a collection. |
 | R-COL-8 | Unsaved request edits survive closing and reopening the app (kept as local data, §6.7), or the app warns before closing. *(D1; was IDEA-12)* |
+
+#### 6.4.1 Workspaces & projects
+
+Decided in D12–D15. A **project** is what earlier versions called a collection; a **workspace** groups projects.
+
+| ID | Requirement |
+|---|---|
+| R-WS-1 | A workspace is a named set of projects that are open together. A default workspace always exists. Workspaces are switched from the title bar, and each one remembers its open projects, active environments and selection. *(IDEA-32)* |
+| R-WS-2 | A project is a directory with `tortuga.toml`: in its own git repo, in a repo shared with other projects, or outside git. The file format does not change. The UI and docs say "project", not "collection" (D12). *(IDEA-33)* |
+| R-WS-3 | Add existing projects: the user picks a folder or repository, and the app lists every `tortuga.toml` below it as a checklist, skipping git-ignored folders. *(IDEA-34)* |
+| R-WS-4 | Projects in the same repository are grouped in the sidebar, with the branch and git state shown once per repository, and one watcher per repository. *(IDEA-35)* |
+| R-WS-5 | Workspaces are local data (§6.7). "Save as file…" writes a shareable `<name>.tortuga-workspace.toml` with each project's relative path and git remote URL. Opening one adds its projects; missing ones show greyed with "Locate…" and their remote URL (D13). *(IDEA-36)* |
+| R-WS-6 | Choosing an environment switches every project in the workspace that has an environment with that name; projects without one keep theirs and are marked. Environments stay defined per project (D14). *(IDEA-37)* |
+| R-WS-7 | New project: in a new folder (optionally initialised as a git repository by the app) or inside a folder of an existing repository. *(IDEA-39)* |
 
 ### 6.5 Variables & environments
 
@@ -379,6 +394,14 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-29 | Import an OpenAPI description as a collection (servers, folders per tag, example bodies). | Phase 4. |
 | IDEA-30 | Search in responses, and filter JSON responses with a path expression. | Phase 2. |
 | IDEA-31 | Several requests open at once in tabs. | Deferred by decision D2 (single editor + quick open + history first). |
+| IDEA-32 | **Workspaces**: a named set of projects that are open together. Switch workspace from the title bar; each one remembers its open projects, active environments and selection. A default workspace always exists, so there is still no start screen (P1). Quick open (IDEA-27) searches every project in the workspace. | **Moved to M6.5 as R-WS-1** (D15). Replaces the flat list of open collections (R-COL-5). Naming D12, storage D13. Proposed 2026-10-17. |
+| IDEA-33 | **Projects**: what is called a collection today. A directory with `tortuga.toml`, anywhere: in its own git repo, in a repo shared with other projects, or outside git. | **Moved to M6.5 as R-WS-2** (D15). No file format change. Naming D12. |
+| IDEA-34 | Add existing projects: pick a folder or repository, and the app lists every `tortuga.toml` below it (skipping git-ignored folders such as `target/` and `node_modules/`) as a checklist. | **Moved to M6.5 as R-WS-3** (D15). Makes monorepos and "clone, then open" quick. |
+| IDEA-35 | Several projects in one repository: the sidebar groups projects by repository and shows the branch and git state once per repo. One watcher per repository instead of one per project. | **Moved to M6.5 as R-WS-4** (D15). Already works today: each collection finds its own repository (R-GIT-12). This makes it visible and cheaper. |
+| IDEA-36 | Shareable workspace file (`<name>.tortuga-workspace.toml`): the projects by relative path, plus each project's git remote URL. Commit it to a "platform" repo; a new teammate opens it and sees which repos to clone. Projects that are missing show greyed with "Locate…". | **Moved to M6.5 as R-WS-5** (D15). Like VS Code's `.code-workspace`. Only shared data (R-GIT-4); the open/active state stays local. D13. |
+| IDEA-37 | Workspace-wide environment switch: choosing "staging" switches every project that has an environment with that name. Projects without one keep theirs and are marked. | **Moved to M6.5 as R-WS-6** (D15). Makes S2 one click across services. D14. |
+| IDEA-38 | Workspace variables, local only: values used across projects, e.g. log in with the Auth project and use `{{token}}` in the others. | Requests that use them depend on the workspace, so teammates without it see them as undefined (R-VAR-5). Precedence to be decided. |
+| IDEA-39 | New project: create it in a new folder (optionally `git init`, done by the app with gix) or inside a folder of an existing repository. | **Moved to M6.5 as R-WS-7** (D15). |
 
 ### Not planned
 
@@ -399,7 +422,16 @@ Not decided. Needs a real user need before it moves up.
 | D6 | Keep the web version as a goal? | **Keep the code compiling for wasm; build nothing web-specific** until a team asks. | Pursue it actively; drop it. |
 | D7 | Which import first? | **`curl` paste, then OpenAPI, then Postman.** | Postman before OpenAPI; OpenAPI first; `curl` only. |
 
-New questions go here as `D8`, `D9`, … with options, until they are decided.
+| D8 | Which library reads git status (R-GIT-14)? | **gitoxide (`gix`)**, pure Rust (2026-10-17). | `git2` (libgit2, C). |
+| D9 | How is "keep mine / take theirs" offered (R-GIT-11)? | **A banner on the request**; nothing pops up (2026-10-17). | A dialog right away. |
+| D10 | How do requests deleted in git show (R-GIT-12)? | **Greyed, struck-through rows** where they were (2026-10-17). | Only a count on the folder. |
+| D11 | What does "open the collection folder" offer (R-GIT-13)? | **File manager and terminal** (2026-10-17). | File manager only. |
+| D12 | What are the levels called (IDEA-32, 33)? | **Workspace → Project**: "collection" is no longer used in the UI or docs; `tortuga.toml` stays as it is (2026-10-17). | Workspace → Collection (Postman's terms); Workspace → Project → Collection (three levels). |
+| D13 | Where is a workspace stored (IDEA-32, 36)? | **Locally by default, with "Save as file…" to share it** (2026-10-17). | Local only; always a file the user chooses. |
+| D14 | How do environments work across projects (IDEA-37)? | **Switch by name across the workspace**; environments stay defined per project (2026-10-17). | Per project only (as today); workspace-level environments that projects inherit (a file format change). |
+| D15 | When are workspaces built? | **Before M7**, so the first release ships the final names (2026-10-17). | After the release, in Phase 2. |
+
+New questions go here as `D16`, `D17`, … with options, until they are decided.
 
 ## 9. How to change this roadmap
 
