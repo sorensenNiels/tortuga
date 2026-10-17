@@ -4,10 +4,11 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use tortuga_core::ClientSettings;
+use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
 use tortuga_ui_egui::{BoxTask, Host, LocalState, TortugaUi};
 
-use crate::{App, dialogs, local_store};
+use crate::{App, dialogs, local_store, secret_store};
 
 pub fn run() -> eframe::Result {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -28,7 +29,12 @@ pub fn run() -> eframe::Result {
         "Tortuga",
         options,
         Box::new(|_cc| {
-            let host = DesktopHost { runtime };
+            let (secrets, secrets_warning) = secret_store::open(local_store::secrets_path());
+            let host = DesktopHost {
+                runtime,
+                secrets,
+                secrets_warning,
+            };
             Ok(Box::new(App(TortugaUi::new(Box::new(host)))))
         }),
     )
@@ -37,11 +43,21 @@ pub fn run() -> eframe::Result {
 /// Requests run on a small tokio runtime, so the UI thread never waits for the network.
 struct DesktopHost {
     runtime: tokio::runtime::Runtime,
+    secrets: Box<dyn SecretStore>,
+    secrets_warning: Option<String>,
 }
 
 impl Host for DesktopHost {
     fn storage(&self) -> &dyn Storage {
         &FsStorage
+    }
+
+    fn secrets(&self) -> &dyn SecretStore {
+        self.secrets.as_ref()
+    }
+
+    fn secrets_warning(&self) -> Option<&str> {
+        self.secrets_warning.as_deref()
     }
 
     fn spawn(&self, task: BoxTask) {

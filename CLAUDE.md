@@ -22,7 +22,7 @@ When building something that has no requirement yet, add one to the roadmap (nex
 
 | Path | Purpose |
 |---|---|
-| `crates/tortuga-core` | UI-agnostic engine. No UI deps, ever. `model` (request/response), `http` (client), `format` (TOML file format), `collection` (tree + operations on disk), `vars` (environments, servers, `{{variables}}`), `storage` (file access trait). |
+| `crates/tortuga-core` | UI-agnostic engine. No UI deps, ever. `model` (request/response), `http` (client), `format` (TOML file format), `collection` (tree + operations on disk), `vars` (environments, servers, `{{variables}}`, auth, defaults), `secrets` (secret values + `SecretStore` trait), `storage` (file access trait). |
 | `crates/tortuga-ui-egui` | The UI, built with egui 0.37: components, UI state (`AppState`, `TortugaUi`), display formatting. No platform code: files, dialogs, settings storage and task spawning come in through the `Host` trait. |
 | `crates/tortuga-app` | Thin eframe launcher (`tortuga` binary): window, tokio runtime, `local_store`, native dialogs (`rfd`), and the `Host` impls. Features: `desktop` (default, native), `web` (wasm32). |
 | `scripts/` | One-time dev setup per OS. |

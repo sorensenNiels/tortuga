@@ -20,6 +20,11 @@ fn local_path() -> Option<PathBuf> {
     dirs().map(|d| d.data_dir().join("workspace.toml"))
 }
 
+/// Fallback file for secret values when there is no OS credential store (R-LOC-2).
+pub fn secrets_path() -> Option<PathBuf> {
+    dirs().map(|d| d.data_dir().join("secrets.toml"))
+}
+
 fn load<T: DeserializeOwned + Default>(path: Option<PathBuf>) -> Result<T, String> {
     let Some(path) = path else {
         return Ok(T::default());

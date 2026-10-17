@@ -9,7 +9,7 @@ use std::sync::Arc;
 use egui::epaint::Shadow;
 use egui::{
     Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin,
-    Response, RichText, Role, Sense, Stroke, TextStyle, Theme, Ui, Visuals, WidgetInfo,
+    Response, RichText, Role, Stroke, TextStyle, Theme, Ui, Visuals, WidgetInfo,
 };
 use tortuga_core::HttpMethod;
 
@@ -305,19 +305,14 @@ pub fn tabs<T: PartialEq + Copy>(
         for (value, label, badge) in items {
             let selected = *current == *value;
             let color = if selected { p.text } else { p.muted };
-            let response = ui
-                .scope(|ui| {
-                    ui.spacing_mut().item_spacing.x = 5.0;
-                    ui.horizontal(|ui| {
-                        ui.label(semibold(*label).color(color));
-                        if let Some(b) = badge {
-                            let c = if selected { p.accent } else { p.muted };
-                            ui.label(semibold(b).size(10.5).color(c));
-                        }
-                    })
-                })
-                .response
-                .interact(Sense::click());
+            // One real button per tab, so clicks work everywhere (also inside dialogs).
+            let mut atoms = vec![egui::Atom::from(semibold(*label).color(color))];
+            if let Some(b) = badge {
+                let c = if selected { p.accent } else { p.muted };
+                atoms.push(egui::Atom::from(semibold(b).size(10.5).color(c)));
+            }
+            let atoms: egui::Atoms<'_> = atoms.into_iter().collect();
+            let response = ui.add(egui::Button::new(atoms).frame(false).gap(5.0));
             let name = match badge {
                 Some(b) => format!("{label} ({b})"),
                 None => (*label).to_owned(),
@@ -440,4 +435,27 @@ pub fn icon_button<'a>(ui: &Ui, glyph: &str) -> egui::Button<'a> {
 /// A borderless button that only shows a background on hover (toolbar icons, row menus).
 pub fn ghost_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
     egui::Button::new(text).frame_when_inactive(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn tab_clicks_work_inside_dialogs() {
+        let mut tab = 0;
+        let mut text = String::new();
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                egui::Modal::new(egui::Id::unique("m")).show(ui.ctx(), |ui| {
+                    super::tabs(ui, &mut tab, &[(0, "One", None), (1, "Two", None)]);
+                    ui.add(egui::TextEdit::singleline(&mut text).hint_text("x"));
+                });
+            });
+            h.run();
+            h.get_all_by_label("Two").next().expect("tab").click();
+            h.run();
+        }
+        assert_eq!(tab, 1, "tab click inside a modal");
+    }
 }

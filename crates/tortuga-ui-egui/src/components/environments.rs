@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use egui::{Context, Grid, ScrollArea, TextEdit, Ui};
+use tortuga_core::secrets::SecretValues;
 use tortuga_core::{Collection, Environment, Manifest, Server};
 
 use super::{DialogResult, dialog};
@@ -36,18 +37,30 @@ pub struct ServerRow {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct VarRow {
     pub name: String,
+    /// Values stay on this machine instead of the collection files (R-VAR-3).
+    pub secret: bool,
     pub default: String,
     /// One value per environment column; empty = use the default (R-VAR-7).
     pub values: Vec<String>,
 }
 
+/// What saving the environments dialog writes: files, and local secret values.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedConfig {
+    pub manifest: Manifest,
+    pub environments: Vec<Environment>,
+    pub secrets: SecretValues,
+}
+
 impl Draft {
-    pub fn from_collection(c: &Collection) -> Self {
+    pub fn from_collection(c: &Collection, secrets: &SecretValues) -> Self {
         let envs = &c.environments;
         let mut var_names: BTreeSet<&String> = c.manifest.variables.keys().collect();
+        var_names.extend(&c.manifest.secrets);
         for e in envs {
             var_names.extend(e.variables.keys());
         }
+        let is_secret = |name: &str| c.manifest.secrets.iter().any(|s| s == name);
         Self {
             environments: envs
                 .iter()
@@ -71,13 +84,28 @@ impl Draft {
                 .collect(),
             variables: var_names
                 .into_iter()
-                .map(|name| VarRow {
-                    name: name.clone(),
-                    default: c.manifest.variables.get(name).cloned().unwrap_or_default(),
-                    values: envs
-                        .iter()
-                        .map(|e| e.variables.get(name).cloned().unwrap_or_default())
-                        .collect(),
+                .map(|name| {
+                    if is_secret(name) {
+                        let local = |env: Option<&str>| {
+                            secrets.get(env, name).unwrap_or_default().to_owned()
+                        };
+                        VarRow {
+                            name: name.clone(),
+                            secret: true,
+                            default: local(None),
+                            values: envs.iter().map(|e| local(Some(&e.id))).collect(),
+                        }
+                    } else {
+                        VarRow {
+                            name: name.clone(),
+                            secret: false,
+                            default: c.manifest.variables.get(name).cloned().unwrap_or_default(),
+                            values: envs
+                                .iter()
+                                .map(|e| e.variables.get(name).cloned().unwrap_or_default())
+                                .collect(),
+                        }
+                    }
                 })
                 .collect(),
         }
@@ -117,17 +145,19 @@ impl Draft {
         let values = vec![String::new(); self.environments.len()];
         self.variables.push(VarRow {
             name,
+            secret: false,
             default: String::new(),
             values,
         });
     }
 
-    /// Checks the draft and converts it to what is written to disk.
+    /// Checks the draft and converts it to what is written to disk, plus the
+    /// secret values that stay on this machine.
     pub fn to_config(
         &self,
         base: &Manifest,
         old_envs: &[Environment],
-    ) -> Result<(Manifest, Vec<Environment>), String> {
+    ) -> Result<SavedConfig, String> {
         let mut manifest = base.clone();
         let mut seen = BTreeSet::new();
         for e in &self.environments {
@@ -170,11 +200,26 @@ impl Draft {
                 return Err(format!("There are two variables called “{name}”."));
             }
         }
+        let (secret_vars, vars): (Vec<&VarRow>, Vec<&VarRow>) =
+            vars.into_iter().partition(|v| v.secret);
         manifest.variables = vars
             .iter()
             .filter(|v| !v.default.is_empty())
             .map(|v| (v.name.trim().to_owned(), v.default.clone()))
             .collect();
+        manifest.secrets = secret_vars
+            .iter()
+            .map(|v| v.name.trim().to_owned())
+            .collect();
+        manifest.secrets.sort();
+        let mut secrets = SecretValues::default();
+        for v in &secret_vars {
+            if !v.default.is_empty() {
+                secrets
+                    .values
+                    .insert((None, v.name.trim().to_owned()), v.default.clone());
+            }
+        }
 
         let mut envs: Vec<Environment> = Vec::new();
         for (col, (seq, e)) in (1..).zip(&self.environments).enumerate() {
@@ -192,6 +237,12 @@ impl Draft {
                 .filter(|v| !v.values[col].is_empty())
                 .map(|v| (v.name.trim().to_owned(), v.values[col].clone()))
                 .collect();
+            for v in secret_vars.iter().filter(|v| !v.values[col].is_empty()) {
+                secrets.values.insert(
+                    (Some(id.clone()), v.name.trim().to_owned()),
+                    v.values[col].clone(),
+                );
+            }
             envs.push(Environment {
                 id,
                 name: e.name.trim().to_owned(),
@@ -200,7 +251,11 @@ impl Draft {
                 variables,
             });
         }
-        Ok((manifest, envs))
+        Ok(SavedConfig {
+            manifest,
+            environments: envs,
+            secrets,
+        })
     }
 }
 
@@ -219,9 +274,10 @@ const CELL_WIDTH: f32 = 170.0;
 
 impl EnvironmentsDialog {
     pub fn new(state: &AppState, root: PathBuf) -> Self {
+        let secrets = state.secrets.get(&root).cloned().unwrap_or_default();
         let draft = state
             .collection(&root)
-            .map(Draft::from_collection)
+            .map(|c| Draft::from_collection(c, &secrets))
             .unwrap_or_default();
         Self {
             root,
@@ -232,12 +288,8 @@ impl EnvironmentsDialog {
         }
     }
 
-    /// Done with the manifest and environments to write.
-    pub fn show(
-        &mut self,
-        ctx: &Context,
-        state: &AppState,
-    ) -> DialogResult<(Manifest, Vec<Environment>)> {
+    /// Done with the files to write and the secret values to keep locally.
+    pub fn show(&mut self, ctx: &Context, state: &AppState) -> DialogResult<SavedConfig> {
         let Some(c) = state.collection(&self.root) else {
             return DialogResult::Close;
         };
@@ -273,9 +325,13 @@ impl EnvironmentsDialog {
             ui.add_space(10.0);
             theme::callout(
                 ui,
-                "These values are saved in the collection files and shared with everyone who has the repository. \
-                 Don't enter real passwords or tokens yet — secret variables are coming in a later version.",
+                "Values are saved in the collection files and shared through git. Mark a variable as \
+                 secret (🔒) to keep its values on this machine only — teammates see the name, not the value.",
             );
+            if let Some(warning) = state.host.secrets_warning() {
+                ui.add_space(4.0);
+                theme::callout(ui, warning);
+            }
             if let Some(err) = &self.error {
                 theme::error(ui, err);
             }
@@ -387,11 +443,25 @@ fn variables_table(ui: &mut Ui, d: &mut Draft, new_variable: &mut String) {
                 ui.horizontal(|ui| {
                     theme::sized_edit(
                         ui,
-                        CELL_WIDTH - 30.0,
+                        CELL_WIDTH - 56.0,
                         TextEdit::singleline(&mut v.name)
                             .id_salt(("var", row))
                             .font(egui::TextStyle::Monospace),
                     );
+                    let p = theme::palette(ui);
+                    let lock = egui::RichText::new("🔒")
+                        .size(12.0)
+                        .color(if v.secret { p.accent } else { p.muted.gamma_multiply(0.6) });
+                    let toggle = ui
+                        .add(egui::Button::selectable(v.secret, lock).frame_when_inactive(false))
+                        .on_hover_text(if v.secret {
+                            "Secret: values stay on this machine. Click to share them through the collection files."
+                        } else {
+                            "Shared through the collection files. Click to make it secret (values stay on this machine)."
+                        });
+                    if toggle.clicked() {
+                        v.secret = !v.secret;
+                    }
                     if ui
                         .add(theme::icon_button(ui, "🗙"))
                         .on_hover_text("Remove this variable")
@@ -400,11 +470,19 @@ fn variables_table(ui: &mut Ui, d: &mut Draft, new_variable: &mut String) {
                         remove = Some(row);
                     }
                 });
+                // Secret values are masked; a placeholder never shows the secret default.
+                let default_hint = if v.secret {
+                    if v.default.is_empty() { "not set" } else { "default" }.to_owned()
+                } else {
+                    v.default.clone()
+                };
                 theme::sized_edit(
                     ui,
                     CELL_WIDTH,
                     TextEdit::singleline(&mut v.default)
                         .id_salt(("default", row))
+                        .password(v.secret)
+                        .hint_text(if v.secret { "not set" } else { "" })
                         .font(egui::TextStyle::Monospace),
                 );
                 for (col, value) in v.values.iter_mut().enumerate() {
@@ -413,8 +491,9 @@ fn variables_table(ui: &mut Ui, d: &mut Draft, new_variable: &mut String) {
                         CELL_WIDTH,
                         TextEdit::singleline(value)
                             .id_salt(("value", row, col))
+                            .password(v.secret)
                             .font(egui::TextStyle::Monospace)
-                            .hint_text(v.default.clone()),
+                            .hint_text(default_hint.clone()),
                     );
                 }
                 ui.end_row();
@@ -472,7 +551,11 @@ mod tests {
 
     #[test]
     fn draft_converts_to_files_with_generated_ids() {
-        let (manifest, envs) = draft().to_config(&Manifest::new("C"), &[]).expect("valid");
+        let SavedConfig {
+            manifest,
+            environments: envs,
+            ..
+        } = draft().to_config(&Manifest::new("C"), &[]).expect("valid");
         assert_eq!(
             manifest.servers,
             [Server {
@@ -499,7 +582,11 @@ mod tests {
 
     #[test]
     fn existing_ids_survive_renames() {
-        let (manifest, envs) = draft().to_config(&Manifest::new("C"), &[]).expect("valid");
+        let SavedConfig {
+            manifest,
+            environments: envs,
+            ..
+        } = draft().to_config(&Manifest::new("C"), &[]).expect("valid");
         let col = Collection {
             root: PathBuf::new(),
             manifest,
@@ -508,10 +595,14 @@ mod tests {
             environments: envs,
             broken_environments: vec![],
         };
-        let mut d = Draft::from_collection(&col);
+        let mut d = Draft::from_collection(&col, &SecretValues::default());
         d.servers[0].name = "People API".into();
         d.environments[0].name = "Local".into();
-        let (manifest, envs) = d
+        let SavedConfig {
+            manifest,
+            environments: envs,
+            ..
+        } = d
             .to_config(&col.manifest, &col.environments)
             .expect("valid");
         assert_eq!(manifest.servers[0].id, "users-api");
@@ -533,6 +624,34 @@ mod tests {
         let mut d = draft();
         d.environments[1].name = " ".into();
         assert!(d.to_config(&Manifest::new("C"), &[]).is_err());
+    }
+
+    #[test]
+    fn secret_values_go_to_the_local_store_not_the_files() {
+        let mut d = draft();
+        d.variables[0].secret = true;
+        let saved = d.to_config(&Manifest::new("C"), &[]).expect("valid");
+        assert_eq!(saved.manifest.secrets, ["token"]);
+        assert!(saved.manifest.variables.is_empty(), "default stays local");
+        assert!(saved.environments.iter().all(|e| e.variables.is_empty()));
+        assert_eq!(saved.secrets.get(None, "token"), Some("none"));
+        assert_eq!(
+            saved.secrets.get(Some("development"), "token"),
+            Some("dev-token")
+        );
+
+        // Reading back shows the local values in the same cells.
+        let col = Collection {
+            root: PathBuf::new(),
+            manifest: saved.manifest,
+            read_only: false,
+            items: vec![],
+            environments: saved.environments,
+            broken_environments: vec![],
+        };
+        let back = Draft::from_collection(&col, &saved.secrets);
+        assert!(back.variables[0].secret);
+        assert_eq!(back.variables[0].values, ["dev-token", ""]);
     }
 
     #[test]

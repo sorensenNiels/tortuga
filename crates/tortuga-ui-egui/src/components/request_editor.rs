@@ -1,13 +1,14 @@
 use egui::{Color32, ComboBox, Key, RichText, Stroke, TextEdit, Ui};
-use tortuga_core::{HttpMethod, Request, RequestBody};
+use tortuga_core::{Auth, HttpMethod, KeyValue, Request, RequestBody};
 
-use super::{BodyDrafts, body_editor, key_value_table};
+use super::{BodyDrafts, body_editor, key_value_table, request_auth};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Params,
     Headers,
+    Auth,
     Body,
     Options,
 }
@@ -50,12 +51,18 @@ pub struct EditorContext<'a> {
     pub undefined: &'a [String],
     pub sending: bool,
     pub default_timeout_ms: u64,
+    /// The collection's default auth; `None` for the scratch request (R-HTTP-5).
+    pub collection_auth: Option<&'a Auth>,
+    /// Collection headers this request inherits (R-COL-4), shown read-only.
+    pub inherited_headers: &'a [KeyValue],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorAction {
     Send,
     Cancel,
+    /// Open the collection's default headers and auth.
+    EditCollectionDefaults,
 }
 
 /// Method + server + URL bar and the request detail tabs (R-HTTP-1..4, R-HTTP-7, R-SRV-3).
@@ -95,9 +102,12 @@ pub fn request_editor(
         );
     }
 
-    let param_count = request.params.iter().filter(|p| p.is_active()).count();
+    let param_count =
+        request.params.iter().filter(|p| p.is_active()).count() + request.path_vars.len();
     let header_count = request.headers.iter().filter(|h| h.is_active()).count();
     let has_body = request.body != RequestBody::None;
+    let effective_auth = request.auth.as_ref().or(cx.collection_auth);
+    let has_auth = effective_auth.is_some_and(|a| !a.is_none());
     ui.add_space(6.0);
     let count = |n: usize| (n > 0).then(|| n.to_string());
     theme::tabs(
@@ -105,27 +115,49 @@ pub fn request_editor(
         &mut st.tab,
         &[
             (Tab::Params, "Params", count(param_count)),
-            (Tab::Headers, "Headers", count(header_count)),
+            (
+                Tab::Headers,
+                "Headers",
+                count(header_count + cx.inherited_headers.len()),
+            ),
+            (Tab::Auth, "Auth", has_auth.then(|| "⏺".to_owned())),
             (Tab::Body, "Body", has_body.then(|| "⏺".to_owned())),
             (Tab::Options, "Options", None),
         ],
     );
 
+    let mut action = action;
     egui::ScrollArea::vertical()
         .id_salt("request-tab")
         .auto_shrink([false, true])
         .show(ui, |ui| match st.tab {
             Tab::Params => {
+                if !request.path_vars.is_empty() {
+                    path_variables(ui, &mut request.path_vars, cx.undefined);
+                    ui.add_space(12.0);
+                }
                 if key_value_table(ui, "params", &mut request.params, "Parameter", cx.undefined) {
                     st.url_text = request.display_url();
                 }
             }
             Tab::Headers => {
                 key_value_table(ui, "headers", &mut request.headers, "Header", cx.undefined);
+                if !cx.inherited_headers.is_empty() {
+                    ui.add_space(8.0);
+                    inherited_headers(ui, cx.inherited_headers);
+                    if ui.small_button("Edit collection defaults…").clicked() {
+                        action = Some(EditorAction::EditCollectionDefaults);
+                    }
+                }
                 theme::hint(
                     ui,
                     "Content-Type is set automatically from the body type unless you add it here.",
                 );
+            }
+            Tab::Auth => {
+                if request_auth(ui, &mut request.auth, cx.collection_auth, cx.undefined) {
+                    action = Some(EditorAction::EditCollectionDefaults);
+                }
             }
             Tab::Body => body_editor(ui, request, &mut st.body, cx.undefined),
             Tab::Options => request_options(ui, request, st, cx.default_timeout_ms),
@@ -199,6 +231,66 @@ fn request_bar(
     });
     ui.add_space(2.0);
     action
+}
+
+/// Values of the URL's `:name` path variables (R-HTTP-10). Names follow the URL.
+fn path_variables(ui: &mut Ui, vars: &mut [KeyValue], undefined: &[String]) {
+    // Same column layout as the params table below, so the two line up.
+    let width = ((ui.available_width() - 90.0) / 2.0).max(80.0);
+    egui::Grid::new("path-vars")
+        .num_columns(3)
+        .spacing([6.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("");
+            theme::section_label(ui, "Path variable");
+            theme::section_label(ui, "Value");
+            ui.end_row();
+            for (i, var) in vars.iter_mut().enumerate() {
+                ui.label("");
+                // The name comes from the URL: shown read-only (still selectable).
+                let mut name = format!(":{}", var.name);
+                let name_field = TextEdit::singleline(&mut name)
+                    .id_salt(("path-var-name", i))
+                    .font(egui::TextStyle::Monospace)
+                    .interactive(false)
+                    .hint_text("Name");
+                theme::sized_edit(ui, width, name_field)
+                    .on_hover_text("Change the name in the URL");
+                let flagged = theme::uses_undefined(&var.value, undefined);
+                let mut edit = TextEdit::singleline(&mut var.value)
+                    .id_salt(("path-var", i))
+                    .hint_text("Value");
+                if flagged {
+                    edit = edit.background_color(theme::undefined_bg(ui));
+                }
+                theme::sized_edit(ui, width, edit);
+                ui.end_row();
+            }
+        });
+    theme::hint(
+        ui,
+        "Path variables come from :name segments in the URL. An empty value stops the send.",
+    );
+}
+
+/// Collection headers this request inherits (R-COL-4), read-only.
+fn inherited_headers(ui: &mut Ui, headers: &[KeyValue]) {
+    let p = theme::palette(ui);
+    theme::section_label(ui, "From the collection");
+    egui::Grid::new("inherited-headers")
+        .num_columns(2)
+        .spacing([24.0, 4.0])
+        .show(ui, |ui| {
+            for h in headers {
+                ui.label(RichText::new(&h.name).monospace().color(p.muted));
+                ui.label(RichText::new(&h.value).monospace().color(p.muted));
+                ui.end_row();
+            }
+        });
+    theme::hint(
+        ui,
+        "Add a header with the same name above to replace one, or add it switched off to leave it out.",
+    );
 }
 
 fn method_picker(ui: &mut Ui, request: &mut Request) {
@@ -306,7 +398,47 @@ pub fn parse_timeout(text: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
+
+    #[test]
+    fn path_variables_get_a_value_row() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/users/:id");
+        let mut st = EditorState::new(&request);
+        st.focus_url = false;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                request_editor(
+                    ui,
+                    &mut request,
+                    &mut st,
+                    EditorContext {
+                        servers: &[],
+                        server_base: None,
+                        undefined: &[],
+                        sending: false,
+                        default_timeout_ms: 1000,
+                        collection_auth: None,
+                        inherited_headers: &[],
+                    },
+                );
+            });
+            h.run();
+            let inputs: Vec<_> = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .collect();
+            let name_at = inputs
+                .iter()
+                .position(|n| n.value().as_deref() == Some(":id"))
+                .expect("name shown");
+            let value = &inputs[name_at + 1];
+            value.focus();
+            value.type_text("42");
+            h.run();
+        }
+        assert_eq!(request.path_vars, [KeyValue::new("id", "42")]);
+    }
 
     #[test]
     fn timeouts_must_be_positive_numbers() {

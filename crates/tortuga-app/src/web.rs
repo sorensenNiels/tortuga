@@ -4,6 +4,7 @@
 use eframe::wasm_bindgen::JsCast;
 use eframe::web_sys;
 use tortuga_core::ClientSettings;
+use tortuga_core::secrets::{MemorySecretStore, SecretStore};
 use tortuga_core::storage::{Storage, UnsupportedStorage};
 use tortuga_ui_egui::{BoxTask, Host, LocalState, TortugaUi};
 
@@ -25,7 +26,7 @@ pub fn start() {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|_cc| Ok(Box::new(App(TortugaUi::new(Box::new(WebHost)))))),
+                Box::new(|_cc| Ok(Box::new(App(TortugaUi::new(Box::new(WebHost::default())))))),
             )
             .await;
         if let Err(e) = started {
@@ -35,11 +36,22 @@ pub fn start() {
 }
 
 /// Keeps everything for the session only.
-struct WebHost;
+#[derive(Default)]
+struct WebHost {
+    secrets: MemorySecretStore,
+}
 
 impl Host for WebHost {
     fn storage(&self) -> &dyn Storage {
         &UnsupportedStorage
+    }
+
+    fn secrets(&self) -> &dyn SecretStore {
+        &self.secrets
+    }
+
+    fn secrets_warning(&self) -> Option<&str> {
+        Some("The web version keeps secret values only until the page is closed.")
     }
 
     fn spawn(&self, task: BoxTask) {

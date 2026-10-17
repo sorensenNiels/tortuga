@@ -58,9 +58,17 @@ pub enum Error {
     #[error("undefined variable{}: {}", if .0.len() == 1 { "" } else { "s" }, .0.join(", "))]
     UndefinedVariables(Vec<String>),
 
+    /// R-HTTP-10
+    #[error("path variable{} without a value: {}", if .0.len() == 1 { "" } else { "s" }, .0.join(", "))]
+    EmptyPathVariables(Vec<String>),
+
     /// R-SRV-4
     #[error("server `{0}` is not defined in this collection")]
     UnknownServer(String),
+
+    /// R-VAR-3, R-LOC-2
+    #[error("could not access secret values: {0}")]
+    SecretStore(String),
 
     /// R-SRV-4
     #[error("server \"{server}\" has no URL in {environment}")]

@@ -10,6 +10,8 @@ mod desktop;
 mod dialogs;
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 mod local_store;
+#[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
+mod secret_store;
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 mod web;
 

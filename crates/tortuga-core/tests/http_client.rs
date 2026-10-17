@@ -323,3 +323,73 @@ async fn connection_errors_include_the_cause() {
         "{message}"
     );
 }
+
+/// R-HTTP-5, R-COL-4, R-VAR-3: collection auth and headers, with a secret token, reach the server.
+#[tokio::test]
+async fn sends_inherited_auth_and_headers_with_secret_values() {
+    use std::collections::BTreeMap;
+
+    use tortuga_core::Auth;
+    use tortuga_core::vars::{self, Context};
+
+    let server = server_replying(200).await;
+    let ctx = Context {
+        headers: vec![KeyValue::new("X-Team", "tortuga")],
+        auth: Auth::Bearer {
+            token: "{{token}}".into(),
+        },
+        ..Context::default()
+    }
+    .with_secrets(BTreeMap::from([("token".into(), "s3cret".into())]));
+    let request = Request::new(HttpMethod::Get, server.uri());
+
+    let prepared = vars::prepare(&request, &ctx).expect("prepared");
+    Client::default()
+        .execute(&prepared)
+        .await
+        .expect("request succeeds");
+
+    let received = only_received(&server).await;
+    assert_eq!(header_values(&received, "authorization"), ["Bearer s3cret"]);
+    assert_eq!(header_values(&received, "x-team"), ["tortuga"]);
+}
+
+/// R-HTTP-5
+#[tokio::test]
+async fn sends_basic_auth() {
+    use tortuga_core::Auth;
+    use tortuga_core::vars::{self, Context};
+
+    let server = server_replying(200).await;
+    let mut request = Request::new(HttpMethod::Get, server.uri());
+    request.auth = Some(Auth::Basic {
+        username: "user".into(),
+        password: "pass".into(),
+    });
+    let prepared = vars::prepare(&request, &Context::default()).expect("prepared");
+    Client::default().execute(&prepared).await.expect("sent");
+    assert_eq!(
+        header_values(&only_received(&server).await, "authorization"),
+        ["Basic dXNlcjpwYXNz"]
+    );
+}
+
+/// R-HTTP-10: path variables are filled (encoded) before sending.
+#[tokio::test]
+async fn sends_filled_path_variables() {
+    use tortuga_core::vars::{self, Context};
+
+    let server = server_replying(200).await;
+    let mut request = Request::new(
+        HttpMethod::Get,
+        format!("{}/users/:id/files/:name", server.uri()),
+    );
+    request.path_vars[0].value = "42".into();
+    request.path_vars[1].value = "my report.pdf".into();
+    let prepared = vars::prepare(&request, &Context::default()).expect("prepared");
+    Client::default().execute(&prepared).await.expect("sent");
+    assert_eq!(
+        only_received(&server).await.url.path(),
+        "/users/42/files/my%20report.pdf"
+    );
+}

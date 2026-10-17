@@ -26,6 +26,7 @@ pub(crate) mod test_host {
     use std::path::PathBuf;
 
     use tortuga_core::ClientSettings;
+    use tortuga_core::secrets::{MemorySecretStore, SecretStore};
     use tortuga_core::storage::{FsStorage, Storage};
 
     use crate::host::{BoxTask, Host, LocalState};
@@ -47,11 +48,15 @@ pub(crate) mod test_host {
     pub struct TestHost {
         pub open: Vec<PathBuf>,
         pub spawned: std::rc::Rc<std::cell::Cell<usize>>,
+        pub secrets: MemorySecretStore,
     }
 
     impl Host for TestHost {
         fn storage(&self) -> &dyn Storage {
             &FsStorage
+        }
+        fn secrets(&self) -> &dyn SecretStore {
+            &self.secrets
         }
         fn spawn(&self, _task: BoxTask) {
             self.spawned.set(self.spawned.get() + 1);
@@ -110,7 +115,7 @@ mod tests {
     fn bundled_fonts_have_every_symbol_the_ui_uses() {
         let mut harness = test_host::harness(|ui| {
             for symbol in [
-                "⏵", "⏷", "⏺", "⚠", "🗙", "⚙", "✏", "•", "…", "—", "“", "”", "🐢", "·",
+                "⏵", "⏷", "⏺", "⚠", "🗙", "⚙", "✏", "•", "…", "—", "“", "”", "🐢", "·", "🔒",
             ] {
                 ui.label(symbol);
                 ui.monospace(symbol);

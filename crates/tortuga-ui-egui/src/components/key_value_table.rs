@@ -175,3 +175,31 @@ mod tests {
         assert_eq!(rows, [KeyValue::new("b", "2")]);
     }
 }
+
+#[cfg(test)]
+mod dialog_tests {
+    use egui_kittest::kittest::Queryable;
+    use tortuga_core::KeyValue;
+
+    #[test]
+    fn typing_in_a_table_inside_a_dialog() {
+        let mut rows: Vec<KeyValue> = vec![];
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                egui::Modal::new(egui::Id::unique("m")).show(ui.ctx(), |ui| {
+                    ui.set_width(600.0);
+                    super::key_value_table(ui, "t", &mut rows, "Header", &[]);
+                });
+            });
+            h.run();
+            let field = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .next()
+                .expect("name field");
+            field.focus();
+            field.type_text("X-Team");
+            h.run();
+        }
+        assert_eq!(rows.first().map(|r| r.name.as_str()), Some("X-Team"));
+    }
+}

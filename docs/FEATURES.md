@@ -64,7 +64,23 @@ through a server base URL.
 | R-VAR-4 | Environment value wins over the collection default (secrets come in M4). | Linux | Automated tests. In the app: Development used 42, Staging fell back to the default 1. |
 | R-VAR-5 | Undefined variables are highlighted (field turns amber), listed under the URL bar, and the send is stopped with "Undefined variable: …". | Linux | Automated tests. In the app: `Bearer {{token}}` header. |
 | R-VAR-7 | Variables table: one row per variable, a Default column and one column per environment; empty cells show the default as a hint. | Linux | In the app. |
-| R-COL-4 | Collection defaults for variables (headers and auth defaults come in M4). | Linux | As R-VAR-2. |
+| R-COL-4 | Collection defaults for variables (headers and auth defaults: see M4). | Linux | As R-VAR-2. |
+
+### M4: Auth & secrets
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-HTTP-5 | Auth tab: inherit from collection, no auth, Basic, Bearer token. Fields take `{{variables}}`; literal credentials are masked and trigger a warning to use a secret variable. A hand-written `Authorization` header wins. | Linux | Automated tests (RFC 7617 Basic encoding, inherit/override/none, manual header wins, mock server receives the header). In the app: collection Bearer `{{token}}` inherited by a request; echo server received `Bearer s3cret`. |
+| R-COL-4 | Collection defaults dialog (collection menu → "Defaults (headers, auth)…"): default headers and auth in `tortuga.toml`. A request header with the same name replaces a default; adding it switched off leaves it out. Inherited headers are listed read-only on the request's Headers tab. | Linux | Automated tests (inheritance, override, opt-out, exact file output). In the app: header and auth saved and inherited. |
+| R-VAR-3 | Variables can be marked secret (🔒) in the environments table. `tortuga.toml` lists only the names (`secrets = ["token"]`); values (default and per environment) are stored on this machine and masked in the table. Marking a variable secret moves its values out of the files. | Linux | Automated tests (values go to the local store, never the files). In the app: secret saved; `grep` found the value in no collection file; still used after a restart. |
+| R-VAR-4 | Local secret value, then environment, then collection default. | Linux | Automated tests. |
+| R-LOC-1 | Secret values, open collections and active environments are stored in the user's app-data folder, keyed by collection path; nothing is written into the collection. | Linux | Files inspected on disk. (Cookies arrive in M5.) |
+
+### v1 extras
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-HTTP-10 | Path variables: `:name` segments in the URL path get a "Path variables" table on the Params tab that follows the URL. Values take `{{variables}}`, are URL-encoded when sent and saved as `[[path_vars]]`; an empty value stops the send ("Path variables without a value: id, name"). `host:8080` is never a variable. | Linux | Automated tests (parsing, encoding, server base URL, file round trip, mock server path). In the app: `/users/:id/files/:name` sent as `/users/42/files/my%20report.pdf`; saved request file checked. |
 
 ## In progress
 
@@ -72,6 +88,7 @@ through a server base URL.
 |---|---|
 | R-P-4 | No telemetry or analytics code exists, and the app only sends requests the user makes. Not yet confirmed with a network monitor. |
 | R-HTTP-8 | Proxy settings from the Windows and macOS system settings are expected to work (handled by the HTTP library), but have not been tested on those OSes. |
+| R-LOC-2 | The OS credential store (Keychain, Credential Manager, Secret Service via `keyring`) is used when available; otherwise values go to `secrets.toml` in the app-data folder with owner-only permissions (0600 on Unix) and the environments dialog shows a warning. **Verified:** the fallback on Linux/WSL (no Secret Service), including file permissions. **Not yet checked:** the OS credential store itself, on any OS. |
 | R-NF-2 | Partly done: bodies over 2 MB are not pretty-printed and are truncated in the viewer, with the full body available through "Save to file…". Not yet measured with 50 MB responses. |
 
 ## Known limitations

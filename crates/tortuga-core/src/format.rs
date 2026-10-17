@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{HttpMethod, KeyValue, Request, RequestBody};
+use crate::model::{Auth, HttpMethod, KeyValue, Request, RequestBody};
 
 /// Format version written by this build (R-GIT-7).
 pub const FORMAT_VERSION: u32 = 1;
@@ -17,8 +17,19 @@ pub const FORMAT_VERSION: u32 = 1;
 pub struct Manifest {
     pub format: u32,
     pub name: String,
+    /// Names of secret variables (R-VAR-3). Only the names are shared; values stay
+    /// on each machine. Kept sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub servers: Vec<Server>,
+    /// Headers every request inherits (R-COL-4). A request header with the same
+    /// name, enabled or not, replaces it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<KeyValue>,
+    /// Auth for requests that don't set their own (R-HTTP-5, R-COL-4).
+    #[serde(default, skip_serializing_if = "Auth::is_none")]
+    pub auth: Auth,
     /// Collection-level variable defaults (R-VAR-2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, String>,
@@ -29,7 +40,10 @@ impl Manifest {
         Self {
             format: FORMAT_VERSION,
             name: name.into(),
+            secrets: Vec::new(),
             servers: Vec::new(),
+            headers: Vec::new(),
+            auth: Auth::None,
             variables: BTreeMap::new(),
         }
     }
@@ -83,7 +97,12 @@ struct RequestFile {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     params: Vec<KeyValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    path_vars: Vec<KeyValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     headers: Vec<KeyValue>,
+    /// Absent = inherit the collection's auth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth: Option<Auth>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body: Option<BodyFile>,
 }
@@ -116,6 +135,10 @@ pub fn parse_request(text: &str, stem: &str) -> Result<(Request, Option<i64>), S
     request.server = file.server.filter(|s| !s.is_empty());
     request.headers = file.headers;
     request.timeout_ms = file.timeout_ms;
+    request.auth = file.auth;
+    // Values saved for the URL's path variables; stale ones are dropped (R-HTTP-10).
+    request.path_vars = file.path_vars;
+    request.sync_path_variables();
     request.body = match file.body {
         None => RequestBody::None,
         Some(BodyFile {
@@ -164,7 +187,15 @@ pub fn write_request(request: &Request, seq: Option<i64>) -> String {
         url: request.url.clone(),
         timeout_ms: request.timeout_ms,
         params: request.params.clone(),
+        // Only variables that have a value are worth writing.
+        path_vars: request
+            .path_vars
+            .iter()
+            .filter(|v| !v.value.is_empty())
+            .cloned()
+            .collect(),
         headers: request.headers.clone(),
+        auth: request.auth.clone(),
         body,
     })
 }
@@ -311,6 +342,74 @@ content = """
         assert!(err.starts_with("line 2:"), "{err}");
         let err = parse_request("<<<<<<< HEAD\nname = \"x\"\n", "x").expect_err("conflict marker");
         assert!(err.starts_with("line 1:"), "{err}");
+    }
+
+    #[test]
+    fn path_variables_round_trip() {
+        let mut r = Request::new(HttpMethod::Get, "/users/:id/orders/:order");
+        r.path_vars[0].value = "{{user_id}}".into();
+        let text = write_request(&r, None);
+        assert!(
+            text.ends_with("\n[[path_vars]]\nname = \"id\"\nvalue = \"{{user_id}}\"\n"),
+            "only filled values are written: {text}"
+        );
+        assert_eq!(parse_request(&text, "x").expect("parse").0, r);
+    }
+
+    #[test]
+    fn auth_is_written_only_when_set() {
+        let mut r = Request::new(HttpMethod::Get, "https://a.test");
+        assert!(
+            !write_request(&r, None).contains("[auth]"),
+            "inherit is the default"
+        );
+
+        r.auth = Some(Auth::Bearer {
+            token: "{{token}}".into(),
+        });
+        let text = write_request(&r, None);
+        assert!(
+            text.ends_with("\n[auth]\nkind = \"bearer\"\ntoken = \"{{token}}\"\n"),
+            "{text}"
+        );
+        assert_eq!(parse_request(&text, "x").expect("parse").0, r);
+
+        r.auth = Some(Auth::None);
+        let text = write_request(&r, None);
+        assert!(text.ends_with("\n[auth]\nkind = \"none\"\n"), "{text}");
+        assert_eq!(
+            parse_request(&text, "x").expect("parse").0.auth,
+            Some(Auth::None)
+        );
+    }
+
+    #[test]
+    fn manifest_with_defaults_and_secrets() {
+        let mut m = Manifest::new("Acme API");
+        m.secrets = vec!["token".into()];
+        m.headers.push(KeyValue::new("Accept", "application/json"));
+        m.auth = Auth::Basic {
+            username: "{{user}}".into(),
+            password: "{{token}}".into(),
+        };
+        let text = write_manifest(&m);
+        assert_eq!(
+            text,
+            r#"format = 1
+name = "Acme API"
+secrets = ["token"]
+
+[[headers]]
+name = "Accept"
+value = "application/json"
+
+[auth]
+kind = "basic"
+username = "{{user}}"
+password = "{{token}}"
+"#
+        );
+        assert_eq!(parse_manifest(&text), Ok(m));
     }
 
     #[test]

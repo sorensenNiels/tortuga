@@ -1,8 +1,10 @@
 //! App-wide state: settings, the HTTP client and the open collections.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use tortuga_core::secrets::SecretValues;
 use tortuga_core::storage::Storage;
 use tortuga_core::{Client, ClientSettings, Collection, Request, vars};
 
@@ -52,6 +54,8 @@ pub struct AppState {
     pub collections: Vec<Collection>,
     /// Remembered on this machine only (R-LOC-1).
     pub local: LocalState,
+    /// Secret variable values of each open collection, loaded when it opens (R-VAR-3).
+    pub secrets: BTreeMap<PathBuf, SecretValues>,
     /// Last problem or message to show the user; cleared when dismissed.
     pub notice: Option<String>,
 }
@@ -84,10 +88,15 @@ impl AppState {
             LocalState::default()
         });
         let mut collections = Vec::new();
+        let mut secrets = BTreeMap::new();
         local
             .open_collections
             .retain(|root| match Collection::open(host.storage(), root) {
                 Ok(c) => {
+                    match SecretValues::load(&c, host.secrets()) {
+                        Ok(values) => drop(secrets.insert(root.clone(), values)),
+                        Err(e) => problems.push(format!("Could not read secret values: {e}")),
+                    }
                     collections.push(c);
                     true
                 }
@@ -102,6 +111,7 @@ impl AppState {
             client,
             collections,
             local,
+            secrets,
             notice: (!problems.is_empty()).then(|| problems.join("\n")),
         }
     }
@@ -170,6 +180,10 @@ impl AppState {
             return Ok(());
         }
         let collection = Collection::open(self.storage(), root)?;
+        match SecretValues::load(&collection, self.host.secrets()) {
+            Ok(values) => drop(self.secrets.insert(root.to_owned(), values)),
+            Err(e) => self.notify(format!("Could not read secret values: {e}")),
+        }
         self.collections.push(collection);
         self.local.open_collections.push(root.to_owned());
         self.save_local();
@@ -183,6 +197,7 @@ impl AppState {
 
     pub fn close_collection(&mut self, root: &Path) {
         self.collections.retain(|c| c.root != root);
+        self.secrets.remove(root);
         self.local.open_collections.retain(|r| r != root);
         self.local.active_environments.remove(&root_key(root));
         self.save_local();
@@ -212,9 +227,23 @@ impl AppState {
             return vars::Context::default();
         };
         let env = self.active_environment(root);
+        let secrets = self
+            .secrets
+            .get(root)
+            .map(|s| s.for_environment(env.as_deref()))
+            .unwrap_or_default();
         self.collection(root)
-            .map(|c| vars::Context::for_collection(c, env.as_deref()))
+            .map(|c| vars::Context::for_collection(c, env.as_deref()).with_secrets(secrets))
             .unwrap_or_default()
+    }
+
+    /// Stores new secret values for the collection at `root` on this machine (R-VAR-3).
+    pub fn save_secrets(&mut self, root: &Path, values: SecretValues) -> Result<(), String> {
+        let old = self.secrets.get(root).cloned().unwrap_or_default();
+        tortuga_core::secrets::save(self.host.secrets(), root, &old, &values)
+            .map_err(|e| sentence(&e.to_string()))?;
+        self.secrets.insert(root.to_owned(), values);
+        Ok(())
     }
 
     fn save_local(&mut self) {

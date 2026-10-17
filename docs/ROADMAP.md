@@ -58,15 +58,15 @@ A requirement moves to [FEATURES.md](FEATURES.md) once it is implemented and ver
 | **M1: Send a request** | A complete single-request editor: build any request, send it, inspect the response. | R-HTTP-1, 2, 3, 4, 6, 7, 8 · R-COL-7 · R-P-4 | Done (see FEATURES.md) |
 | **M2: Collections on disk** | Organise requests in collections that are saved as TOML files and can be committed to git. | R-COL-1, 2, 3, 5, 6 · R-GIT-1 to 8 · R-P-1 | Done (see FEATURES.md) |
 | **M3: Environments, servers & variables** | Switch between dev/staging/prod: each server gets its own address per environment, and `{{variables}}` fill in the rest. | R-SRV-1 to 5 · R-VAR-1, 2, 4, 5, 7 · R-COL-4 (variables) | Done (see FEATURES.md) |
-| **M4: Auth & secrets** | Share collections without leaking credentials. | R-VAR-3 · R-HTTP-5 · R-COL-4 (headers, auth) · R-LOC-1, 2 | |
+| **M4: Auth & secrets** | Share collections without leaking credentials. | R-VAR-3 · R-HTTP-5 · R-COL-4 (headers, auth) · R-LOC-1, 2 | Done, except R-LOC-2 on a real OS credential store (see FEATURES.md) |
 | **M5: Cookies** | Session-based APIs work, with per-request control. | R-CK-1 to 4 | |
 | **M6: Live git collaboration** | Teammates' changes appear automatically, and the git state is visible. | R-GIT-10 to 14 | |
 | **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | |
 | **UI: egui** | Move the UI from Dioxus to egui (`tortuga-ui-egui`) with a modern look. | — | Done (2026-10-17) |
-| **v1 extras** | Decided in D1. | R-COL-8 · R-HTTP-9 | |
+| **v1 extras** | Decided in D1, plus path variables (requested 2026-10-17). | R-COL-8 · R-HTTP-9 · R-HTTP-10 | R-HTTP-10 done |
 
-Until M4 is done, every environment value is written to the collection files. The app must say so where values are edited,
-so nobody commits a real token by accident.
+Since M4, credentials belong in secret variables (R-VAR-3). The app warns where a credential is typed as plain text,
+because everything else is written to the collection files and shared through git.
 
 ## 5. Phases
 
@@ -184,6 +184,7 @@ added.
 | R-HTTP-7 | An in-flight request can be cancelled. Per-request timeout with a global default. |
 | R-HTTP-8 | Settings: follow redirects (on/off), verify TLS certificates (on/off, with a visible warning when off), proxy from system settings. |
 | R-HTTP-9 | Copy a request as a `curl` command with variables resolved. Secret values are masked unless the user confirms including them. *(D1; was IDEA-4)* |
+| R-HTTP-10 | Path variables: a URL path segment starting with `:` (e.g. `/users/:id`) is a path variable. Its value is edited in a table that follows the URL, may contain `{{variables}}`, is URL-encoded when sent, and is saved in the request file. Sending stops with a message naming any path variable without a value. Only the path counts, so `host:8080` is not a variable. |
 
 ### 6.3 Cookies
 

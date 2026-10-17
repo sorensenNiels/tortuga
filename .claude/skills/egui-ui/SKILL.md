@@ -39,6 +39,12 @@ egui/eframe version: **0.37** (see workspace `Cargo.toml`). APIs changed a lot r
 - Give text fields stable ids (`.id_salt(..)`) when the widgets around them can change (tables, rows that
   appear), otherwise focus jumps.
 - Inside a `Grid`, `desired_width` is capped by last frame's column width — use `theme::sized_edit`.
+- Clickable things must be real widgets (`Button`, `TextEdit`, …). An invisible `scope(..).response.interact()`
+  laid over labels loses its clicks inside dialogs (see `theme::tabs`).
+- A `Panel` remembers its size from what its content used last frame; content that should fill a resizable
+  panel calls `ui.set_min_height(ui.available_height())` (see the request panel in `shell.rs`).
+- Content in a `Modal` must not size itself from `available_width()` without the dialog fixing its width
+  (`dialog()` does `set_width`), or the grid and the dialog chase each other and never settle.
 - Rows with trailing buttons: lay out with `Sides::new().shrink_left()` (see `sidebar::tree_row`); sizing a
   widget from `available_width()` in a resizable panel otherwise makes the panel creep wider every frame.
 - **Glyphs:** egui *panics* on characters its bundled fonts lack (e.g. ▸ ● ✕ ⋯). Use only symbols listed in
@@ -68,7 +74,8 @@ harness.query_all_by_label("🗙").next().expect("button").click();
 harness.run();
 ```
 
-Build harnesses with `crate::test_host::harness(|ui| ..)`: it installs the theme (the `semibold` font family
+Placeholders are not accessible labels in kittest: find text fields by role
+(`get_all_by_role(Role::TextInput)`) or by value. Build harnesses with `crate::test_host::harness(|ui| ..)`: it installs the theme (the `semibold` font family
 must exist or egui panics). Use `crate::test_host::TestHost` for the whole app; it counts spawned sends. Keep logic in small pure functions and unit-test those.
 
 ## Check your work

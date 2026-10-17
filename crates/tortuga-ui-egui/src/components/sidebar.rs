@@ -36,6 +36,8 @@ pub enum SidebarAction {
     Delete(ItemKey),
     ShowError(String),
     EditEnvironments(PathBuf),
+    /// Default headers and auth of a collection (R-COL-4).
+    EditDefaults(PathBuf),
     Reload(PathBuf),
     Close(PathBuf),
     OpenFolder,
@@ -369,6 +371,9 @@ fn collection_menu(ui: &mut Ui, c: &Collection) -> Option<MenuChoice> {
     let environments = format!("Environments ({})…", c.environments.len());
     item(ui, environments, &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
+    });
+    item(ui, "Defaults (headers, auth)…".into(), &|| {
+        MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
     });
     item(ui, "Reload from disk".into(), &|| {
         MenuChoice::Action(SidebarAction::Reload(root.clone()))

@@ -11,6 +11,7 @@ use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
 use tortuga_core::ClientSettings;
+use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
 
 /// Which collections are open (R-COL-5) and the active environment of each (R-SRV-5).
@@ -34,6 +35,14 @@ pub type BoxTask = Pin<Box<dyn Future<Output = ()> + 'static>>;
 pub trait Host {
     /// Where collections are read and written.
     fn storage(&self) -> &dyn Storage;
+
+    /// Where secret variable values are kept on this machine (R-VAR-3, R-LOC-2).
+    fn secrets(&self) -> &dyn SecretStore;
+
+    /// Set when secrets can't go to the OS credential store, e.g. "kept in a file instead" (R-LOC-2).
+    fn secrets_warning(&self) -> Option<&str> {
+        None
+    }
 
     /// Runs `task` in the background. The UI cancels it by dropping it (it is abortable).
     fn spawn(&self, task: BoxTask);

@@ -122,6 +122,61 @@ impl RequestBody {
     }
 }
 
+/// Authentication sent with a request (R-HTTP-5). Fields may contain `{{variables}}`;
+/// use secret variables (R-VAR-3) so credentials are not committed.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Auth {
+    #[default]
+    None,
+    Basic {
+        #[serde(default)]
+        username: String,
+        #[serde(default)]
+        password: String,
+    },
+    Bearer {
+        #[serde(default)]
+        token: String,
+    },
+}
+
+impl Auth {
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
+
+    /// Every text field, for variable substitution and checks.
+    pub fn fields_mut(&mut self) -> Vec<&mut String> {
+        match self {
+            Self::None => vec![],
+            Self::Basic { username, password } => vec![username, password],
+            Self::Bearer { token } => vec![token],
+        }
+    }
+
+    pub fn fields(&self) -> Vec<&str> {
+        match self {
+            Self::None => vec![],
+            Self::Basic { username, password } => vec![username, password],
+            Self::Bearer { token } => vec![token],
+        }
+    }
+
+    /// The `Authorization` header value, or `None` for no auth.
+    pub fn header_value(&self) -> Option<String> {
+        use base64::Engine as _;
+        match self {
+            Self::None => None,
+            Self::Basic { username, password } => Some(format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"))
+            )),
+            Self::Bearer { token } => Some(format!("Bearer {}", token.trim())),
+        }
+    }
+}
+
 /// A request as the user edits and saves it.
 ///
 /// `url` holds everything before the `?`; the query string lives in `params`
@@ -140,6 +195,10 @@ pub struct Request {
     pub url: String,
     #[serde(default)]
     pub params: Vec<KeyValue>,
+    /// Values of the `:name` path variables in `url`, in URL order (R-HTTP-10).
+    /// Kept in step with `url` by [`Request::sync_path_variables`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_vars: Vec<KeyValue>,
     #[serde(default)]
     pub headers: Vec<KeyValue>,
     #[serde(default)]
@@ -147,6 +206,9 @@ pub struct Request {
     /// Overrides the global default timeout (R-HTTP-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// `None` = use the collection's default auth (R-HTTP-5, R-COL-4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<Auth>,
 }
 
 impl Default for Request {
@@ -159,16 +221,20 @@ impl Request {
     /// Creates a request from a full URL; any query string is split into `params`.
     pub fn new(method: HttpMethod, url: impl AsRef<str>) -> Self {
         let (url, params) = query::split_url(url.as_ref());
-        Self {
+        let mut request = Self {
             name: String::from("Untitled request"),
             method,
             server: None,
             url,
             params,
+            path_vars: Vec::new(),
             headers: Vec::new(),
             body: RequestBody::None,
             timeout_ms: None,
-        }
+            auth: None,
+        };
+        request.sync_path_variables();
+        request
     }
 
     /// The URL as shown in the URL bar: base URL plus enabled params.
@@ -183,6 +249,24 @@ impl Request {
         self.url = url;
         let disabled = self.params.drain(..).filter(|p| !p.enabled);
         self.params = typed.into_iter().chain(disabled).collect();
+        self.sync_path_variables();
+    }
+
+    /// Makes `path_vars` match the `:name` segments of `url`: values of names still
+    /// in the URL are kept, new names start empty, names no longer in it are dropped.
+    pub fn sync_path_variables(&mut self) {
+        let old = std::mem::take(&mut self.path_vars);
+        self.path_vars = query::path_variable_names(&self.url)
+            .into_iter()
+            .map(|name| {
+                let value = old
+                    .iter()
+                    .find(|v| v.name == name)
+                    .map(|v| v.value.clone())
+                    .unwrap_or_default();
+                KeyValue::new(name, value)
+            })
+            .collect();
     }
 
     pub fn timeout(&self) -> Option<Duration> {
@@ -308,6 +392,9 @@ mod tests {
             .push(KeyValue::new("Accept", "application/json"));
         req.body = RequestBody::Form(vec![KeyValue::new("k", "v")]);
         req.timeout_ms = Some(500);
+        req.auth = Some(Auth::Bearer {
+            token: "{{token}}".into(),
+        });
 
         let json = serde_json::to_string(&req).expect("serialize");
         let back: Request = serde_json::from_str(&json).expect("deserialize");
@@ -338,6 +425,38 @@ mod tests {
             .map(|p| (p.name.as_str(), p.enabled))
             .collect();
         assert_eq!(names, [("a", true), ("c", true), ("b", false)]);
+    }
+
+    #[test]
+    fn auth_header_values() {
+        let basic = Auth::Basic {
+            username: "Aladdin".into(),
+            password: "open sesame".into(),
+        };
+        // Example from RFC 7617.
+        assert_eq!(
+            basic.header_value().as_deref(),
+            Some("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")
+        );
+        let bearer = Auth::Bearer {
+            token: " abc ".into(),
+        };
+        assert_eq!(bearer.header_value().as_deref(), Some("Bearer abc"));
+        assert_eq!(Auth::None.header_value(), None);
+    }
+
+    #[test]
+    fn path_variables_follow_the_url_and_keep_values() {
+        let mut req = Request::new(HttpMethod::Get, "https://a.test/users/:id");
+        assert_eq!(req.path_vars, [KeyValue::new("id", "")]);
+        req.path_vars[0].value = "42".into();
+        req.set_display_url("https://a.test/users/:id/orders/:order?x=1");
+        assert_eq!(
+            req.path_vars,
+            [KeyValue::new("id", "42"), KeyValue::new("order", "")]
+        );
+        req.set_display_url("https://a.test/users");
+        assert_eq!(req.path_vars, Vec::<KeyValue>::new());
     }
 
     #[test]

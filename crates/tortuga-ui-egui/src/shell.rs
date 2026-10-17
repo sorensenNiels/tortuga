@@ -13,9 +13,10 @@ use futures_util::future::{AbortHandle, abortable};
 use tortuga_core::{Item, Request, vars};
 
 use crate::components::{
-    ConfirmDialog, CreateCollectionDialog, DialogResult, EditorAction, EditorContext, EditorState,
-    EnvironmentsDialog, MoveDialog, Outcome, ResponseAction, ResponseState, SaveToCollectionDialog,
-    SettingsDialog, SidebarAction, SidebarState, request_editor, response_panel, sidebar,
+    ConfirmDialog, CreateCollectionDialog, DefaultsDialog, DialogResult, EditorAction,
+    EditorContext, EditorState, EnvironmentsDialog, MoveDialog, Outcome, ResponseAction,
+    ResponseState, SaveToCollectionDialog, SettingsDialog, SidebarAction, SidebarState,
+    request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
 use crate::host::Host;
@@ -29,6 +30,7 @@ const SEND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::En
 enum Modal {
     Settings(SettingsDialog),
     Environments(EnvironmentsDialog),
+    Defaults(DefaultsDialog),
     ConfirmDelete(ItemKey, ConfirmDialog),
     MoveTo(MoveDialog),
     SaveToCollection(SaveToCollectionDialog),
@@ -297,6 +299,9 @@ impl TortugaUi {
         self.request_head(ui, key.as_ref(), current_dirty, read_only);
         ui.add_space(4.0);
 
+        let collection_auth = root.as_ref().map(|_| ctx.auth.clone());
+        let inherited_headers: Vec<tortuga_core::KeyValue> =
+            ctx.inherited_headers(&self.current).cloned().collect();
         let sending = self.sending() == Some(&key);
         let default_timeout_ms = self.state.settings.default_timeout_ms;
         let action = Panel::top("request")
@@ -308,6 +313,9 @@ impl TortugaUi {
             .default_size(300.0)
             .size_range(120.0..=f32::INFINITY)
             .show(ui, |ui| {
+                // Fill the panel: egui remembers a panel's size from what its content used,
+                // so a short tab would otherwise shrink the request area for good.
+                ui.set_min_height(ui.available_height());
                 request_editor(
                     ui,
                     &mut self.current,
@@ -318,6 +326,8 @@ impl TortugaUi {
                         undefined: &undefined,
                         sending,
                         default_timeout_ms,
+                        collection_auth: collection_auth.as_ref(),
+                        inherited_headers: &inherited_headers,
                     },
                 )
             })
@@ -325,6 +335,13 @@ impl TortugaUi {
         match action {
             Some(EditorAction::Send) => self.send(ui.ctx()),
             Some(EditorAction::Cancel) => self.cancel(),
+            Some(EditorAction::EditCollectionDefaults) => {
+                if let Some(root) = root {
+                    self.modal = Some(Modal::Defaults(
+                        DefaultsDialog::new(&self.state, root).on_auth(),
+                    ));
+                }
+            }
             None => {}
         }
 
@@ -666,6 +683,9 @@ impl TortugaUi {
                     root,
                 )));
             }
+            SidebarAction::EditDefaults(root) => {
+                self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
+            }
             SidebarAction::Reload(root) => self.state.reload(&root),
             SidebarAction::Close(root) => {
                 self.forget(&root, Path::new(""));
@@ -758,9 +778,20 @@ impl TortugaUi {
                 result => result == DialogResult::Open,
             },
             Modal::Environments(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done((manifest, envs)) => self
+                DialogResult::Done(saved) => !self.save_environments(d, saved),
+                result => result == DialogResult::Open,
+            },
+            Modal::Defaults(d) => match d.show(ctx, &self.state) {
+                DialogResult::Done((headers, auth)) => self
                     .state
-                    .run(&d.root, |c, s| c.save_config(s, &manifest, &envs))
+                    .run(&d.root, |c, s| {
+                        let manifest = tortuga_core::Manifest {
+                            headers: headers.clone(),
+                            auth: auth.clone(),
+                            ..c.manifest.clone()
+                        };
+                        c.save_config(s, &manifest, &c.environments)
+                    })
                     .is_none(),
                 result => result == DialogResult::Open,
             },
@@ -821,6 +852,26 @@ impl TortugaUi {
         if keep && self.modal.is_none() {
             self.modal = Some(modal);
         }
+    }
+}
+
+impl TortugaUi {
+    /// Saves the environments dialog. Secrets first: if the credential store fails,
+    /// nothing changes on disk and the dialog stays open with the error. Returns success.
+    fn save_environments(
+        &mut self,
+        d: &mut EnvironmentsDialog,
+        saved: crate::components::SavedConfig,
+    ) -> bool {
+        if let Err(e) = self.state.save_secrets(&d.root, saved.secrets) {
+            d.error = Some(e);
+            return false;
+        }
+        self.state
+            .run(&d.root, |c, s| {
+                c.save_config(s, &saved.manifest, &saved.environments)
+            })
+            .is_some()
     }
 }
 
