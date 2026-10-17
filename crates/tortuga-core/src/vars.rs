@@ -125,7 +125,7 @@ pub fn prepare(request: &Request, ctx: &Context) -> Result<Request> {
             .ok_or_else(|| Error::ServerUrlMissing {
                 server: name.clone(),
                 environment: ctx.environment.as_ref().map_or_else(
-                    || "this collection (no environment selected)".to_owned(),
+                    || "this project (no environment selected)".to_owned(),
                     |e| format!("environment \"{e}\""),
                 ),
             })?;

@@ -100,7 +100,7 @@ pub fn request_editor(
         theme::warning(
             ui,
             format!(
-                "Undefined: {} — define them in the collection's environments.",
+                "Undefined: {} — define them in the project's environments.",
                 names.join(", ")
             ),
         );
@@ -149,7 +149,7 @@ pub fn request_editor(
                 if !cx.inherited_headers.is_empty() {
                     ui.add_space(8.0);
                     inherited_headers(ui, cx.inherited_headers);
-                    if ui.small_button("Edit collection defaults…").clicked() {
+                    if ui.small_button("Edit project defaults…").clicked() {
                         action = Some(EditorAction::EditCollectionDefaults);
                     }
                 }
@@ -280,7 +280,7 @@ fn path_variables(ui: &mut Ui, vars: &mut [KeyValue], undefined: &[String]) {
 /// Collection headers this request inherits (R-COL-4), read-only.
 fn inherited_headers(ui: &mut Ui, headers: &[KeyValue]) {
     let p = theme::palette(ui);
-    theme::section_label(ui, "From the collection");
+    theme::section_label(ui, "From the project");
     egui::Grid::new("inherited-headers")
         .num_columns(2)
         .spacing([24.0, 4.0])
@@ -403,7 +403,7 @@ fn request_options(
     // R-CK-2: per request, saved in the request file.
     ui.add_space(12.0);
     let jar = if cx.in_collection {
-        "this collection's cookie jar"
+        "this project's cookie jar"
     } else {
         "the scratch cookie jar (kept until the app closes)"
     };

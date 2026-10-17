@@ -5,6 +5,7 @@ use egui::text::{CCursor, CCursorRange};
 use egui::{Atom, Button, Key, RichText, ScrollArea, Sides, TextEdit, Ui};
 use tortuga_core::collection::Direction;
 use tortuga_core::git::{FileStatus, GitStatus};
+use tortuga_core::workspace::ProjectRef;
 use tortuga_core::{Collection, Item};
 
 use crate::state::{AppState, ItemKey};
@@ -45,8 +46,20 @@ pub enum SidebarAction {
     OpenInFileManager(PathBuf),
     OpenInTerminal(PathBuf),
     Reload(PathBuf),
+    /// Remove the project from the workspace; its files stay (R-WS-1).
     Close(PathBuf),
-    OpenFolder,
+    /// The environment a project uses when it has none named like the workspace's (R-WS-6).
+    SetProjectEnvironment {
+        root: PathBuf,
+        id: String,
+    },
+    /// Create a project in a folder (R-WS-7).
+    NewProject,
+    /// Find projects in a folder or repository and add them (R-WS-3).
+    AddProjects,
+    /// A missing project was moved: pick its new folder (R-WS-5).
+    LocateMissing(PathBuf),
+    RemoveMissing(PathBuf),
 }
 
 /// Height of a tree row.
@@ -96,11 +109,15 @@ struct Tree<'a> {
     conflicts: &'a HashSet<ItemKey>,
     /// Git status of the collection being drawn (R-GIT-12).
     git: Option<&'a GitStatus>,
+    /// Show the branch on the project row (not when a repository row above shows it, R-WS-4).
+    show_branch: bool,
+    /// Set when the project doesn't have the workspace's environment (R-WS-6).
+    env_note: Option<EnvNote>,
     can_open_folders: bool,
     actions: Vec<SidebarAction>,
 }
 
-/// Collection tree (R-COL-1, R-COL-2, R-COL-3).
+/// The projects of the workspace and their requests (R-COL-1, R-COL-2, R-COL-3, R-WS-4).
 pub fn sidebar(
     ui: &mut Ui,
     state: &AppState,
@@ -115,6 +132,8 @@ pub fn sidebar(
         dirty,
         conflicts,
         git: None,
+        show_branch: true,
+        env_note: None,
         can_open_folders: state.host.can_open_folders(),
         actions: Vec::new(),
     };
@@ -137,17 +156,31 @@ pub fn sidebar(
     ui.add_space(14.0);
     egui::Sides::new().show(
         ui,
-        |ui| theme::section_label(ui, "Collections"),
+        |ui| theme::section_label(ui, "Projects"),
         |ui| {
-            if state.host.can_pick_folders()
-                && ui
-                    .add(theme::ghost_button("+ Open…"))
-                    .on_hover_text(
-                        "Open a collection folder, or turn a folder into a new collection",
-                    )
-                    .clicked()
-            {
-                tree.actions.push(SidebarAction::OpenFolder);
+            if state.host.can_pick_folders() {
+                let (response, inner) =
+                    egui::containers::menu::MenuButton::from_button(theme::ghost_button("+ Add"))
+                        .ui(ui, |ui| {
+                            let mut action = None;
+                            if ui
+                                .button("New project…")
+                                .on_hover_text("Create a project in a folder of your choice")
+                                .clicked()
+                            {
+                                action = Some(SidebarAction::NewProject);
+                            }
+                            if ui
+                                .button("Add existing projects…")
+                                .on_hover_text("Find the projects in a folder or git repository")
+                                .clicked()
+                            {
+                                action = Some(SidebarAction::AddProjects);
+                            }
+                            action
+                        });
+                response.on_hover_text("Add a project to this workspace");
+                tree.actions.extend(inner.and_then(|i| i.inner));
             }
         },
     );
@@ -157,17 +190,37 @@ pub fn sidebar(
         .auto_shrink(false)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            for c in &state.collections {
-                ui.push_id(&c.root, |ui| {
-                    tree.git = state.git.get(&c.root);
-                    collection(ui, c, state.cookie_jar(Some(&c.root)).len(), &mut tree);
-                });
+            for (repository, members) in state.project_groups() {
+                let shared = repository.as_ref().filter(|_| members.len() > 1);
+                let depth = usize::from(shared.is_some());
+                let collapsed = match shared {
+                    Some(repo) => {
+                        let git = state.git.get(&members[0].root);
+                        ui.push_id(repo, |ui| repository_row(ui, repo, git, &members, &mut tree))
+                            .inner
+                    }
+                    None => false,
+                };
+                if collapsed {
+                    continue;
+                }
+                for c in members {
+                    ui.push_id(&c.root, |ui| {
+                        tree.git = state.git.get(&c.root);
+                        tree.show_branch = shared.is_none();
+                        tree.env_note = environment_note(state, c);
+                        collection(ui, c, state.cookie_jar(Some(&c.root)).len(), depth, &mut tree);
+                    });
+                }
             }
-            if state.collections.is_empty() {
+            for (project, reason) in &state.missing {
+                ui.push_id(&project.path, |ui| missing_row(ui, project, reason, &mut tree));
+            }
+            if state.collections.is_empty() && state.missing.is_empty() {
                 ui.add_space(4.0);
                 theme::hint(
                     ui,
-                    "Open a folder to start a collection. Collections are plain files you can commit to git.",
+                    "Add a project to start. Projects are plain files you can commit to git, next to your code.",
                 );
             }
         });
@@ -175,16 +228,18 @@ pub fn sidebar(
     tree.actions
 }
 
-fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<'_>) {
+fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tree: &mut Tree<'_>) {
     let root = c.root.clone();
     let key = ItemKey::new(&root, "");
     let collapsed = tree.st.collapsed.contains(&key);
     let read_only = c.read_only;
 
     let can_open = tree.can_open_folders;
-    let menu = |ui: &mut Ui| collection_menu(ui, c, cookie_count, can_open);
+    let environments = tree.env_note.as_ref().map(|n| n.environments.clone());
+    let menu =
+        |ui: &mut Ui| collection_menu(ui, c, cookie_count, can_open, environments.as_deref());
     if is_renaming(tree, &key) {
-        if let Some(name) = rename_row(ui, 0, tree, &key) {
+        if let Some(name) = rename_row(ui, depth, tree, &key) {
             tree.actions.push(SidebarAction::RenameCollection {
                 root: root.clone(),
                 name,
@@ -198,8 +253,11 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<
         if read_only {
             atoms.push(Atom::from(RichText::new("read-only").small().weak()));
         }
-        // R-GIT-12: the current branch.
-        let branch = tree.git.and_then(|g| g.branch.clone());
+        // R-GIT-12: the current branch (shown on the repository row when projects share one).
+        let branch = tree
+            .git
+            .and_then(|g| g.branch.clone())
+            .filter(|_| tree.show_branch);
         if let Some(branch) = &branch {
             atoms.push(Atom::from(
                 RichText::new(branch)
@@ -208,10 +266,24 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<
             ));
         }
         atoms.push(Atom::grow());
-        let (row, from_button) = tree_row(ui, 0, false, atoms, |ui| menu_button(ui, menu));
+        // R-WS-6: this project doesn't have the workspace's environment.
+        if let Some(note) = &tree.env_note {
+            atoms.push(Atom::from(
+                RichText::new(format!("⚠ {}", note.used))
+                    .small()
+                    .color(theme::palette(ui).redirect),
+            ));
+        }
+        let (row, from_button) = tree_row(ui, depth, false, atoms, |ui| menu_button(ui, menu));
         let mut hover = root.display().to_string();
         if let Some(branch) = branch {
             hover = format!("{hover}\nGit branch: {branch}");
+        }
+        if let Some(note) = &tree.env_note {
+            hover = format!(
+                "{hover}\nNo “{}” environment in this project: it uses “{}”. Change it in the menu.",
+                note.wanted, note.used
+            );
         }
         let row = row.on_hover_text(hover);
         if row.clicked() {
@@ -222,10 +294,18 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<
     }
 
     if !collapsed {
-        items(ui, &root, Path::new(""), &c.items, 1, read_only, tree);
+        items(
+            ui,
+            &root,
+            Path::new(""),
+            &c.items,
+            depth + 1,
+            read_only,
+            tree,
+        );
         for b in &c.broken_environments {
             let label = Atom::from(format!("⚠ {}", b.path.display()));
-            let (row, ()) = tree_row(ui, 1, false, [label, Atom::grow()], |_| {});
+            let (row, ()) = tree_row(ui, depth + 1, false, [label, Atom::grow()], |_| {});
             if row.clicked() {
                 tree.actions.push(SidebarAction::ShowError(format!(
                     "{}: {}",
@@ -234,6 +314,130 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, tree: &mut Tree<
                 )));
             }
         }
+    }
+}
+
+/// A project without an environment named like the workspace's (R-WS-6).
+struct EnvNote {
+    /// The workspace's environment.
+    wanted: String,
+    /// The one this project uses instead.
+    used: String,
+    /// The project's environments, as (id, name).
+    environments: Vec<(String, String)>,
+}
+
+fn environment_note(state: &AppState, c: &Collection) -> Option<EnvNote> {
+    if state.follows_workspace_environment(&c.root) {
+        return None;
+    }
+    let wanted = state.workspace().environment.clone()?;
+    let used = state
+        .active_environment(&c.root)
+        .and_then(|id| c.environment(&id).map(|e| e.name.clone()))
+        .unwrap_or_default();
+    let envs = c
+        .environments
+        .iter()
+        .map(|e| (e.id.clone(), e.name.clone()))
+        .collect();
+    Some(EnvNote {
+        wanted,
+        used,
+        environments: envs,
+    })
+}
+
+/// The row above projects that share a git repository: its name, branch and state,
+/// shown once (R-WS-4). Returns whether it is collapsed.
+fn repository_row(
+    ui: &mut Ui,
+    repo: &Path,
+    git: Option<&GitStatus>,
+    members: &[&Collection],
+    tree: &mut Tree<'_>,
+) -> bool {
+    let key = ItemKey::new(repo, ".repository");
+    let collapsed = tree.st.collapsed.contains(&key);
+    let p = theme::palette(ui);
+    let name = repo.file_name().map_or_else(
+        || repo.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let mut atoms = vec![
+        Atom::from(twisty(collapsed)),
+        Atom::from(theme::semibold(name).color(p.muted)),
+    ];
+    let branch = git.and_then(|g| g.branch.clone());
+    if let Some(branch) = &branch {
+        atoms.push(Atom::from(RichText::new(branch).small().color(p.muted)));
+    }
+    atoms.push(Atom::grow());
+    let (row, ()) = tree_row(ui, 0, false, atoms, |_| {});
+    let mut hover = format!(
+        "Git repository {}\n{} projects in this workspace",
+        repo.display(),
+        members.len()
+    );
+    if let Some(branch) = branch {
+        hover = format!("{hover}\nGit branch: {branch}");
+    }
+    if row.on_hover_text(hover).clicked() {
+        toggle(&mut tree.st.collapsed, &key);
+    }
+    collapsed
+}
+
+/// A project of the workspace that isn't on this machine (moved, or not cloned yet), R-WS-5.
+fn missing_row(ui: &mut Ui, project: &ProjectRef, reason: &str, tree: &mut Tree<'_>) {
+    let p = theme::palette(ui);
+    let name = project.path.file_name().map_or_else(
+        || project.path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let atoms = [
+        Atom::from(RichText::new("⚠").color(p.muted)),
+        Atom::from(RichText::new(name).color(p.muted)),
+        Atom::from(RichText::new("missing").small().color(p.muted)),
+        Atom::grow(),
+    ];
+    let path = project.path.clone();
+    let remote = project.remote.clone();
+    let menu = |ui: &mut Ui| {
+        let mut choice = None;
+        if ui
+            .button("Locate…")
+            .on_hover_text("Pick the folder where the project is now")
+            .clicked()
+        {
+            choice = Some(MenuChoice::Action(SidebarAction::LocateMissing(
+                path.clone(),
+            )));
+        }
+        if let Some(remote) = &remote
+            && ui
+                .button("Copy clone URL")
+                .on_hover_text(remote.as_str())
+                .clicked()
+        {
+            ui.ctx().copy_text(remote.clone());
+        }
+        if ui.button("Remove from workspace").clicked() {
+            choice = Some(MenuChoice::Action(SidebarAction::RemoveMissing(
+                path.clone(),
+            )));
+        }
+        choice
+    };
+    let (row, from_button) = tree_row(ui, 0, false, atoms, |ui| menu_button(ui, menu));
+    let mut hover = format!("{}\n{reason}", project.path.display());
+    if let Some(remote) = &project.remote {
+        hover = format!("{hover}\nClone it from {remote}, then use Locate…");
+    }
+    let row = row.on_hover_text(hover);
+    let choice = from_button.or_else(|| context_menu(&row, menu));
+    if let Some(MenuChoice::Action(action)) = choice {
+        tree.actions.push(action);
     }
 }
 
@@ -441,6 +645,8 @@ fn collection_menu(
     c: &Collection,
     cookie_count: usize,
     can_open_folders: bool,
+    // Set when the project doesn't follow the workspace's environment (R-WS-6).
+    environments: Option<&[(String, String)]>,
 ) -> Option<MenuChoice> {
     let root = &c.root;
     let mut choice = None;
@@ -464,6 +670,16 @@ fn collection_menu(
         });
         item(ui, "Rename".into(), &|| MenuChoice::Rename);
     }
+    let mut picked_environment = None;
+    if let Some(envs) = environments {
+        ui.menu_button("Use environment", |ui| {
+            for (id, name) in envs {
+                if ui.button(name).clicked() {
+                    picked_environment = Some(id.clone());
+                }
+            }
+        });
+    }
     let environments = format!("Environments ({})…", c.environments.len());
     item(ui, environments, &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
@@ -476,7 +692,7 @@ fn collection_menu(
             cookie_count > 0,
             egui::Button::new(format!("Clear cookies ({cookie_count})")),
         )
-        .on_hover_text("Cookies are kept on this machine, never in the collection");
+        .on_hover_text("Cookies are kept on this machine, never in the project");
     let clear_clicked = clear.clicked();
     item(ui, "Reload from disk".into(), &|| {
         MenuChoice::Action(SidebarAction::Reload(root.clone()))
@@ -490,9 +706,15 @@ fn collection_menu(
             MenuChoice::Action(SidebarAction::OpenInTerminal(root.clone()))
         });
     }
-    item(ui, "Close".into(), &|| {
+    item(ui, "Remove from workspace".into(), &|| {
         MenuChoice::Action(SidebarAction::Close(root.clone()))
     });
+    if let Some(id) = picked_environment {
+        return Some(MenuChoice::Action(SidebarAction::SetProjectEnvironment {
+            root: root.clone(),
+            id,
+        }));
+    }
     if clear_clicked {
         return Some(MenuChoice::Action(SidebarAction::ClearCookies(
             root.clone(),

@@ -325,7 +325,7 @@ impl EnvironmentsDialog {
             ui.add_space(10.0);
             theme::callout(
                 ui,
-                "Values are saved in the collection files and shared through git. Mark a variable as \
+                "Values are saved in the project files and shared through git. Mark a variable as \
                  secret (🔒) to keep its values on this machine only — teammates see the name, not the value.",
             );
             if let Some(warning) = state.host.secrets_warning() {
@@ -455,9 +455,9 @@ fn variables_table(ui: &mut Ui, d: &mut Draft, new_variable: &mut String) {
                     let toggle = ui
                         .add(egui::Button::selectable(v.secret, lock).frame_when_inactive(false))
                         .on_hover_text(if v.secret {
-                            "Secret: values stay on this machine. Click to share them through the collection files."
+                            "Secret: values stay on this machine. Click to share them through the project files."
                         } else {
-                            "Shared through the collection files. Click to make it secret (values stay on this machine)."
+                            "Shared through the project files. Click to make it secret (values stay on this machine)."
                         });
                     if toggle.clicked() {
                         v.secret = !v.secret;

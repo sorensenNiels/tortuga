@@ -63,7 +63,7 @@ pub fn request_auth(
     let mut chosen = current;
     ui.horizontal(|ui| {
         if inherited.is_some() {
-            ui.radio_value(&mut chosen, Kind::Inherit, "Inherit from collection");
+            ui.radio_value(&mut chosen, Kind::Inherit, "Inherit from project");
         }
         ui.radio_value(&mut chosen, Kind::None, "No auth");
         ui.radio_value(&mut chosen, Kind::Basic, "Basic");
@@ -80,11 +80,11 @@ pub fn request_auth(
             theme::hint(
                 ui,
                 format!(
-                    "This request uses the collection's auth: {}.",
+                    "This request uses the project's auth: {}.",
                     describe(inherited)
                 ),
             );
-            edit_defaults = ui.button("Edit collection defaults…").clicked();
+            edit_defaults = ui.button("Edit project defaults…").clicked();
         }
         (None, None) => theme::hint(ui, "This request sends no authentication."),
         (Some(a), _) => {

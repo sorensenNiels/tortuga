@@ -16,6 +16,7 @@ pub mod secrets;
 pub mod slug;
 pub mod storage;
 pub mod vars;
+pub mod workspace;
 
 pub use collection::{Collection, Direction, Item};
 pub use cookies::CookieJar;

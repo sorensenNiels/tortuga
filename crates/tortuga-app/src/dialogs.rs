@@ -8,11 +8,21 @@
 use std::path::PathBuf;
 
 /// Asks where to save a file. `None` if the user cancelled.
-pub fn save_path(suggested_name: &str) -> Option<PathBuf> {
+pub fn save_path(title: &str, suggested_name: &str) -> Option<PathBuf> {
     rfd::FileDialog::new()
-        .set_title("Save response body")
+        .set_title(title)
         .set_file_name(suggested_name)
         .save_file()
+}
+
+/// Asks for an existing file whose name ends with `suffix` (e.g. `.tortuga-workspace.toml`).
+pub fn pick_file(title: &str, suffix: &str) -> Option<PathBuf> {
+    // Filters match the last extension only.
+    let extension = suffix.rsplit('.').next().unwrap_or_default();
+    rfd::FileDialog::new()
+        .set_title(title)
+        .add_filter(suffix.trim_start_matches('.'), &[extension])
+        .pick_file()
 }
 
 /// Asks for a folder. `None` if the user cancelled.

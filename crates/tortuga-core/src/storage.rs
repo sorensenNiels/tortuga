@@ -129,6 +129,6 @@ impl Storage for UnsupportedStorage {
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
-        "collections are not available in this build yet",
+        "projects are not available in this build yet",
     )
 }

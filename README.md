@@ -1,9 +1,10 @@
 # Tortuga 🐢
 
-A fast, local-first API client written in Rust. Collections are plain files that teams share through git.
+A fast, local-first API client written in Rust. Projects are plain files that teams share through git.
 Runs on Windows, Linux and macOS (web support planned).
 
-**Status:** milestones M1–M3 are implemented: sending requests, collections on disk, and environments with servers and variables. See [docs/FEATURES.md](docs/FEATURES.md) for what
+**Status:** milestones M1–M6.5 are implemented: sending requests, projects on disk, environments with servers and
+variables, auth and secrets, cookies, live git status, and workspaces. See [docs/FEATURES.md](docs/FEATURES.md) for what
 works today and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Getting started
@@ -41,25 +42,31 @@ make verify       # formatting, lints, all tests, dependency checks: the same as
 
 ## Using Tortuga
 
-**Collections.** Click **Open…** in the sidebar and pick a folder, typically inside your API's git repository.
-If it isn't a collection yet, Tortuga offers to create one (it adds a `tortuga.toml`). Requests are saved as one
-`.toml` file each and folders are directories, so you share them with `git add`, `commit` and `push` like any other file.
-Use an item's **…** menu (or right-click it) to add, rename, duplicate, move, reorder or delete. **Ctrl+S** saves, **Ctrl+Enter** sends.
+**Workspaces and projects.** A *project* is a folder with a `tortuga.toml`, typically inside your API's git
+repository. Requests are saved as one `.toml` file each and folders are directories, so you share them with
+`git add`, `commit` and `push` like any other file. A *workspace* (switcher in the title bar) is the set of projects
+you work on together; several projects may live in one repository, and the sidebar groups them under it.
 
-**Environments and servers.** In a collection's **…** menu, choose **Environments…**:
+- **+ Add → New project…** creates a project in a folder (and can make it a git repository).
+- **+ Add → Add existing projects…** finds every project in a folder or repository.
+- **Save as file…** in the workspace menu writes a `.tortuga-workspace.toml` you can commit; teammates open it with
+  **Open workspace file…** and see which repositories to clone.
+
+Use an item's **…** menu (or right-click it) to add, rename, duplicate, move, reorder or delete. **Ctrl+S** saves,
+**Ctrl+Enter** sends.
+
+**Environments and servers.** In a project's **…** menu, choose **Environments…**:
 
 - Add environments (e.g. *Development*, *Staging*).
 - Add servers (e.g. *Users API*) and give each one a base URL per environment.
-- Add variables with a default value and, where needed, a different value per environment.
+- Add variables with a default value and, where needed, a different value per environment. Mark credentials as
+  secret: their values stay on your machine.
 
 In a request, pick the server in front of the URL field and type only the path (`/users/{{user_id}}`). The environment
-picker in the title bar switches every request in that collection at once. Variables that aren't defined are
-highlighted, and the request isn't sent until they are.
+picker in the title bar switches every project in the workspace that has an environment with that name. Variables
+that aren't defined are highlighted, and the request isn't sent until they are.
 
-Environment values are committed with the collection. **Don't put real passwords or tokens in them yet**; secret
-variables that stay on your machine are the next milestone (M4).
-
-The scratch request (top of the sidebar) is for quick one-off calls; **Save to collection…** keeps it.
+The scratch request (top of the sidebar) is for quick one-off calls; **Save to project…** keeps it.
 
 ## Make targets
 
@@ -84,7 +91,7 @@ On Linux without the GTK 3 headers installed, `make test` and `make lint` still 
 
 ```
 crates/
-  tortuga-core/    The engine: request model, HTTP execution, collections, variables. No UI code.
+  tortuga-core/    The engine: request model, HTTP execution, projects, variables, workspaces. No UI code.
   tortuga-ui-egui/ The user interface (egui): components and UI state. No platform code.
   tortuga-app/     Launches the UI on desktop (web later) and provides files, dialogs and settings storage.
                    Builds the `tortuga` binary.

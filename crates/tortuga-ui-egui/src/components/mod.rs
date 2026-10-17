@@ -18,8 +18,8 @@ pub use environments::{EnvironmentsDialog, SavedConfig};
 pub use key_value_table::key_value_table;
 use modals::dialog;
 pub use modals::{
-    ConfirmDialog, CreateCollectionDialog, DialogResult, MoveDialog, SaveToCollectionDialog,
-    SettingsDialog,
+    AddProjects, AddProjectsDialog, ConfirmDialog, CreateProjectDialog, DialogResult, MoveDialog,
+    NameDialog, SaveToCollectionDialog, SettingsDialog,
 };
 pub use request_editor::{EditorAction, EditorContext, EditorState, request_editor};
 pub use response_panel::{Outcome, ResponseAction, ResponseState, response_panel};

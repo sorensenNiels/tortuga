@@ -40,6 +40,11 @@ pub struct GitStatus {
     pub branch: Option<String>,
     /// Changed files, by path relative to the collection root.
     pub files: BTreeMap<PathBuf, FileStatus>,
+    /// Top folder of the repository the project is in, so projects that share a
+    /// repository can be grouped (R-WS-4).
+    pub repository: PathBuf,
+    /// Where the repository can be cloned from (its default remote), without credentials (R-WS-5).
+    pub remote: Option<String>,
 }
 
 impl GitStatus {
@@ -112,6 +117,7 @@ mod tests {
             .into_iter()
             .map(|(p, s)| (PathBuf::from(p), s))
             .collect(),
+            ..GitStatus::default()
         }
     }
 

@@ -8,7 +8,7 @@ use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
 use tortuga_ui_egui::{BoxTask, Host, LocalState, TortugaUi};
 
-use crate::{App, dialogs, folders, git, local_store, secret_store, watch};
+use crate::{App, dialogs, discover, folders, git, local_store, secret_store, watch};
 
 pub fn run() -> eframe::Result {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -95,6 +95,31 @@ impl Host for DesktopHost {
         );
     }
 
+    fn repository_of(&self, dir: &std::path::Path) -> Option<PathBuf> {
+        git::repository_of(dir)
+    }
+
+    fn can_init_git(&self) -> bool {
+        true
+    }
+
+    fn init_git(&self, dir: &std::path::Path) -> Result<(), String> {
+        git::init(dir)
+    }
+
+    fn find_projects(
+        &self,
+        dir: &std::path::Path,
+        done: Box<dyn FnOnce(Result<Vec<PathBuf>, String>) + Send>,
+    ) {
+        // Searching a big folder takes a moment: never on the UI thread.
+        let dir = dir.to_owned();
+        drop(
+            self.runtime
+                .spawn_blocking(move || done(discover::find_projects(&dir))),
+        );
+    }
+
     fn can_open_folders(&self) -> bool {
         true
     }
@@ -135,12 +160,20 @@ impl Host for DesktopHost {
         dialogs::pick_folder(title)
     }
 
+    fn pick_file(&self, title: &str, suffix: &str) -> Option<PathBuf> {
+        dialogs::pick_file(title, suffix)
+    }
+
+    fn pick_save_path(&self, title: &str, suggested_name: &str) -> Option<PathBuf> {
+        dialogs::save_path(title, suggested_name)
+    }
+
     fn can_save_files(&self) -> bool {
         true
     }
 
     fn save_file(&self, suggested_name: &str, contents: &[u8]) -> Option<Result<PathBuf, String>> {
-        let path = dialogs::save_path(suggested_name)?;
+        let path = dialogs::save_path("Save response body", suggested_name)?;
         Some(
             std::fs::write(&path, contents)
                 .map(|()| path)

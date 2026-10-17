@@ -13,10 +13,10 @@ use futures_util::future::{AbortHandle, abortable};
 use tortuga_core::{Item, Request, vars};
 
 use crate::components::{
-    ConfirmDialog, CreateCollectionDialog, DefaultsDialog, DialogResult, EditorAction,
-    EditorContext, EditorState, EnvironmentsDialog, MoveDialog, Outcome, ResponseAction,
-    ResponseState, SaveToCollectionDialog, SettingsDialog, SidebarAction, SidebarState,
-    request_editor, response_panel, sidebar,
+    AddProjects, AddProjectsDialog, ConfirmDialog, CreateProjectDialog, DefaultsDialog,
+    DialogResult, EditorAction, EditorContext, EditorState, EnvironmentsDialog, MoveDialog,
+    NameDialog, Outcome, ResponseAction, ResponseState, SaveToCollectionDialog, SettingsDialog,
+    SidebarAction, SidebarState, request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
 use crate::host::Host;
@@ -34,7 +34,22 @@ enum Modal {
     ConfirmDelete(ItemKey, ConfirmDialog),
     MoveTo(MoveDialog),
     SaveToCollection(SaveToCollectionDialog),
-    CreateCollection(CreateCollectionDialog),
+    CreateProject(CreateProjectDialog),
+    AddProjects(AddProjectsDialog),
+    NewWorkspace(NameDialog),
+    RenameWorkspace(NameDialog),
+    RemoveWorkspace(ConfirmDialog),
+}
+
+/// What the user picked in the workspace menu (R-WS-1, R-WS-5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkspaceAction {
+    Switch(usize),
+    New,
+    Rename,
+    SaveAsFile,
+    OpenFile,
+    Remove,
 }
 
 /// `None` = the scratch request.
@@ -99,7 +114,7 @@ impl TortugaUi {
     pub fn new(host: Box<dyn Host>) -> Self {
         let current = Request::default();
         let (finished_tx, finished_rx) = channel();
-        Self {
+        let mut ui = Self {
             state: AppState::new(host),
             modal: None,
             selection: None,
@@ -116,7 +131,11 @@ impl TortugaUi {
             finished_rx,
             styled: false,
             conflicts: HashMap::new(),
-        }
+        };
+        // Back where the user left off (R-WS-1).
+        let remembered = ui.state.remembered_selection();
+        ui.select(remembered);
+        ui
     }
 
     /// Draws the app into `ui` (the whole window) and handles what the user did.
@@ -230,11 +249,17 @@ impl TortugaUi {
             let p = theme::palette(ui);
             ui.label(theme::semibold("🐢").size(18.0).color(p.accent));
             ui.label(theme::semibold("Tortuga").size(15.0));
-            if let Some(root) = self.selection.as_ref().map(|k| k.root.clone()) {
-                ui.add_space(12.0);
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(4.0);
+            if let Some(action) = self.workspace_menu(ui) {
+                self.on_workspace(action);
+            }
+            if !self.state.collections.is_empty() {
+                ui.add_space(4.0);
                 ui.separator();
                 ui.add_space(4.0);
-                self.environment_picker(ui, &root);
+                self.environment_picker(ui);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(theme::ghost_button("⚙  Settings")).clicked() {
@@ -244,48 +269,189 @@ impl TortugaUi {
         });
     }
 
-    /// Active environment of the selected request's collection (R-SRV-5).
-    fn environment_picker(&mut self, ui: &mut Ui, root: &Path) {
-        let Some(c) = self.state.collection(root) else {
+    /// The workspace switcher and what can be done with workspaces (R-WS-1, R-WS-5).
+    fn workspace_menu(&self, ui: &mut Ui) -> Option<WorkspaceAction> {
+        let local = &self.state.local;
+        let current = self.state.workspace();
+        let button =
+            egui::Button::new((theme::semibold(&current.name), "  ⏷")).frame_when_inactive(false);
+        let (response, inner) =
+            egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                let mut action = None;
+                theme::section_label(ui, "Workspaces");
+                for (i, ws) in local.workspaces.iter().enumerate() {
+                    let mut button = ui.add(egui::Button::selectable(
+                        i == local.active_workspace,
+                        &ws.name,
+                    ));
+                    if let Some(file) = &ws.file {
+                        button = button.on_hover_text(format!("Saved in {}", file.display()));
+                    }
+                    if button.clicked() {
+                        action = Some(WorkspaceAction::Switch(i));
+                    }
+                }
+                ui.separator();
+                if ui.button("New workspace…").clicked() {
+                    action = Some(WorkspaceAction::New);
+                }
+                if ui.button("Rename…").clicked() {
+                    action = Some(WorkspaceAction::Rename);
+                }
+                if self.state.host.can_save_files() {
+                    let hover = match &current.file {
+                        Some(file) => format!(
+                            "Kept in sync with {}. Choose another file to move it.",
+                            file.display()
+                        ),
+                        None => {
+                            "Write the workspace to a file you can commit, so teammates can open it"
+                                .into()
+                        }
+                    };
+                    if ui.button("Save as file…").on_hover_text(hover).clicked() {
+                        action = Some(WorkspaceAction::SaveAsFile);
+                    }
+                    if ui
+                        .button("Open workspace file…")
+                        .on_hover_text("Open a workspace a teammate saved as a file")
+                        .clicked()
+                    {
+                        action = Some(WorkspaceAction::OpenFile);
+                    }
+                }
+                let danger = theme::palette(ui).fail;
+                if ui
+                    .add_enabled(
+                        local.workspaces.len() > 1,
+                        egui::Button::new(RichText::new("Remove workspace…").color(danger)),
+                    )
+                    .on_disabled_hover_text("There is always at least one workspace")
+                    .clicked()
+                {
+                    action = Some(WorkspaceAction::Remove);
+                }
+                action
+            });
+        response.on_hover_text("Switch workspace");
+        inner.and_then(|i| i.inner)
+    }
+
+    fn on_workspace(&mut self, action: WorkspaceAction) {
+        match action {
+            WorkspaceAction::Switch(index) => self.switch_workspace(|state| {
+                state.switch_workspace(index);
+            }),
+            WorkspaceAction::New => {
+                self.modal = Some(Modal::NewWorkspace(NameDialog::new(
+                    "New workspace",
+                    "Create",
+                    "",
+                )));
+            }
+            WorkspaceAction::Rename => {
+                let name = self.state.workspace().name.clone();
+                self.modal = Some(Modal::RenameWorkspace(NameDialog::new(
+                    "Rename workspace",
+                    "Rename",
+                    &name,
+                )));
+            }
+            WorkspaceAction::SaveAsFile => {
+                let name = tortuga_core::workspace::file_name(&self.state.workspace().name);
+                if let Some(file) = self.state.host.pick_save_path("Save workspace as", &name)
+                    && let Err(e) = self.state.save_workspace_as(&file)
+                {
+                    self.state.notify(e);
+                }
+            }
+            WorkspaceAction::OpenFile => {
+                if let Some(file) = self.state.host.pick_file(
+                    "Open a workspace file",
+                    tortuga_core::workspace::WORKSPACE_FILE_SUFFIX,
+                ) {
+                    let mut result = Ok(());
+                    self.switch_workspace(|state| result = state.open_workspace_file(&file));
+                    if let Err(e) = result {
+                        self.state.notify(e);
+                    }
+                }
+            }
+            WorkspaceAction::Remove => {
+                let name = self.state.workspace().name.clone();
+                self.modal = Some(Modal::RemoveWorkspace(ConfirmDialog {
+                    title: "Remove workspace?".into(),
+                    message: format!(
+                        "“{name}” is removed from this machine. Its projects and files stay where they are."
+                    ),
+                    confirm_label: "Remove".into(),
+                }));
+            }
+        }
+    }
+
+    /// Runs `change` (which may switch workspace), keeping unsaved edits of the old
+    /// workspace for this session, then selects the new workspace's remembered request.
+    fn switch_workspace(&mut self, change: impl FnOnce(&mut AppState)) {
+        self.select_and_remember(None, false);
+        change(&mut self.state);
+        let remembered = self.state.remembered_selection();
+        self.select_and_remember(remembered, false);
+    }
+
+    /// One environment for the whole workspace (R-WS-6, R-SRV-5): every project with an
+    /// environment of that name uses it.
+    fn environment_picker(&mut self, ui: &mut Ui) {
+        let names = self.state.environment_names();
+        // The project whose environments ✏ edits: the selected request's, else the first.
+        let root = self
+            .selection
+            .as_ref()
+            .map(|k| k.root.clone())
+            .or_else(|| self.state.collections.first().map(|c| c.root.clone()));
+        let Some(root) = root else {
             return;
         };
-        let envs: Vec<(String, String)> = c
-            .environments
-            .iter()
-            .map(|e| (e.id.clone(), e.name.clone()))
-            .collect();
         let p = theme::palette(ui);
         ui.label(RichText::new("Environment").color(p.muted));
-        let edit = if envs.is_empty() {
+        let edit = if names.is_empty() {
             ui.button("Add environments…").clicked()
         } else {
-            let before = self.state.active_environment(root);
-            let mut active = before.clone();
-            let selected = envs
-                .iter()
-                .find(|(id, _)| Some(id) == active.as_ref())
-                .map(|(_, name)| name.clone())
-                .unwrap_or_default();
+            let shown = self.state.workspace().environment.clone().or_else(|| {
+                let c = self.state.collection(&root)?;
+                let id = self.state.active_environment(&root)?;
+                c.environment(&id).map(|e| e.name.clone())
+            });
+            let mut picked = None;
             ComboBox::from_id_salt("environment")
-                .selected_text((RichText::new("⏺").size(9.0).color(p.ok), " ", selected))
+                .selected_text((
+                    RichText::new("⏺").size(9.0).color(p.ok),
+                    " ",
+                    shown.clone().unwrap_or_default(),
+                ))
                 .show_ui(ui, |ui| {
-                    for (id, name) in &envs {
-                        ui.selectable_value(&mut active, Some(id.clone()), name);
+                    for name in &names {
+                        if ui
+                            .selectable_label(shown.as_ref() == Some(name), name)
+                            .clicked()
+                        {
+                            picked = Some(name.clone());
+                        }
                     }
-                });
-            if active != before
-                && let Some(id) = active
-            {
-                self.state.set_active_environment(root, &id);
+                })
+                .response
+                .on_hover_text("Switches every project in the workspace that has an environment with this name");
+            if let Some(name) = picked {
+                self.state.set_workspace_environment(&name);
             }
             ui.add(theme::ghost_button("✏"))
-                .on_hover_text("Edit environments, servers and variables")
+                .on_hover_text("Edit environments, servers and variables of this project")
                 .clicked()
         };
         if edit {
             self.modal = Some(Modal::Environments(EnvironmentsDialog::new(
                 &self.state,
-                root.to_owned(),
+                root,
             )));
         }
     }
@@ -408,7 +574,7 @@ impl TortugaUi {
                 },
                 |ui| {
                     if ui
-                        .button("Save to collection…")
+                        .button("Save to project…")
                         .on_hover_text("Save (Ctrl+S)")
                         .clicked()
                     {
@@ -494,6 +660,14 @@ impl TortugaUi {
     }
 
     fn select(&mut self, new: Selection) {
+        self.select_and_remember(new, true);
+    }
+
+    /// Selects a request; `remember` keeps it as the workspace's selection (R-WS-1).
+    fn select_and_remember(&mut self, new: Selection, remember: bool) {
+        if remember {
+            self.state.remember_selection(new.as_ref());
+        }
         if self.selection == new {
             return;
         }
@@ -878,7 +1052,13 @@ impl TortugaUi {
                 self.forget(&root, Path::new(""));
                 self.state.close_collection(&root);
             }
-            SidebarAction::OpenFolder => self.open_folder(),
+            SidebarAction::SetProjectEnvironment { root, id } => {
+                self.state.set_project_environment(&root, &id);
+            }
+            SidebarAction::NewProject => self.new_project(),
+            SidebarAction::AddProjects => self.add_projects(),
+            SidebarAction::LocateMissing(path) => self.locate_missing(&path),
+            SidebarAction::RemoveMissing(path) => self.state.remove_missing(&path),
         }
     }
 
@@ -933,17 +1113,77 @@ impl TortugaUi {
         }
     }
 
-    fn open_folder(&mut self) {
-        let Some(dir) = self.state.host.pick_folder("Open or create a collection") else {
+    /// R-WS-7: pick (or make) a folder, then name the project there.
+    fn new_project(&mut self) {
+        let Some(dir) = self
+            .state
+            .host
+            .pick_folder("Choose or create a folder for the new project")
+        else {
             return;
         };
+        self.create_project_in(dir);
+    }
+
+    fn create_project_in(&mut self, dir: PathBuf) {
         let manifest = dir.join(tortuga_core::collection::MANIFEST_FILE);
         if self.state.storage().exists(&manifest) {
+            // Already a project: just add it.
             if let Err(e) = self.state.open_collection(&dir) {
                 self.state.notify(e.to_string());
             }
-        } else {
-            self.modal = Some(Modal::CreateCollection(CreateCollectionDialog::new(dir)));
+            return;
+        }
+        let repository = self.state.host.repository_of(&dir);
+        let can_init = self.state.host.can_init_git();
+        self.modal = Some(Modal::CreateProject(CreateProjectDialog::new(
+            dir, repository, can_init,
+        )));
+    }
+
+    /// R-WS-3: pick a folder or repository and list the projects in it.
+    fn add_projects(&mut self) {
+        let Some(dir) = self
+            .state
+            .host
+            .pick_folder("Add the projects in a folder or repository")
+        else {
+            return;
+        };
+        let (tx, rx) = channel();
+        let wake = self.state.waker();
+        self.state.host.find_projects(
+            &dir,
+            Box::new(move |result| {
+                let _ = tx.send(result);
+                wake();
+            }),
+        );
+        self.modal = Some(Modal::AddProjects(AddProjectsDialog::new(dir, rx)));
+    }
+
+    /// R-WS-5: the user points at the folder where a missing project is now.
+    fn locate_missing(&mut self, old: &Path) {
+        let name = old
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some(dir) = self.state.host.pick_folder(&format!("Locate “{name}”")) else {
+            return;
+        };
+        if !self
+            .state
+            .storage()
+            .exists(&dir.join(tortuga_core::collection::MANIFEST_FILE))
+        {
+            self.state.notify(format!(
+                "{} is not a Tortuga project (it has no tortuga.toml).",
+                dir.display()
+            ));
+            return;
+        }
+        if let Err(e) = self.state.locate_missing(old, &dir) {
+            self.state.notify(e.to_string());
         }
     }
 
@@ -1025,17 +1265,13 @@ impl TortugaUi {
                 }
                 result => result == DialogResult::Open,
             },
-            Modal::CreateCollection(d) => match d.show(ctx) {
-                DialogResult::Done(name) => {
-                    if let Err(e) = self.state.create_collection(&d.dir, &name) {
-                        self.state.notify(e.to_string());
-                    }
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
+            Modal::CreateProject(_)
+            | Modal::AddProjects(_)
+            | Modal::NewWorkspace(_)
+            | Modal::RenameWorkspace(_)
+            | Modal::RemoveWorkspace(_) => self.show_workspace_modal(ctx, &mut modal),
         };
-        // A dialog may have opened another one (none do today); never overwrite it.
+        // A dialog may have opened another one ("Create a project there…"); never overwrite it.
         if keep && self.modal.is_none() {
             self.modal = Some(modal);
         }
@@ -1043,6 +1279,61 @@ impl TortugaUi {
 }
 
 impl TortugaUi {
+    /// Dialogs about projects and workspaces (R-WS-1, 3, 5, 7). Returns whether it stays open.
+    fn show_workspace_modal(&mut self, ctx: &egui::Context, modal: &mut Modal) -> bool {
+        match modal {
+            Modal::CreateProject(d) => match d.show(ctx) {
+                DialogResult::Done((name, init_git)) => {
+                    if init_git && let Err(e) = self.state.host.init_git(&d.dir) {
+                        self.state.notify(e);
+                    }
+                    if let Err(e) = self.state.create_collection(&d.dir, &name) {
+                        self.state.notify(e.to_string());
+                    }
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::AddProjects(d) => match d.show(ctx, &self.state) {
+                DialogResult::Done(AddProjects::Add(paths)) => {
+                    for path in paths {
+                        if let Err(e) = self.state.open_collection(&path) {
+                            self.state.notify(e.to_string());
+                        }
+                    }
+                    false
+                }
+                DialogResult::Done(AddProjects::CreateHere(dir)) => {
+                    self.create_project_in(dir);
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::NewWorkspace(d) => match d.show(ctx) {
+                DialogResult::Done(name) => {
+                    self.switch_workspace(|state| state.new_workspace(&name));
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::RenameWorkspace(d) => match d.show(ctx) {
+                DialogResult::Done(name) => {
+                    self.state.rename_workspace(&name);
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::RemoveWorkspace(d) => match d.show(ctx) {
+                DialogResult::Done(()) => {
+                    self.switch_workspace(AppState::delete_workspace);
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            _ => false,
+        }
+    }
+
     /// Saves the environments dialog. Secrets first: if the credential store fails,
     /// nothing changes on disk and the dialog stays open with the error. Returns success.
     fn save_environments(
@@ -1149,6 +1440,44 @@ mod tests {
         ui.save();
         let on_disk = std::fs::read_to_string(root.join(&key.path)).expect("read");
         assert!(on_disk.contains("mine-again"), "{on_disk}");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-WS-1: switching workspaces keeps unsaved edits for the session and brings
+    /// back each workspace's selected request.
+    #[test]
+    fn switching_workspaces_keeps_edits_and_selection() {
+        let (mut ui, root, key) = setup("switch");
+        ui.current.set_display_url("https://a.test/unsaved");
+        ui.switch_workspace(|state| state.new_workspace("Other"));
+        assert_eq!(
+            ui.selection, None,
+            "the new workspace starts on the scratch request"
+        );
+        assert_eq!(ui.state.collections.len(), 0);
+
+        ui.switch_workspace(|state| state.switch_workspace(0));
+        assert_eq!(ui.selection, Some(key));
+        assert_eq!(ui.current.url, "https://a.test/unsaved", "edits kept");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-WS-1, R-WS-4, R-WS-5: the top bar names the workspace; the sidebar lists its
+    /// projects and the ones that are missing on this machine.
+    #[test]
+    fn sidebar_shows_projects_and_missing_ones() {
+        use egui_kittest::kittest::Queryable;
+
+        let (_, root, _) = setup("sidebar");
+        let gone = root.with_file_name("tortuga-not-cloned-yet");
+        let mut ui = TortugaUi::new(Box::new(TestHost {
+            open: vec![root.clone(), gone],
+            ..TestHost::default()
+        }));
+        let mut harness = crate::test_host::harness(move |egui_ui| ui.ui(egui_ui));
+        harness.run();
+        harness.get_by_label_contains("My workspace");
+        harness.get_by_label_contains("tortuga-not-cloned-yet");
         std::fs::remove_dir_all(root).expect("clean up");
     }
 

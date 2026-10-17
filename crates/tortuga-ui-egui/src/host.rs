@@ -14,15 +14,69 @@ use tortuga_core::ClientSettings;
 use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
+use tortuga_core::workspace::ProjectRef;
 
-/// Which collections are open (R-COL-5) and the active environment of each (R-SRV-5).
-/// Stored on this machine only, never in a collection (R-LOC-1).
+/// What is remembered on this machine only, never in a project (R-LOC-1): the
+/// workspaces (R-WS-1) and which one is active.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LocalState {
+    pub workspaces: Vec<Workspace>,
+    /// Index into `workspaces`.
+    pub active_workspace: usize,
+    /// Before workspaces (M6.5): the open collections. Read once, moved into the first workspace.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub open_collections: Vec<PathBuf>,
-    /// Collection root (as text) → environment id.
+    /// Before workspaces (M6.5): collection root → environment id. Moved like `open_collections`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub active_environments: BTreeMap<String, String>,
+}
+
+impl LocalState {
+    /// Name of the workspace that always exists (R-WS-1).
+    pub const DEFAULT_WORKSPACE: &str = "My workspace";
+
+    /// Makes sure there is a workspace and that the active index is valid. State saved
+    /// before workspaces existed becomes the first workspace.
+    pub fn migrate(&mut self) {
+        let projects: Vec<ProjectRef> = std::mem::take(&mut self.open_collections)
+            .into_iter()
+            .map(ProjectRef::new)
+            .collect();
+        let environments = std::mem::take(&mut self.active_environments);
+        if self.workspaces.is_empty() {
+            self.workspaces.push(Workspace {
+                name: Self::DEFAULT_WORKSPACE.into(),
+                projects,
+                project_environments: environments,
+                ..Workspace::default()
+            });
+        }
+        if self.active_workspace >= self.workspaces.len() {
+            self.active_workspace = 0;
+        }
+    }
+}
+
+/// A named set of projects that are open together (R-WS-1).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Workspace {
+    pub name: String,
+    /// The shareable workspace file this workspace is saved in, if any (R-WS-5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<PathBuf>,
+    /// Environment chosen for the whole workspace, by name (R-WS-6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// The request that was selected: (project root, path in the project).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<(PathBuf, PathBuf)>,
+    /// Projects in sidebar order, including ones that are missing on this machine.
+    pub projects: Vec<ProjectRef>,
+    /// Project root (as text) → environment id, for projects without an environment
+    /// named like the workspace's (R-WS-6).
+    pub project_environments: BTreeMap<String, String>,
 }
 
 /// Background work started by the UI (sending a request).
@@ -75,6 +129,31 @@ pub trait Host {
         done(Ok(None));
     }
 
+    /// The top folder of the git repository `dir` is in, if any (R-WS-7).
+    fn repository_of(&self, _dir: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    /// Whether [`Host::init_git`] works.
+    fn can_init_git(&self) -> bool {
+        false
+    }
+
+    /// Makes `dir` a new git repository (R-WS-7).
+    fn init_git(&self, _dir: &Path) -> Result<(), String> {
+        Err("Not available here.".into())
+    }
+
+    /// Looks for projects (folders with `tortuga.toml`) in `dir` and below, skipping
+    /// git-ignored folders, in the background; passes them to `done` from any thread (R-WS-3).
+    fn find_projects(
+        &self,
+        _dir: &Path,
+        done: Box<dyn FnOnce(Result<Vec<PathBuf>, String>) + Send>,
+    ) {
+        done(Err("Not available here.".into()));
+    }
+
     /// Whether the collection folder can be opened in the file manager and a terminal (R-GIT-13).
     fn can_open_folders(&self) -> bool {
         false
@@ -106,6 +185,16 @@ pub trait Host {
 
     /// Asks for a folder. `None` if the user cancelled. May block (native dialogs are modal).
     fn pick_folder(&self, _title: &str) -> Option<PathBuf> {
+        None
+    }
+
+    /// Asks for an existing file whose name ends with `suffix`. `None` if the user cancelled.
+    fn pick_file(&self, _title: &str, _suffix: &str) -> Option<PathBuf> {
+        None
+    }
+
+    /// Asks where to save a file, without writing it. `None` if the user cancelled.
+    fn pick_save_path(&self, _title: &str, _suggested_name: &str) -> Option<PathBuf> {
         None
     }
 

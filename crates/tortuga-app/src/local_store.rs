@@ -138,9 +138,31 @@ mod tests {
 
     #[test]
     fn workspace_state_round_trips_and_old_files_load() {
+        use tortuga_core::workspace::ProjectRef;
+        use tortuga_ui_egui::Workspace;
+
         let state = LocalState {
-            open_collections: vec![PathBuf::from("/repo/api")],
-            active_environments: BTreeMap::from([("/repo/api".into(), "dev".into())]),
+            workspaces: vec![
+                Workspace {
+                    name: "My workspace".into(),
+                    projects: vec![ProjectRef::new("/repo/api")],
+                    project_environments: BTreeMap::from([("/repo/api".into(), "dev".into())]),
+                    selection: Some(("/repo/api".into(), "users/list.toml".into())),
+                    ..Workspace::default()
+                },
+                Workspace {
+                    name: "Acme".into(),
+                    file: Some("/src/acme.tortuga-workspace.toml".into()),
+                    environment: Some("Staging".into()),
+                    projects: vec![ProjectRef {
+                        path: "/src/users".into(),
+                        remote: Some("git@example.test:acme/users.git".into()),
+                    }],
+                    ..Workspace::default()
+                },
+            ],
+            active_workspace: 1,
+            ..LocalState::default()
         };
         let text = toml::to_string(&state).expect("serialize");
         assert_eq!(toml::from_str::<LocalState>(&text).expect("parse"), state);
@@ -148,5 +170,16 @@ mod tests {
             toml::from_str::<LocalState>("").expect("empty file"),
             LocalState::default()
         );
+
+        // Saved before workspaces (M6.5): becomes the first workspace.
+        let mut old: LocalState = toml::from_str(
+            "open_collections = [\"/repo/api\"]\n[active_environments]\n\"/repo/api\" = \"dev\"\n",
+        )
+        .expect("old file");
+        old.migrate();
+        assert_eq!(old.workspaces.len(), 1);
+        assert_eq!(old.workspaces[0].projects, [ProjectRef::new("/repo/api")]);
+        assert_eq!(old.workspaces[0].project_environments["/repo/api"], "dev");
+        assert_eq!(old.open_collections, Vec::<PathBuf>::new());
     }
 }

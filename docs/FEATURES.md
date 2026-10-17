@@ -14,8 +14,8 @@ status colours, headers tab, "Save to file…" (byte-identical), cancel, setting
 collection tree, selection, new folder (starts in rename mode), inline rename, duplicate, move up, move to,
 delete with confirmation, unsaved marker + Ctrl+S + Ctrl+Enter, broken-file error, environments dialog (files on
 disk), environment picker, undefined-variable highlight and send block, 5 MB body truncation, collections reopened
-after a restart. Not yet re-checked in the egui app: "Open…"/create collection, the body editor types, and sending
-through a server base URL.
+after a restart. Not yet re-checked in the egui app: the body editor types and sending through a server base URL.
+(Creating and adding projects was checked with M6.5.)
 
 ## Implemented
 
@@ -94,6 +94,20 @@ through a server base URL.
 | R-GIT-12 | Current branch next to the collection name; M / N / D / C markers on requests and folders (a folder shows the most important state inside); deleted requests stay visible as struck-through rows until the deletion is committed. Unreadable conflicted files show as ⚠ with C. | Linux | Automated tests against real repositories (modified, new, deleted, conflict). In the app: markers, a commit clearing them, branch switch, a merge conflict. |
 | R-GIT-13 | "Open in file manager" and "Open in terminal" in the collection menu. Terminal: Windows Terminal/cmd, Terminal.app, `$TERMINAL` or common Linux terminals; under WSL, Windows Explorer and Windows Terminal running WSL in the folder. | Linux (WSL) | In the app: Windows Terminal started; no error for the file manager (the Windows window itself was not visible to the test). |
 | R-GIT-14 | Git status is read with gitoxide (`gix`); no `git` executable is used. | Linux | In the app started with `PATH=/nonexistent`: branch and conflict marker still shown. |
+
+### M6.5: Workspaces & projects
+
+What was called a collection is now a **project** in the UI and the docs (D12); the file format did not change.
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-WS-1 | Workspaces: a switcher in the title bar lists them, with New, Rename and Remove (never the last one). Each workspace opens its own projects and remembers its environment and selected request, also after a restart. Unsaved edits survive switching for the session. State saved before workspaces becomes "My workspace". | Linux | Automated tests (switching, restart, removing, migration, edits kept). In the app: old state migrated, renamed, new empty workspace, switched back and forth, selection restored after a restart. |
+| R-WS-2 | A project is a folder with `tortuga.toml`, in its own repo, in a shared repo or outside git. "Collection" is replaced by "project" in the UI (sidebar "Projects", "Save to project…", "Project defaults", messages). | Linux | In the app: projects from two repositories and one without a remote. |
+| R-WS-3 | "+ Add" → "Add existing projects…": pick a folder or repository; every `tortuga.toml` below it is listed as a checklist. Hidden, git-ignored, `node_modules` and `target` folders are skipped, and projects inside a project are not searched. Projects already in the workspace are shown but can't be added twice. If nothing is found, "Create a project there…". | Linux | Automated tests (search with `.gitignore`, checklist, nothing found). In the app: the platform repo listed `services/orders` and `services/users` (already open), `node_modules` skipped. |
+| R-WS-4 | Projects that share a git repository are grouped under a repository row with its name and branch, shown once. One file watcher per repository, which tells each project only about its own changes and all of them about commits and checkouts. | Linux | Automated tests (grouping; one watcher, changes routed per project, `.git` changes to all). In the app: Users API and Orders API grouped under "platform · feature/ws". |
+| R-WS-5 | Workspaces are kept in the app-data folder. "Save as file…" writes `<name>.tortuga-workspace.toml` with each project's path relative to the file and its git remote URL (passwords and tokens removed); after that the file is kept in sync and only rewritten when its content changes. "Open workspace file…" adds the workspace, or switches to it if it is already there. Missing projects show greyed with "missing", their path and clone URL, and "Locate…", "Copy clone URL" and "Remove from workspace". | Linux | Automated tests (file format, relative paths, credentials removed, missing and located projects, file follows). In the app: saved the file (checked on disk), moved a project away, opened the file: project shown as missing, located in its new folder, file updated. |
+| R-WS-6 | One environment picker for the workspace: it lists every project's environment names and switches all projects that have the chosen one. A project without it keeps its own choice, is marked "⚠ <environment>" in the sidebar, and gets "Use environment" in its menu. | Linux | Automated tests. In the app: "Staging" switched both platform projects; Billing (no Staging) was marked and set to Dev from its menu. |
+| R-WS-7 | "+ Add" → "New project…": pick or create a folder and name the project. Inside a git repository the dialog says so; otherwise "Make the folder a git repository" runs `git init` through gitoxide (using `init.defaultBranch`). A folder that already is a project is just added. | Linux | Automated test for `git init`. In the app: new project with a repository created (`.git`, branch from the git config), added to the workspace file. |
 
 ### v1 extras
 

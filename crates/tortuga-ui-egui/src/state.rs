@@ -1,4 +1,7 @@
-//! App-wide state: settings, the HTTP client and the open collections.
+//! App-wide state: settings, the HTTP client, the workspaces and their open projects.
+//!
+//! In code a project is still a [`Collection`] (the engine's name for it); the UI and
+//! the docs say "project" (D12).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -10,10 +13,11 @@ use tortuga_core::CookieJar;
 use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretValues;
 use tortuga_core::storage::Storage;
+use tortuga_core::workspace::{self, ProjectRef};
 use tortuga_core::{Client, ClientSettings, Collection, Request, vars};
 
 use crate::format::sentence;
-use crate::host::{Host, LocalState};
+use crate::host::{Host, LocalState, Workspace};
 
 /// Identifies a request in an open collection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -54,8 +58,11 @@ pub struct AppState {
     pub settings: ClientSettings,
     /// Rebuilt whenever the settings change.
     pub client: Client,
-    /// Open collections, in the order they were opened (R-COL-5).
+    /// Open projects of the active workspace, in workspace order (R-COL-5, R-WS-1).
     pub collections: Vec<Collection>,
+    /// Projects of the active workspace that could not be opened (moved, or not
+    /// cloned on this machine yet), with the reason (R-WS-5).
+    pub missing: Vec<(ProjectRef, String)>,
     /// Remembered on this machine only (R-LOC-1).
     pub local: LocalState,
     /// Secret variable values of each open collection, loaded when it opens (R-VAR-3).
@@ -98,45 +105,22 @@ impl AppState {
             problems.push(e);
             LocalState::default()
         });
-        let mut collections = Vec::new();
-        let mut secrets = BTreeMap::new();
-        let mut cookies = BTreeMap::new();
-        local
-            .open_collections
-            .retain(|root| match Collection::open(host.storage(), root) {
-                Ok(c) => {
-                    match SecretValues::load(&c, host.secrets()) {
-                        Ok(values) => drop(secrets.insert(root.clone(), values)),
-                        Err(e) => problems.push(format!("Could not read secret values: {e}")),
-                    }
-                    let (jar, problem) = load_jar(host.as_ref(), root);
-                    problems.extend(problem);
-                    cookies.insert(root.clone(), jar);
-                    collections.push(c);
-                    true
-                }
-                Err(e) => {
-                    problems.push(format!("Could not reopen a collection: {e}"));
-                    false
-                }
-            });
+        local.migrate();
         let mut state = Self {
             host,
             settings,
             client,
-            collections,
+            collections: Vec::new(),
+            missing: Vec::new(),
             local,
-            secrets,
-            cookies,
+            secrets: BTreeMap::new(),
+            cookies: BTreeMap::new(),
             scratch_cookies: CookieJar::default(),
             git: BTreeMap::new(),
             live: Live::default(),
             notice: (!problems.is_empty()).then(|| problems.join("\n")),
         };
-        let roots: Vec<PathBuf> = state.collections.iter().map(|c| c.root.clone()).collect();
-        for root in roots {
-            state.start_watching(&root);
-        }
+        state.open_workspace();
         state
     }
 
@@ -194,15 +178,41 @@ impl AppState {
                     *slot = fresh;
                 }
             }
-            Err(e) => self.notify(format!("Could not reload the collection: {e}")),
+            Err(e) => self.notify(format!("Could not reload the project: {e}")),
         }
     }
 
-    /// Opens the collection at `root` (or does nothing if already open).
+    /// Opens the project at `root` and adds it to the workspace (or does nothing if already open).
     pub fn open_collection(&mut self, root: &Path) -> tortuga_core::Result<()> {
         if self.collection(root).is_some() {
             return Ok(());
         }
+        self.load_project(root)?;
+        self.missing.retain(|(p, _)| p.path != root);
+        let ws = self.workspace_mut();
+        if !ws.projects.iter().any(|p| p.path == root) {
+            ws.projects.push(ProjectRef::new(root));
+        }
+        self.workspace_changed();
+        Ok(())
+    }
+
+    pub fn create_collection(&mut self, root: &Path, name: &str) -> tortuga_core::Result<()> {
+        Collection::create(self.storage(), root, name)?;
+        self.open_collection(root)
+    }
+
+    /// Closes a project and removes it from the workspace.
+    pub fn close_collection(&mut self, root: &Path) {
+        self.unload_project(root);
+        let ws = self.workspace_mut();
+        ws.projects.retain(|p| p.path != root);
+        ws.project_environments.remove(&root_key(root));
+        self.workspace_changed();
+    }
+
+    /// Reads a project from disk with its secrets and cookies, and starts watching it.
+    fn load_project(&mut self, root: &Path) -> tortuga_core::Result<()> {
         let collection = Collection::open(self.storage(), root)?;
         match SecretValues::load(&collection, self.host.secrets()) {
             Ok(values) => drop(self.secrets.insert(root.to_owned(), values)),
@@ -215,42 +225,283 @@ impl AppState {
         self.cookies.insert(root.to_owned(), jar);
         self.collections.push(collection);
         self.start_watching(root);
-        self.local.open_collections.push(root.to_owned());
-        self.save_local();
         Ok(())
     }
 
-    pub fn create_collection(&mut self, root: &Path, name: &str) -> tortuga_core::Result<()> {
-        Collection::create(self.storage(), root, name)?;
-        self.open_collection(root)
-    }
-
-    pub fn close_collection(&mut self, root: &Path) {
+    /// Closes a project without changing the workspace.
+    fn unload_project(&mut self, root: &Path) {
         self.save_cookies(Some(root));
         self.host.unwatch(root);
         self.git.remove(root);
         self.collections.retain(|c| c.root != root);
         self.secrets.remove(root);
         self.cookies.remove(root);
-        self.local.open_collections.retain(|r| r != root);
-        self.local.active_environments.remove(&root_key(root));
+    }
+
+    // ------------------------------------------------------------ workspaces (M6.5)
+
+    /// The active workspace (R-WS-1).
+    pub fn workspace(&self) -> &Workspace {
+        &self.local.workspaces[self.local.active_workspace]
+    }
+
+    fn workspace_mut(&mut self) -> &mut Workspace {
+        &mut self.local.workspaces[self.local.active_workspace]
+    }
+
+    /// Opens the projects of the active workspace. A workspace saved as a file is
+    /// read from it first, so a `git pull` of the file brings teammates' projects (R-WS-5).
+    fn open_workspace(&mut self) {
+        if let Some(file) = self.workspace().file.clone() {
+            match self.read_workspace_file(&file) {
+                Ok(read) => {
+                    let ws = self.workspace_mut();
+                    let projects = read
+                        .projects
+                        .into_iter()
+                        .map(|mut p| {
+                            if p.remote.is_none() {
+                                p.remote = ws
+                                    .projects
+                                    .iter()
+                                    .find(|old| old.path == p.path)
+                                    .and_then(|old| old.remote.clone());
+                            }
+                            p
+                        })
+                        .collect();
+                    ws.projects = projects;
+                }
+                Err(e) => self.notify(format!("Could not read the workspace file: {e}")),
+            }
+        }
+        for project in self.workspace().projects.clone() {
+            if self.collection(&project.path).is_some() {
+                continue; // listed twice
+            }
+            if let Err(e) = self.load_project(&project.path) {
+                self.missing.push((project, sentence(&e.to_string())));
+            }
+        }
         self.save_local();
+    }
+
+    /// Closes the projects of the active workspace (they stay in it).
+    fn close_workspace(&mut self) {
+        let roots: Vec<PathBuf> = self.collections.iter().map(|c| c.root.clone()).collect();
+        for root in roots {
+            self.unload_project(&root);
+        }
+        self.missing.clear();
+    }
+
+    pub fn switch_workspace(&mut self, index: usize) {
+        if index == self.local.active_workspace || index >= self.local.workspaces.len() {
+            return;
+        }
+        self.close_workspace();
+        self.local.active_workspace = index;
+        self.open_workspace();
+    }
+
+    /// Adds an empty workspace and switches to it.
+    pub fn new_workspace(&mut self, name: &str) {
+        self.local.workspaces.push(Workspace {
+            name: name.to_owned(),
+            ..Workspace::default()
+        });
+        self.switch_workspace(self.local.workspaces.len() - 1);
+    }
+
+    pub fn rename_workspace(&mut self, name: &str) {
+        name.clone_into(&mut self.workspace_mut().name);
+        self.workspace_changed();
+    }
+
+    /// Removes the active workspace from this machine (its projects and file stay on
+    /// disk). The last workspace can't be removed.
+    pub fn delete_workspace(&mut self) {
+        if self.local.workspaces.len() < 2 {
+            return;
+        }
+        self.close_workspace();
+        self.local.workspaces.remove(self.local.active_workspace);
+        self.local.active_workspace = self.local.active_workspace.saturating_sub(1);
+        self.open_workspace();
+    }
+
+    /// Saves the active workspace as a shareable file and keeps it in sync from now on (R-WS-5).
+    pub fn save_workspace_as(&mut self, file: &Path) -> Result<(), String> {
+        self.workspace_mut().file = Some(file.to_owned());
+        self.write_workspace_file()?;
+        self.save_local();
+        Ok(())
+    }
+
+    /// Opens a workspace file: switches to the workspace saved in it, adding it to
+    /// this machine's workspaces the first time (R-WS-5).
+    pub fn open_workspace_file(&mut self, file: &Path) -> Result<(), String> {
+        let read = self.read_workspace_file(file)?;
+        if let Some(index) = self
+            .local
+            .workspaces
+            .iter()
+            .position(|w| w.file.as_deref() == Some(file))
+        {
+            self.switch_workspace(index);
+            return Ok(());
+        }
+        self.local.workspaces.push(Workspace {
+            name: read.name,
+            file: Some(file.to_owned()),
+            projects: read.projects,
+            ..Workspace::default()
+        });
+        self.switch_workspace(self.local.workspaces.len() - 1);
+        Ok(())
+    }
+
+    fn read_workspace_file(&self, file: &Path) -> Result<workspace::WorkspaceFile, String> {
+        let text = self
+            .storage()
+            .read_to_string(file)
+            .map_err(|e| format!("{}: {e}", file.display()))?;
+        workspace::read(&text, file).map_err(|e| e.to_string())
+    }
+
+    /// Writes the workspace file, if the workspace has one and it changed.
+    fn write_workspace_file(&self) -> Result<(), String> {
+        let ws = self.workspace();
+        let Some(file) = &ws.file else {
+            return Ok(());
+        };
+        let text = workspace::write(&ws.name, &ws.projects, file);
+        if self.storage().read_to_string(file).ok().as_deref() == Some(text.as_str()) {
+            return Ok(()); // unchanged: leave the file (and git) alone
+        }
+        self.storage()
+            .write(file, &text)
+            .map_err(|e| format!("Could not save the workspace file {}: {e}", file.display()))
+    }
+
+    /// Saves local state and the workspace file after the workspace changed.
+    fn workspace_changed(&mut self) {
+        self.save_local();
+        if let Err(e) = self.write_workspace_file() {
+            self.notify(e);
+        }
+    }
+
+    /// Removes a missing project from the workspace.
+    pub fn remove_missing(&mut self, path: &Path) {
+        self.missing.retain(|(p, _)| p.path != path);
+        self.workspace_mut().projects.retain(|p| p.path != path);
+        self.workspace_changed();
+    }
+
+    /// The user found a missing project at `new`: use that folder instead (R-WS-5).
+    pub fn locate_missing(&mut self, old: &Path, new: &Path) -> tortuga_core::Result<()> {
+        if self.collection(new).is_none() {
+            self.load_project(new)?;
+        }
+        self.missing.retain(|(p, _)| p.path != old);
+        let ws = self.workspace_mut();
+        // The project's own environment choice moves with it.
+        if let Some(id) = ws.project_environments.remove(&root_key(old)) {
+            ws.project_environments.entry(root_key(new)).or_insert(id);
+        }
+        let already_listed = ws.projects.iter().any(|p| p.path == new);
+        if already_listed {
+            ws.projects.retain(|p| p.path != old);
+        } else if let Some(p) = ws.projects.iter_mut().find(|p| p.path == old) {
+            new.clone_into(&mut p.path);
+        }
+        self.workspace_changed();
+        Ok(())
+    }
+
+    /// Open projects grouped by git repository, in sidebar order (R-WS-4). Projects
+    /// outside git, or whose status is not known yet, are groups of their own.
+    pub fn project_groups(&self) -> Vec<(Option<PathBuf>, Vec<&Collection>)> {
+        let mut groups: Vec<(Option<PathBuf>, Vec<&Collection>)> = Vec::new();
+        for c in &self.collections {
+            let repo = self.git.get(&c.root).map(|g| g.repository.clone());
+            match groups
+                .iter_mut()
+                .find(|(r, _)| repo.is_some() && *r == repo)
+            {
+                Some((_, members)) => members.push(c),
+                None => groups.push((repo, vec![c])),
+            }
+        }
+        groups
+    }
+
+    /// Remembers the selected request in the workspace (`None`: the scratch request).
+    pub fn remember_selection(&mut self, key: Option<&ItemKey>) {
+        let selection = key.map(|k| (k.root.clone(), k.path.clone()));
+        if self.workspace().selection != selection {
+            self.workspace_mut().selection = selection;
+            self.save_local();
+        }
+    }
+
+    /// The remembered selection of the workspace, if that request still exists.
+    pub fn remembered_selection(&self) -> Option<ItemKey> {
+        let (root, path) = self.workspace().selection.clone()?;
+        let key = ItemKey::new(&root, path);
+        self.saved_request(&key).is_some().then_some(key)
     }
 
     // ------------------------------------------------------------ environments
 
-    /// The active environment of a collection (R-SRV-5); defaults to the first one.
+    /// The active environment of a project: the workspace's environment if the project
+    /// has one with that name (R-WS-6), else the project's own choice, else its first.
     pub fn active_environment(&self, root: &Path) -> Option<String> {
         let c = self.collection(root)?;
-        match self.local.active_environments.get(&root_key(root)) {
+        let ws = self.workspace();
+        if let Some(name) = &ws.environment
+            && let Some(env) = c.environments.iter().find(|e| e.name == *name)
+        {
+            return Some(env.id.clone());
+        }
+        match ws.project_environments.get(&root_key(root)) {
             Some(id) if c.environment(id).is_some() => Some(id.clone()),
             _ => c.environments.first().map(|e| e.id.clone()),
         }
     }
 
-    pub fn set_active_environment(&mut self, root: &Path, id: &str) {
-        self.local
-            .active_environments
+    /// False when the workspace's environment is one this project doesn't have (R-WS-6).
+    pub fn follows_workspace_environment(&self, root: &Path) -> bool {
+        let Some(name) = &self.workspace().environment else {
+            return true;
+        };
+        self.collection(root).is_none_or(|c| {
+            c.environments.is_empty() || c.environments.iter().any(|e| e.name == *name)
+        })
+    }
+
+    /// Environment names of all open projects, each once, in order of appearance.
+    pub fn environment_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for env in self.collections.iter().flat_map(|c| &c.environments) {
+            if !names.contains(&env.name) {
+                names.push(env.name.clone());
+            }
+        }
+        names
+    }
+
+    /// Switches every project that has an environment called `name` (R-WS-6).
+    pub fn set_workspace_environment(&mut self, name: &str) {
+        self.workspace_mut().environment = Some(name.to_owned());
+        self.save_local();
+    }
+
+    /// The environment a project uses when it has none named like the workspace's.
+    pub fn set_project_environment(&mut self, root: &Path, id: &str) {
+        self.workspace_mut()
+            .project_environments
             .insert(root_key(root), id.to_owned());
         self.save_local();
     }
@@ -276,6 +527,16 @@ impl AppState {
     /// Lets background threads wake the UI. Call once the egui context exists.
     pub fn set_repaint(&self, ctx: &egui::Context) {
         let _ = self.live.repaint.set(ctx.clone());
+    }
+
+    /// A function that wakes the UI from any thread, e.g. when background work is done.
+    pub fn waker(&self) -> impl Fn() + Send + Sync + 'static {
+        let repaint = self.live.repaint.clone();
+        move || {
+            if let Some(ctx) = repaint.get() {
+                ctx.request_repaint();
+            }
+        }
     }
 
     /// Watches a collection's files and git state (R-GIT-10) and reads its git status.
@@ -323,8 +584,15 @@ impl AppState {
     pub fn take_changes(&mut self) -> Vec<PathBuf> {
         while let Ok((root, result)) = self.live.git_rx.try_recv() {
             self.live.git_in_flight.remove(&root);
+            if self.collection(&root).is_none() {
+                self.live.git_again.remove(&root);
+                continue; // closed meanwhile
+            }
             match result {
-                Ok(Some(status)) => drop(self.git.insert(root.clone(), status)),
+                Ok(Some(status)) => {
+                    self.remember_remote(&root, status.remote.as_deref());
+                    self.git.insert(root.clone(), status);
+                }
                 Ok(None) => drop(self.git.remove(&root)),
                 Err(e) => {
                     self.git.remove(&root);
@@ -342,6 +610,26 @@ impl AppState {
             }
         }
         changed.into_iter().collect()
+    }
+
+    /// Keeps the project's git remote in the workspace, so a missing project can show
+    /// where to clone it from, and a workspace file can tell teammates (R-WS-5).
+    fn remember_remote(&mut self, root: &Path, remote: Option<&str>) {
+        let Some(remote) = remote else {
+            return;
+        };
+        let Some(project) = self
+            .workspace_mut()
+            .projects
+            .iter_mut()
+            .find(|p| p.path == root)
+        else {
+            return;
+        };
+        if project.remote.as_deref() != Some(remote) {
+            project.remote = Some(remote.to_owned());
+            self.workspace_changed();
+        }
     }
 
     /// The cookie jar requests of the collection at `root` use; the scratch jar for `None` (R-CK-1).
@@ -479,6 +767,196 @@ mod tests {
             "nothing about cookies in the collection directory"
         );
         std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// A fresh temp folder for a test.
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tortuga-ws-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    /// A project on disk with one request and the given environment names.
+    fn project(root: &Path, name: &str, environments: &[&str]) -> PathBuf {
+        use tortuga_core::storage::FsStorage;
+
+        let c = Collection::create(&FsStorage, root, name).expect("create");
+        let envs: Vec<tortuga_core::Environment> = environments
+            .iter()
+            .map(|e| tortuga_core::Environment {
+                id: e.to_lowercase(),
+                name: (*e).to_owned(),
+                ..Default::default()
+            })
+            .collect();
+        c.save_config(&FsStorage, &c.manifest, &envs)
+            .expect("config");
+        let mut request = Request::new(tortuga_core::HttpMethod::Get, "https://a.test/");
+        request.name = "List".into();
+        c.new_request(&FsStorage, Path::new(""), &request)
+            .expect("request")
+    }
+
+    fn roots(state: &AppState) -> Vec<PathBuf> {
+        state.collections.iter().map(|c| c.root.clone()).collect()
+    }
+
+    /// R-WS-1: each workspace opens its own projects and remembers its selection,
+    /// also after a restart; state from before workspaces becomes the first one.
+    #[test]
+    fn workspaces_open_their_own_projects() {
+        let dir = temp("switch");
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        let request = project(&a, "A", &[]);
+        project(&b, "B", &[]);
+        let host = crate::test_host::TestHost {
+            open: vec![a.clone()],
+            ..Default::default()
+        };
+        let saved = host.local.clone();
+        let mut state = AppState::new(Box::new(host));
+        assert_eq!(state.workspace().name, LocalState::DEFAULT_WORKSPACE);
+        assert_eq!(roots(&state), std::slice::from_ref(&a));
+        state.remember_selection(Some(&ItemKey::new(&a, request.clone())));
+
+        state.new_workspace("Side project");
+        assert_eq!(roots(&state), Vec::<PathBuf>::new());
+        state.open_collection(&b).expect("open b");
+        assert_eq!(roots(&state), std::slice::from_ref(&b));
+
+        state.switch_workspace(0);
+        assert_eq!(roots(&state), std::slice::from_ref(&a));
+        assert_eq!(
+            state.remembered_selection(),
+            Some(ItemKey::new(&a, request.clone()))
+        );
+
+        let restarted = AppState::new(Box::new(crate::test_host::TestHost {
+            local: saved,
+            ..Default::default()
+        }));
+        assert_eq!(restarted.local.workspaces.len(), 2);
+        assert_eq!(roots(&restarted), std::slice::from_ref(&a));
+
+        state.switch_workspace(1);
+        state.delete_workspace();
+        assert_eq!(state.local.workspaces.len(), 1);
+        assert_eq!(roots(&state), [a]);
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-WS-5: a workspace saved as a file opens on another machine; projects that
+    /// aren't there show as missing until located.
+    #[test]
+    fn workspace_files_are_shared_and_missing_projects_located() {
+        let dir = temp("file");
+        let (users, orders) = (dir.join("users"), dir.join("platform/orders"));
+        project(&users, "Users", &[]);
+        project(&orders, "Orders", &[]);
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![users.clone(), orders.clone()],
+            ..Default::default()
+        }));
+        state.rename_workspace("Acme");
+        let file = dir.join("platform/acme.tortuga-workspace.toml");
+        state.save_workspace_as(&file).expect("save");
+        let text = std::fs::read_to_string(&file).expect("file");
+        assert!(text.contains("path = \"../users\""), "{text}");
+        assert!(text.contains("path = \"orders\""), "{text}");
+
+        // A teammate who has only cloned the platform repository so far.
+        let moved = dir.join("elsewhere/users");
+        std::fs::create_dir_all(dir.join("elsewhere")).expect("mkdir");
+        std::fs::rename(&users, &moved).expect("move");
+        let mut teammate = AppState::new(Box::new(crate::test_host::TestHost::default()));
+        teammate.open_workspace_file(&file).expect("open file");
+        assert_eq!(teammate.workspace().name, "Acme");
+        assert_eq!(roots(&teammate), std::slice::from_ref(&orders));
+        assert_eq!(teammate.missing.len(), 1);
+        assert_eq!(teammate.missing[0].0.path, users);
+
+        teammate.set_project_environment(&users, "chosen-before-it-moved");
+        teammate.locate_missing(&users, &moved).expect("locate");
+        assert_eq!(
+            teammate
+                .workspace()
+                .project_environments
+                .get(&root_key(&moved))
+                .map(String::as_str),
+            Some("chosen-before-it-moved"),
+            "the project's environment choice follows it"
+        );
+        assert_eq!(teammate.missing.len(), 0);
+        assert_eq!(roots(&teammate), [orders, moved]);
+        let text = std::fs::read_to_string(&file).expect("file");
+        assert!(
+            text.contains("path = \"../elsewhere/users\""),
+            "file follows: {text}"
+        );
+
+        // Opening the same file again switches to that workspace instead of adding one.
+        teammate.open_workspace_file(&file).expect("again");
+        assert_eq!(teammate.local.workspaces.len(), 2);
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-WS-6: one environment choice switches every project that has it.
+    #[test]
+    fn environments_switch_by_name_across_the_workspace() {
+        let dir = temp("env");
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        project(&a, "A", &["Dev", "Staging"]);
+        project(&b, "B", &["Local", "Dev"]);
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![a.clone(), b.clone()],
+            ..Default::default()
+        }));
+        assert_eq!(state.environment_names(), ["Dev", "Staging", "Local"]);
+
+        state.set_workspace_environment("Dev");
+        assert_eq!(state.active_environment(&a).as_deref(), Some("dev"));
+        assert_eq!(state.active_environment(&b).as_deref(), Some("dev"));
+
+        state.set_workspace_environment("Staging");
+        assert_eq!(state.active_environment(&a).as_deref(), Some("staging"));
+        assert!(!state.follows_workspace_environment(&b));
+        let first = state.collection(&b).expect("b").environments[0].id.clone();
+        assert_eq!(state.active_environment(&b), Some(first), "keeps its first");
+        state.set_project_environment(&b, "local");
+        assert_eq!(state.active_environment(&b).as_deref(), Some("local"));
+        assert!(state.follows_workspace_environment(&a));
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-WS-4: projects in the same repository are grouped, in sidebar order.
+    #[test]
+    fn projects_are_grouped_by_repository() {
+        let dir = temp("groups");
+        let (a, b, c) = (dir.join("a"), dir.join("b"), dir.join("c"));
+        for (root, name) in [(&a, "A"), (&b, "B"), (&c, "C")] {
+            project(root, name, &[]);
+        }
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![a.clone(), b.clone(), c.clone()],
+            ..Default::default()
+        }));
+        let in_repo = |repo: &str| GitStatus {
+            repository: PathBuf::from(repo),
+            ..GitStatus::default()
+        };
+        state.git.insert(a.clone(), in_repo("/repo"));
+        state.git.insert(c.clone(), in_repo("/repo"));
+        let groups: Vec<(Option<PathBuf>, Vec<PathBuf>)> = state
+            .project_groups()
+            .into_iter()
+            .map(|(repo, members)| (repo, members.iter().map(|c| c.root.clone()).collect()))
+            .collect();
+        assert_eq!(
+            groups,
+            [(Some(PathBuf::from("/repo")), vec![a, c]), (None, vec![b]),]
+        );
+        std::fs::remove_dir_all(dir).expect("clean up");
     }
 
     #[test]

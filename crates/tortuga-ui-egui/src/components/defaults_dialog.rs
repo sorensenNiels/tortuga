@@ -49,13 +49,13 @@ impl DefaultsDialog {
         let Some(c) = state.collection(&self.root) else {
             return DialogResult::Close;
         };
-        let title = format!("Collection defaults — {}", c.name());
+        let title = format!("Project defaults — {}", c.name());
         let read_only = c.read_only;
         let undefined = undefined_names(state, &self.root, &self.headers, &self.auth);
         dialog(ctx, "collection-defaults", &title, 640.0, false, |ui| {
             theme::hint(
                 ui,
-                "Every request in this collection inherits these. A request can replace a header by \
+                "Every request in this project inherits these. A request can replace a header by \
                  adding one with the same name (or switch it off), and can choose its own auth.",
             );
             ui.add_space(8.0);
@@ -116,7 +116,7 @@ fn auth_tab(ui: &mut Ui, auth: &mut Auth, undefined: &[String]) {
         "default-auth",
         auth,
         undefined,
-        "collection file (tortuga.toml)",
+        "project file (tortuga.toml)",
     );
 }
 

@@ -37,17 +37,17 @@ pub enum Error {
     #[error("{}: {message}", .path.display())]
     InvalidFile { path: PathBuf, message: String },
 
-    #[error("{} is not a Tortuga collection (no tortuga.toml)", .0.display())]
+    #[error("{} is not a Tortuga project (no tortuga.toml)", .0.display())]
     NotACollection(PathBuf),
 
-    #[error("{} already contains a Tortuga collection", .0.display())]
+    #[error("{} already contains a Tortuga project", .0.display())]
     AlreadyACollection(PathBuf),
 
     #[error("{} no longer exists", .0.display())]
     NotFound(PathBuf),
 
     #[error(
-        "this collection was saved by a newer Tortuga (format {found}, this version understands {supported}); it is read-only"
+        "this project was saved by a newer Tortuga (format {found}, this version understands {supported}); it is read-only"
     )]
     ReadOnly { found: u32, supported: u32 },
 
@@ -63,7 +63,7 @@ pub enum Error {
     EmptyPathVariables(Vec<String>),
 
     /// R-SRV-4
-    #[error("server `{0}` is not defined in this collection")]
+    #[error("server `{0}` is not defined in this project")]
     UnknownServer(String),
 
     /// R-CK-3

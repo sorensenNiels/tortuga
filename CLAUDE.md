@@ -22,7 +22,7 @@ When building something that has no requirement yet, add one to the roadmap (nex
 
 | Path | Purpose |
 |---|---|
-| `crates/tortuga-core` | UI-agnostic engine. No UI deps, ever. `model` (request/response), `http` (client), `format` (TOML file format), `collection` (tree + operations on disk), `vars` (environments, servers, `{{variables}}`, auth, defaults), `secrets` (secret values + `SecretStore` trait), `storage` (file access trait). |
+| `crates/tortuga-core` | UI-agnostic engine. No UI deps, ever. `model` (request/response), `http` (client), `format` (TOML file format), `collection` (tree + operations on disk), `vars` (environments, servers, `{{variables}}`, auth, defaults), `secrets` (secret values + `SecretStore` trait), `cookies`, `git` (status data), `workspace` (shareable workspace file), `storage` (file access trait). In code a project is still a `Collection`; the UI and docs say "project" (D12). |
 | `crates/tortuga-ui-egui` | The UI, built with egui 0.37: components, UI state (`AppState`, `TortugaUi`), display formatting. No platform code: files, dialogs, settings storage and task spawning come in through the `Host` trait. |
 | `crates/tortuga-app` | Thin eframe launcher (`tortuga` binary): window, tokio runtime, `local_store`, native dialogs (`rfd`), and the `Host` impls. Features: `desktop` (default, native), `web` (wasm32). |
 | `scripts/` | One-time dev setup per OS. |
@@ -57,7 +57,7 @@ Without the GTK 3 headers (Linux), `make test`/`make lint` fall back to what can
   never call `std::fs` directly from core logic.
 - Collection operations write to disk, then the app re-opens the collection (`AppState::run`), so the UI
   always shows what is on disk. Keep it that way; don't patch the in-memory tree.
-- Data that must not be shared (open collections, active environment, settings, later secrets) is stored by
+- Data that must not be shared (workspaces and their open projects, active environments, settings, cookies) is stored by
   `tortuga-app/src/local_store.rs` (behind `Host`), never in a collection directory.
 - Persisted model types derive `Serialize`/`Deserialize`; add a round-trip test when adding fields,
   and use `#[serde(default)]` for new fields so older saved files still load.

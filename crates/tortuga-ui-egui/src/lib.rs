@@ -18,7 +18,7 @@ mod shell;
 mod state;
 mod theme;
 
-pub use host::{BoxTask, Host, LocalState};
+pub use host::{BoxTask, Host, LocalState, Workspace};
 pub use shell::TortugaUi;
 
 #[cfg(test)]
@@ -51,6 +51,8 @@ pub(crate) mod test_host {
         pub secrets: MemorySecretStore,
         /// Saved cookie jars, by collection root.
         pub cookies: std::rc::Rc<std::cell::RefCell<std::collections::BTreeMap<PathBuf, String>>>,
+        /// The last saved local state; loaded instead of `open` once set.
+        pub local: std::rc::Rc<std::cell::RefCell<Option<LocalState>>>,
     }
 
     impl Host for TestHost {
@@ -79,12 +81,13 @@ pub(crate) mod test_host {
             Ok(())
         }
         fn load_local(&self) -> Result<LocalState, String> {
-            Ok(LocalState {
+            Ok(self.local.borrow().clone().unwrap_or_else(|| LocalState {
                 open_collections: self.open.clone(),
                 ..LocalState::default()
-            })
+            }))
         }
-        fn save_local(&self, _: &LocalState) -> Result<(), String> {
+        fn save_local(&self, state: &LocalState) -> Result<(), String> {
+            *self.local.borrow_mut() = Some(state.clone());
             Ok(())
         }
     }

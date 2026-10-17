@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 
 use egui::{ComboBox, Context, Id, Modal, TextEdit, Ui};
 use tortuga_core::ClientSettings;
@@ -117,7 +118,7 @@ impl ConfirmDialog {
 
 // ---------------------------------------------------------------- move
 
-/// Pick a destination folder in the same collection (R-COL-2).
+/// Pick a destination folder in the same project (R-COL-2).
 #[derive(Debug, Clone)]
 pub struct MoveDialog {
     pub item: ItemKey,
@@ -162,9 +163,9 @@ fn current_parent(item: &ItemKey) -> PathBuf {
     item.path.parent().map(PathBuf::from).unwrap_or_default()
 }
 
-// ---------------------------------------------------------------- save to collection
+// ---------------------------------------------------------------- save to project
 
-/// Save the scratch request into a collection (R-COL-7 → R-COL-1).
+/// Save the scratch request into a project (R-COL-7 → R-COL-1).
 #[derive(Debug, Clone)]
 pub struct SaveToCollectionDialog {
     root: Option<PathBuf>,
@@ -204,7 +205,7 @@ impl SaveToCollectionDialog {
             true,
             |ui| {
                 if state.collections.is_empty() {
-                    ui.label("Open or create a collection first (“Open…” in the sidebar).");
+                    ui.label("Add or create a project first (“+ Add” in the sidebar).");
                 } else {
                     field_label(ui, "Name");
                     ui.add(
@@ -212,7 +213,7 @@ impl SaveToCollectionDialog {
                             .hint_text("e.g. List users")
                             .desired_width(f32::INFINITY),
                     );
-                    field_label(ui, "Collection");
+                    field_label(ui, "Project");
                     let selected = self
                         .root
                         .as_ref()
@@ -253,48 +254,227 @@ impl SaveToCollectionDialog {
     }
 }
 
-// ---------------------------------------------------------------- create collection
+// ---------------------------------------------------------------- create project
 
-/// The chosen folder is not a collection yet: offer to create one there.
+/// The chosen folder is not a project yet: offer to create one there (R-WS-7).
 #[derive(Debug, Clone)]
-pub struct CreateCollectionDialog {
+pub struct CreateProjectDialog {
     pub dir: PathBuf,
     name: String,
+    /// The git repository the folder is already in, if any.
+    repository: Option<PathBuf>,
+    can_init_git: bool,
+    init_git: bool,
 }
 
-impl CreateCollectionDialog {
-    pub fn new(dir: PathBuf) -> Self {
+impl CreateProjectDialog {
+    pub fn new(dir: PathBuf, repository: Option<PathBuf>, can_init_git: bool) -> Self {
         let name = dir
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Self { dir, name }
+        Self {
+            dir,
+            name,
+            repository,
+            can_init_git,
+            init_git: false,
+        }
     }
 
-    /// Done with the collection name.
-    pub fn show(&mut self, ctx: &Context) -> DialogResult<String> {
-        dialog(
-            ctx,
-            "create-collection",
-            "Create a collection",
-            420.0,
-            true,
-            |ui| {
-                theme::hint(
+    /// Done with (project name, make the folder a git repository).
+    pub fn show(&mut self, ctx: &Context) -> DialogResult<(String, bool)> {
+        dialog(ctx, "create-project", "New project", 440.0, true, |ui| {
+            theme::hint(
+                ui,
+                format!(
+                    "Tortuga will add a tortuga.toml file to {}; requests are saved next to it.",
+                    self.dir.display()
+                ),
+            );
+            field_label(ui, "Project name");
+            ui.add(TextEdit::singleline(&mut self.name).desired_width(f32::INFINITY));
+            ui.add_space(8.0);
+            match &self.repository {
+                Some(repo) => theme::hint(
                     ui,
                     format!(
-                        "{} is not a collection yet. Tortuga will add a tortuga.toml file there; requests are saved next to it.",
-                        self.dir.display()
+                        "Inside the git repository at {}: commit the project with your code.",
+                        repo.display()
                     ),
-                );
-                field_label(ui, "Collection name");
-                ui.add(TextEdit::singleline(&mut self.name).desired_width(f32::INFINITY));
-                let name = self.name.trim();
+                ),
+                None if self.can_init_git => {
+                    ui.checkbox(&mut self.init_git, "Make the folder a git repository")
+                        .on_hover_text("So the project can be shared with git (git init)");
+                }
+                None => {}
+            }
+            let name = self.name.trim();
+            let (cancel, confirm) =
+                actions(ui, theme::primary_button(ui, "Create"), !name.is_empty());
+            finish(cancel, confirm.then(|| (name.to_owned(), self.init_git)))
+        })
+    }
+}
+
+// ---------------------------------------------------------------- add existing projects
+
+/// What the user chose in [`AddProjectsDialog`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddProjects {
+    Add(Vec<PathBuf>),
+    /// Nothing was found: create a project in the chosen folder instead.
+    CreateHere(PathBuf),
+}
+
+/// Projects found in a folder or repository, as a checklist (R-WS-3).
+#[derive(Debug)]
+pub struct AddProjectsDialog {
+    pub dir: PathBuf,
+    results: Receiver<Result<Vec<PathBuf>, String>>,
+    /// `None` while searching; then each project and whether it is ticked.
+    found: Option<Result<Vec<(PathBuf, bool)>, String>>,
+}
+
+impl AddProjectsDialog {
+    /// `results` delivers the search started for `dir`.
+    pub fn new(dir: PathBuf, results: Receiver<Result<Vec<PathBuf>, String>>) -> Self {
+        Self {
+            dir,
+            results,
+            found: None,
+        }
+    }
+
+    pub fn show(&mut self, ctx: &Context, state: &AppState) -> DialogResult<AddProjects> {
+        if self.found.is_none()
+            && let Ok(result) = self.results.try_recv()
+        {
+            // Everything starts ticked; projects already open stay ticked and disabled.
+            self.found = Some(result.map(|paths| paths.into_iter().map(|p| (p, true)).collect()));
+        }
+        let dir = self.dir.clone();
+        dialog(
+            ctx,
+            "add-projects",
+            "Add existing projects",
+            520.0,
+            true,
+            |ui| {
+                let mut create_here = false;
+                match &mut self.found {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(format!("Looking for projects in {}…", dir.display()));
+                        });
+                    }
+                    Some(Err(e)) => theme::error(ui, e.as_str()),
+                    Some(Ok(found)) if found.is_empty() => {
+                        ui.label(format!(
+                            "No projects (folders with a tortuga.toml file) in {}.",
+                            dir.display()
+                        ));
+                        ui.add_space(8.0);
+                        create_here = ui.button("Create a project there…").clicked();
+                    }
+                    Some(Ok(found)) => {
+                        theme::hint(
+                            ui,
+                            format!(
+                                "Found in {}. Git-ignored folders were skipped.",
+                                dir.display()
+                            ),
+                        );
+                        ui.add_space(6.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(320.0)
+                            .show(ui, |ui| {
+                                for (path, ticked) in found.iter_mut() {
+                                    let open = state.collection(path).is_some();
+                                    let label = match path.strip_prefix(&dir) {
+                                        Ok(rel) if rel.as_os_str().is_empty() => ".".to_owned(),
+                                        Ok(rel) => rel.display().to_string(),
+                                        Err(_) => path.display().to_string(),
+                                    };
+                                    let label = if open {
+                                        format!("{label}  (already in the workspace)")
+                                    } else {
+                                        label
+                                    };
+                                    ui.add_enabled(!open, egui::Checkbox::new(ticked, label));
+                                }
+                            });
+                    }
+                }
+                let chosen: Vec<PathBuf> = match &self.found {
+                    Some(Ok(found)) => found
+                        .iter()
+                        .filter(|(p, ticked)| *ticked && state.collection(p).is_none())
+                        .map(|(p, _)| p.clone())
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let label = match chosen.len() {
+                    1 => "Add 1 project".to_owned(),
+                    n => format!("Add {n} projects"),
+                };
                 let (cancel, confirm) =
-                    actions(ui, theme::primary_button(ui, "Create"), !name.is_empty());
-                finish(cancel, confirm.then(|| name.to_owned()))
+                    actions(ui, theme::primary_button(ui, &label), !chosen.is_empty());
+                if create_here {
+                    return DialogResult::Done(AddProjects::CreateHere(dir.clone()));
+                }
+                finish(cancel, confirm.then_some(AddProjects::Add(chosen)))
             },
         )
+    }
+}
+
+// ---------------------------------------------------------------- name
+
+/// Asks for a name, e.g. of a workspace.
+#[derive(Debug, Clone)]
+pub struct NameDialog {
+    title: String,
+    confirm_label: String,
+    name: String,
+    focused: bool,
+}
+
+impl NameDialog {
+    pub fn new(title: &str, confirm_label: &str, name: &str) -> Self {
+        Self {
+            title: title.to_owned(),
+            confirm_label: confirm_label.to_owned(),
+            name: name.to_owned(),
+            focused: false,
+        }
+    }
+
+    pub fn show(&mut self, ctx: &Context) -> DialogResult<String> {
+        dialog(ctx, "name", &self.title.clone(), 380.0, true, |ui| {
+            field_label(ui, "Name");
+            let field = ui.add(
+                TextEdit::singleline(&mut self.name)
+                    .id_salt("name-dialog")
+                    .desired_width(f32::INFINITY),
+            );
+            if !self.focused {
+                field.request_focus();
+                self.focused = true;
+            }
+            let name = self.name.trim().to_owned();
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let (cancel, confirm) = actions(
+                ui,
+                theme::primary_button(ui, &self.confirm_label),
+                !name.is_empty(),
+            );
+            finish(
+                cancel,
+                ((confirm || enter) && !name.is_empty()).then_some(name),
+            )
+        })
     }
 }
 
@@ -347,5 +527,79 @@ impl SettingsDialog {
             let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Save"), true);
             finish(cancel, confirm.then(|| self.draft.clone()))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+    use crate::test_host::TestHost;
+
+    /// R-WS-3: found projects are a checklist; projects already open can't be added twice.
+    #[test]
+    fn found_projects_are_a_checklist() {
+        let dir = std::env::temp_dir().join(format!("tortuga-addprojects-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let open = dir.join("users");
+        tortuga_core::Collection::create(&tortuga_core::storage::FsStorage, &open, "Users")
+            .expect("create");
+        let state = AppState::new(Box::new(TestHost {
+            open: vec![open.clone()],
+            ..TestHost::default()
+        }));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut dialog = AddProjectsDialog::new(dir.clone(), rx);
+        let mut result = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                if let DialogResult::Done(r) = dialog.show(ui.ctx(), &state) {
+                    result = Some(r);
+                }
+            });
+            // `step`: the spinner keeps repainting while searching.
+            h.step();
+            assert!(h.query_by_label_contains("Looking for projects").is_some());
+            tx.send(Ok(vec![
+                dir.join("orders"),
+                dir.join("payments/api"),
+                open.clone(),
+            ]))
+            .expect("send");
+            h.run();
+            h.get_by_label("users  (already in the workspace)");
+            h.get_by_label("orders").click(); // untick
+            h.run();
+            h.get_by_label("Add 1 project").click();
+            h.run();
+        }
+        assert_eq!(
+            result,
+            Some(AddProjects::Add(vec![dir.join("payments/api")]))
+        );
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-WS-3: with nothing found, a project can be created there instead.
+    #[test]
+    fn nothing_found_offers_to_create_a_project() {
+        let state = AppState::new(Box::new(TestHost::default()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(Vec::new())).expect("send");
+        let dir = PathBuf::from("/somewhere");
+        let mut dialog = AddProjectsDialog::new(dir.clone(), rx);
+        let mut result = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                if let DialogResult::Done(r) = dialog.show(ui.ctx(), &state) {
+                    result = Some(r);
+                }
+            });
+            h.run();
+            h.get_by_label("Create a project there…").click();
+            h.run();
+        }
+        assert_eq!(result, Some(AddProjects::CreateHere(dir)));
     }
 }

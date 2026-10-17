@@ -61,7 +61,40 @@ pub fn status(root: &Path) -> Result<Option<GitStatus>, String> {
             .and_modify(|current| *current = merge(*current, status))
             .or_insert(status);
     }
-    Ok(Some(GitStatus { branch, files }))
+    Ok(Some(GitStatus {
+        branch,
+        files,
+        repository: workdir.clone(),
+        remote: remote_url(&repo),
+    }))
+}
+
+/// URL of the repository's default remote (usually `origin`), without credentials.
+fn remote_url(repo: &gix::Repository) -> Option<String> {
+    let remote = repo
+        .find_default_remote(gix::remote::Direction::Fetch)?
+        .ok()?;
+    let url = remote.url(gix::remote::Direction::Fetch)?.to_bstring();
+    Some(tortuga_core::workspace::without_credentials(
+        &url.to_string(),
+    ))
+}
+
+/// Top folder of the git repository `dir` is in, if any.
+pub fn repository_of(dir: &Path) -> Option<PathBuf> {
+    gix::discover(dir)
+        .ok()
+        .and_then(|repo| repo.workdir().map(canonical))
+}
+
+/// Makes `dir` a new git repository (R-WS-7).
+pub fn init(dir: &Path) -> Result<(), String> {
+    gix::init(dir).map(drop).map_err(|e| {
+        format!(
+            "Could not create a git repository in {}: {e}",
+            dir.display()
+        )
+    })
 }
 
 fn classify(item: &gix::status::Item) -> Option<FileStatus> {
@@ -153,8 +186,24 @@ mod tests {
             "changed, but not in the collection\n",
         );
 
+        assert!(git(
+            &dir,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://bob:tok@example.test/acme/api.git"
+            ]
+        ));
         let status = status(&coll).expect("status").expect("in a repo");
         assert_eq!(status.branch.as_deref(), Some("main"));
+        assert_eq!(status.repository, canonical(&dir));
+        assert_eq!(
+            status.remote.as_deref(),
+            Some("https://example.test/acme/api.git"),
+            "credentials are not passed on"
+        );
+        assert_eq!(repository_of(&coll), Some(canonical(&dir)));
         let files: Vec<(&str, FileStatus)> = status
             .files
             .iter()
@@ -208,6 +257,16 @@ mod tests {
         let result = status(&dir).expect("status");
         std::fs::remove_dir_all(dir).expect("clean up");
         result
+    }
+
+    #[test]
+    fn init_makes_a_repository() {
+        let dir = std::env::temp_dir().join(format!("tortuga-git-init-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        init(&dir).expect("init");
+        assert_eq!(repository_of(&dir), Some(canonical(&dir)));
+        std::fs::remove_dir_all(dir).expect("clean up");
     }
 
     #[test]

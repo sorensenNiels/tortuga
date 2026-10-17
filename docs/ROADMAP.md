@@ -61,7 +61,7 @@ A requirement moves to [FEATURES.md](FEATURES.md) once it is implemented and ver
 | **M4: Auth & secrets** | Share collections without leaking credentials. | R-VAR-3 · R-HTTP-5 · R-COL-4 (headers, auth) · R-LOC-1, 2 | Done, except R-LOC-2 on a real OS credential store (see FEATURES.md) |
 | **M5: Cookies** | Session-based APIs work, with per-request control. | R-CK-1 to 4 | Done (see FEATURES.md) |
 | **M6: Live git collaboration** | Teammates' changes appear automatically, and the git state is visible. | R-GIT-10 to 14 | Done (see FEATURES.md) |
-| **M6.5: Workspaces & projects** | Group projects (today's collections) into workspaces, also when several share a repo. Built before M7 (D15). | R-WS-1 to 7 | |
+| **M6.5: Workspaces & projects** | Group projects (today's collections) into workspaces, also when several share a repo. Built before M7 (D15). | R-WS-1 to 7 | Done (see FEATURES.md) |
 | **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | |
 | **UI: egui** | Move the UI from Dioxus to egui (`tortuga-ui-egui`) with a modern look. | — | Done (2026-10-17) |
 | **v1 extras** | Decided in D1, plus path variables (requested 2026-10-17). | R-COL-8 · R-HTTP-9 · R-HTTP-10 | R-HTTP-10 done |
