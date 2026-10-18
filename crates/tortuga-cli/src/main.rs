@@ -52,7 +52,7 @@ enum ReportKind {
 }
 
 enum Command {
-    Run(Args),
+    Run(Box<Args>),
     Help,
     Version,
 }
@@ -74,7 +74,8 @@ fn main() -> ExitCode {
             println!("tortuga-cli {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Command::Run(mut args) => {
+        Command::Run(args) => {
+            let mut args = *args;
             args.vars = env_vars(std::env::vars())
                 .into_iter()
                 .chain(args.vars)
@@ -145,7 +146,7 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
     if let Some(extra) = positional.next() {
         return Err(format!("unexpected '{extra}'"));
     }
-    Ok(Command::Run(args))
+    Ok(Command::Run(Box::new(args)))
 }
 
 /// `TORTUGA_VAR_<name>=value` environment variables (R-CLI-2, D30).
