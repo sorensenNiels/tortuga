@@ -12,45 +12,25 @@
 //!   ever written to the project.
 //!
 //! Only local references (`#/components/…`) are followed. What can't be imported as
-//! written is reported in [`Import::warnings`].
+//! written is reported in [`Import::warnings`]. [`crate::import::create_project`] writes
+//! the result.
 
-use std::collections::BTreeSet;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::collection::{Collection, NewItem};
-use crate::format::{Environment, Manifest, Server};
+use crate::format::{Environment, FolderDefaults, Manifest, Server};
+use crate::import::{Import, ImportKind, short_name, unique_name, variable_name};
 use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody};
-use crate::storage::Storage;
 use crate::{Error, Result};
-
-/// A project made from an OpenAPI description, ready for [`create_project`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Import {
-    pub manifest: Manifest,
-    pub environments: Vec<Environment>,
-    pub items: Vec<NewItem>,
-    /// Number of requests (one per operation).
-    pub requests: usize,
-    /// What could not be imported as written, as sentences for the user.
-    pub warnings: Vec<String>,
-}
 
 /// Reads an OpenAPI 3 description (JSON or YAML) into a project (R-COL-15).
 pub fn parse(text: &str) -> Result<Import> {
     let doc = read_document(text)?;
     check_version(&doc)?;
     Ok(Importer::new(&doc).run())
-}
-
-/// Writes `import` as a new project in `root` and opens it (R-COL-15, D34).
-pub fn create_project(storage: &dyn Storage, root: &Path, import: &Import) -> Result<Collection> {
-    let created = Collection::create(storage, root, &import.manifest.name)?;
-    created.save_config(storage, &import.manifest, &import.environments)?;
-    Collection::open(storage, root)?.add_items(storage, Path::new(""), &import.items)?;
-    Collection::open(storage, root)
 }
 
 const METHODS: [(&str, HttpMethod); 7] = [
@@ -62,9 +42,6 @@ const METHODS: [(&str, HttpMethod); 7] = [
     ("head", HttpMethod::Head),
     ("options", HttpMethod::Options),
 ];
-
-/// Request names longer than this are cut (they also name the file).
-const MAX_NAME: usize = 60;
 
 /// How deep example bodies are built from nested (or recursive) schemas.
 const MAX_DEPTH: usize = 8;
@@ -208,10 +185,12 @@ impl<'a> Importer<'a> {
         let (items, requests) = self.operations();
         manifest.secrets = self.secrets.iter().cloned().collect();
         Import {
+            kind: ImportKind::OpenApi,
             manifest,
             environments,
             items,
             requests,
+            secret_values: BTreeMap::new(),
             warnings: self.warnings,
         }
     }
@@ -478,7 +457,11 @@ impl<'a> Importer<'a> {
         let mut items: Vec<NewItem> = folders
             .into_iter()
             .filter(|(_, items)| !items.is_empty())
-            .map(|(name, items)| NewItem::Folder { name, items })
+            .map(|(name, items)| NewItem::Folder {
+                name,
+                defaults: FolderDefaults::default(),
+                items,
+            })
             .collect();
         items.extend(top);
         (items, count)
@@ -813,7 +796,7 @@ fn value_text(value: &Value) -> String {
     }
 }
 
-/// The operation's summary, else its id, else "GET /path"; at most [`MAX_NAME`] characters.
+/// The operation's summary, else its id, else "GET /path", cut to a usable length.
 fn request_name(op: &Value, method: HttpMethod, path: &str) -> String {
     let name = ["summary", "operationId"]
         .iter()
@@ -821,12 +804,7 @@ fn request_name(op: &Value, method: HttpMethod, path: &str) -> String {
         .map(|s| s.trim().trim_end_matches('.'))
         .find(|s| !s.is_empty())
         .map_or_else(|| format!("{method} {path}"), str::to_owned);
-    if name.chars().count() <= MAX_NAME {
-        name
-    } else {
-        let cut: String = name.chars().take(MAX_NAME - 1).collect();
-        format!("{}…", cut.trim_end())
-    }
+    short_name(&name)
 }
 
 /// `/users/{user-id}` → `/users/:user_id` (R-HTTP-10).
@@ -846,26 +824,6 @@ fn path_template(path: &str) -> String {
     out
 }
 
-/// A variable name from any text: letters, digits and `_` (`X-API-Key` → `x_api_key`).
-fn variable_name(text: &str) -> String {
-    let name: String = text
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let name = name.trim_matches('_');
-    if name.is_empty() {
-        "value".into()
-    } else {
-        name.to_owned()
-    }
-}
-
 /// "api.example.com" or "localhost:8080/v1" for an environment named after its URL.
 fn host_name(url: &str) -> String {
     url::Url::parse(url)
@@ -877,16 +835,6 @@ fn host_name(url: &str) -> String {
             Some(format!("{host}{port}{path}"))
         })
         .unwrap_or_else(|| "Default".into())
-}
-
-fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
-    if !taken(base) {
-        return base.to_owned();
-    }
-    (2..=usize::MAX)
-        .map(|n| format!("{base} {n}"))
-        .find(|name| !taken(name))
-        .unwrap_or_else(|| base.to_owned())
 }
 
 #[cfg(test)]
@@ -1039,7 +987,7 @@ components:
             .items
             .iter()
             .map(|i| match i {
-                NewItem::Folder { name, items } => (name.as_str(), items.len()),
+                NewItem::Folder { name, items, .. } => (name.as_str(), items.len()),
                 NewItem::Request(r) => (r.name.as_str(), 0),
             })
             .collect();
@@ -1222,16 +1170,13 @@ components:
     #[test]
     fn helpers() {
         assert_eq!(path_template("/a/{b}/c/{d-e}.json"), "/a/:b/c/:d_e.json");
-        assert_eq!(variable_name("X-API-Key"), "x_api_key");
-        assert_eq!(variable_name("--"), "value");
         assert_eq!(value_text(&serde_json::json!([1, "b"])), "1,b");
         let long = serde_json::json!({ "summary": "x".repeat(80) });
         assert_eq!(
             request_name(&long, HttpMethod::Get, "/").chars().count(),
-            MAX_NAME
+            60
         );
         assert!(is_json("application/problem+json; charset=utf-8"));
         assert!(!is_json("application/xml"));
-        assert_eq!(unique_name("A", |n| n == "A" || n == "A 2"), "A 3");
     }
 }

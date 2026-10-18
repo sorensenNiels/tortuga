@@ -73,8 +73,8 @@ enum Modal {
     RuntimeVars(crate::components::RuntimeVarsDialog),
     /// The cookie viewer (R-CK-5).
     Cookies(CookiesDialog),
-    /// Reviewing an OpenAPI import (R-COL-15).
-    ImportOpenApi(Box<import::OpenImport>),
+    /// Reviewing an OpenAPI or Postman import (R-COL-15, R-COL-16).
+    Import(Box<import::OpenImport>),
 }
 
 /// What the user picked in the workspace menu (R-WS-1, R-WS-5).
@@ -1624,7 +1624,7 @@ impl TortugaUi {
             }
             SidebarAction::NewProject => self.new_project(),
             SidebarAction::AddProjects => self.add_projects(),
-            SidebarAction::ImportOpenApi => self.import_openapi(),
+            SidebarAction::Import(kind) => self.import_file(kind),
             SidebarAction::LocateMissing(path) => self.locate_missing(&path),
             SidebarAction::RemoveMissing(path) => self.state.remove_missing(&path),
         }
@@ -1851,7 +1851,7 @@ impl TortugaUi {
             | Modal::DeleteWorkflow(..)
             | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
             Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
-            Modal::ImportOpenApi(open) => self.show_import_dialog(ctx, open),
+            Modal::Import(open) => self.show_import_dialog(ctx, open),
             Modal::ClearHistory(target, d) => match d.show(ctx) {
                 DialogResult::Done(()) => {
                     self.clear_history(target);

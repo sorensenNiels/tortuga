@@ -56,7 +56,7 @@ Every roadmap item should make at least one of these faster or safer.
 Milestones M1 to M9 are done: sending requests, projects on disk, environments and servers, auth and secrets,
 cookies, live git collaboration, workspaces, the v1 extras, release builds, the Phase 2 "daily driver"
 features, and Phase 3: test and pre-request scripts, captures, workflows (also data-driven) and the `tortuga-cli`
-runner. Request tabs grouped by project (R-COL-13, R-COL-14), a cookie viewer (R-CK-5), unsaved workflow edits kept across restarts (R-FLOW-5) and OpenAPI import (R-COL-15) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
+runner. Request tabs grouped by project (R-COL-13, R-COL-14), a cookie viewer (R-CK-5), unsaved workflow edits kept across restarts (R-FLOW-5) and imports from OpenAPI, Postman and `.http` files (R-COL-15, R-COL-16, R-COL-17) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
 
 Open before the first release (v1):
 
@@ -80,7 +80,7 @@ collections safely), Phase 2 (daily driver) and Phase 3 (workflows and tests, v2
 
 Picked by demand, not in a fixed order:
 
-- ~~Import OpenAPI~~ (done: R-COL-15), then Postman collections (IDEA-10), so teams can adopt Tortuga gradually (D7).
+- ~~Import OpenAPI~~ (done: R-COL-15), ~~then Postman collections~~ (done: R-COL-16) ~~and `.http` files~~ (done: R-COL-17), so teams can adopt Tortuga gradually (D7).
 - GraphQL, WebSockets, Server-Sent Events, gRPC (IDEA-25).
 - Client certificates / mTLS (IDEA-20).
 - Code snippets for other languages (IDEA-22).
@@ -117,7 +117,6 @@ Agreed as worth doing, not scheduled yet.
 | ID | Idea | Notes |
 |---|---|---|
 | IDEA-8 | "Compare" option when a file changed on disk while it had unsaved edits. | Extends R-GIT-11. |
-| IDEA-10 | Import Postman collections (v2.1 JSON). | Once our own format is stable. |
 | IDEA-11 | Web version of the app. | The architecture already keeps this possible (R-P-3). |
 | IDEA-14 | Signed installers: Apple Developer ID signing and notarization for the `.dmg`, Authenticode for the `.msi`. | Removes the "unidentified developer" and SmartScreen warnings. Needs paid certificates; see D17. |
 | IDEA-15 | Automatic update check and in-app updates. | Would contact a server, so it must be opt-in (R-P-4). |
@@ -136,6 +135,9 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-38 | Workspace variables, local only: values used across projects, e.g. log in with the Auth project and use `{{token}}` in the others. | Requests that use them depend on the workspace, so teammates without it see them as undefined (R-VAR-5). Precedence to be decided. |
 | IDEA-45 | Import again: update a project from a changed OpenAPI description, keeping local changes. | An import always creates a new project today (D34). |
 | IDEA-46 | Import Swagger 2.0 descriptions. | Today they are refused with a hint to convert them (D33). |
+| IDEA-47 | Import Postman environment files into a project's environments (base URLs into servers, secrets into the secret store). | A Postman import makes one "Default" environment today (R-COL-16). |
+| IDEA-49 | Import `.http` environment files (`http-client.env.json` and its private twin, REST Client's `rest-client.environmentVariables`) into environments and the secret store, and several `.http` files at once as a folder each. | A `.http` import reads one file and makes one "Default" environment today (R-COL-17). |
+| IDEA-48 | Translate common Postman script calls (`pm.test`, `pm.expect(…).to.equal`, `pm.environment.set`) to Tortuga's script API. | Today they are kept as comments (D36). |
 
 ### Not planned
 
@@ -188,6 +190,8 @@ Not decided. Needs a real user need before it moves up.
 | D33 | Which descriptions does the OpenAPI import read (R-COL-15)? | **OpenAPI 3.0 and 3.1, JSON or YAML**, local `$ref`s only; Swagger 2.0 is refused with a hint to convert it (2026-10-18). | Also Swagger 2.0; also references to other files and URLs. |
 | D34 | Where does an import go? | **Always a new project**, in a folder next to the description by default; re-importing is IDEA-45 (2026-10-18). | Into an existing project, merging by operation. |
 | D35 | How are an API's servers and credentials mapped? | **One server per API with a base URL per environment** (each `servers` entry is an environment); **security schemes become auth with secret variables** (`{{token}}`, `{{username}}`/`{{password}}`, API keys by name), so nothing secret is written (2026-10-18). | A server per `servers` entry; plain variables for credentials. |
+| D36 | How are Postman's base URLs, credentials and scripts mapped (R-COL-16)? | **A `{{variable}}` that starts request URLs becomes a server**, its value the base URL of a "Default" environment; **credentials become secret variables**, and values written in the collection go to this machine's secret store, never into the files (as D35); **scripts are kept as comments** with a note, since the `pm` API is not Tortuga's (D28); collection- and folder-level scripts are left out with a warning (2026-10-18). | Keep `{{baseUrl}}` as a plain variable; drop credential values; translate scripts. |
+| D37 | How is a `.http` file mapped (R-COL-17)? | **One file is one new project** named after the file, a request per `###` block named by its `###` title, else `# @name`, else the comment above it; `@variables` as project variables and base URLs as servers (D36); `Authorization` and key/token headers as auth or headers with secret variables (D35), moved to the project when every request has the same auth; **REST Client request variables become captures** (R-TEST-4); JetBrains handler scripts are kept as comments (2026-10-18). | A folder per file in an existing project; keep request variables and warn. |
 
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
@@ -200,4 +204,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-16` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-47` · `D36` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-18` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-50` · `D38` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5`.

@@ -5,6 +5,7 @@ use egui::text::{CCursor, CCursorRange};
 use egui::{Atom, AtomExt as _, Button, Key, RichText, ScrollArea, Sides, TextEdit, Ui};
 use tortuga_core::collection::Direction;
 use tortuga_core::git::{FileStatus, GitStatus};
+use tortuga_core::import::ImportKind;
 use tortuga_core::workspace::ProjectRef;
 use tortuga_core::{Collection, Item};
 
@@ -75,8 +76,9 @@ pub enum SidebarAction {
     NewProject,
     /// Find projects in a folder or repository and add them (R-WS-3).
     AddProjects,
-    /// Create a project from an OpenAPI description (R-COL-15).
-    ImportOpenApi,
+    /// Create a project from an OpenAPI description (R-COL-15), a Postman collection
+    /// (R-COL-16) or a `.http` file (R-COL-17).
+    Import(ImportKind),
     /// A missing project was moved: pick its new folder (R-WS-5).
     LocateMissing(PathBuf),
     RemoveMissing(PathBuf),
@@ -152,6 +154,44 @@ pub struct Marks<'a> {
     pub dirty_workflows: &'a HashSet<WorkflowKey>,
 }
 
+/// The "+ Add" menu: new, existing and imported projects.
+fn add_menu(ui: &mut Ui) -> Option<SidebarAction> {
+    let entries = [
+        (
+            "New project…",
+            "Create a project in a folder of your choice",
+            SidebarAction::NewProject,
+        ),
+        (
+            "Add existing projects…",
+            "Find the projects in a folder or git repository",
+            SidebarAction::AddProjects,
+        ),
+        (
+            "Import OpenAPI…",
+            "Create a project from an OpenAPI 3 description (JSON or YAML)",
+            SidebarAction::Import(ImportKind::OpenApi),
+        ),
+        (
+            "Import Postman collection…",
+            "Create a project from a Postman collection (v2.0 or v2.1 JSON)",
+            SidebarAction::Import(ImportKind::Postman),
+        ),
+        (
+            "Import .http file…",
+            "Create a project from a .http file (VS Code REST Client, JetBrains HTTP Client)",
+            SidebarAction::Import(ImportKind::Http),
+        ),
+    ];
+    let mut action = None;
+    for (label, hover, entry) in entries {
+        if ui.button(label).on_hover_text(hover).clicked() {
+            action = Some(entry);
+        }
+    }
+    action
+}
+
 /// The projects of the workspace and their requests (R-COL-1, R-COL-2, R-COL-3, R-WS-4).
 pub fn sidebar(
     ui: &mut Ui,
@@ -186,33 +226,7 @@ pub fn sidebar(
             if state.host.can_pick_folders() {
                 let (response, inner) =
                     egui::containers::menu::MenuButton::from_button(theme::ghost_button("+ Add"))
-                        .ui(ui, |ui| {
-                            let mut action = None;
-                            if ui
-                                .button("New project…")
-                                .on_hover_text("Create a project in a folder of your choice")
-                                .clicked()
-                            {
-                                action = Some(SidebarAction::NewProject);
-                            }
-                            if ui
-                                .button("Add existing projects…")
-                                .on_hover_text("Find the projects in a folder or git repository")
-                                .clicked()
-                            {
-                                action = Some(SidebarAction::AddProjects);
-                            }
-                            if ui
-                                .button("Import OpenAPI…")
-                                .on_hover_text(
-                                    "Create a project from an OpenAPI 3 description (JSON or YAML)",
-                                )
-                                .clicked()
-                            {
-                                action = Some(SidebarAction::ImportOpenApi);
-                            }
-                            action
-                        });
+                        .ui(ui, add_menu);
                 response.on_hover_text("Add a project to this workspace");
                 tree.actions.extend(inner.and_then(|i| i.inner));
             }

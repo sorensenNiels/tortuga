@@ -1,2 +1,2 @@
 # Names that doc comments may use without backticks; ".." keeps clippy's defaults.
-doc-valid-idents = ["OpenAPI", ".."]
+doc-valid-idents = ["OpenAPI", "JetBrains", ".."]

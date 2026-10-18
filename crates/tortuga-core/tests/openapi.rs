@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use tortuga_core::storage::FsStorage;
-use tortuga_core::{Collection, Error, Item, openapi};
+use tortuga_core::{Collection, Error, Item, import, openapi};
 
 const FS: FsStorage = FsStorage;
 
@@ -53,7 +53,7 @@ fn import_writes_a_project() {
     let dir = tempfile::tempdir().expect("temp dir");
     let root = dir.path().join("users-api");
     let import = openapi::parse(SPEC).expect("parse");
-    let project = openapi::create_project(&FS, &root, &import).expect("create");
+    let project = import::create_project(&FS, &root, &import).expect("create");
 
     assert_eq!(project.name(), "Users API");
     assert_eq!(names(&project.items), ["Users", "Health"]);
@@ -93,7 +93,7 @@ fn import_needs_a_folder_that_is_not_a_project() {
     let dir = tempfile::tempdir().expect("temp dir");
     Collection::create(&FS, dir.path(), "Existing").expect("create");
     let import = openapi::parse(SPEC).expect("parse");
-    let result = openapi::create_project(&FS, dir.path(), &import);
+    let result = import::create_project(&FS, dir.path(), &import);
     assert!(
         matches!(result, Err(Error::AlreadyACollection(_))),
         "{result:?}"

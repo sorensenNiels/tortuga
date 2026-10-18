@@ -292,6 +292,10 @@ mod tests {
         let (count, on_change) = counter();
         let watchers = Watchers::default();
         watchers.watch(&dir, on_change).expect("watch");
+        // Windows may report the setup write late (NTFS flushes file metadata lazily);
+        // start counting after it.
+        std::thread::sleep(DEBOUNCE * 3);
+        count.store(0, Ordering::SeqCst);
         // What a reload does: list the folders and read every file.
         for entry in std::fs::read_dir(dir.join("folder")).expect("list") {
             std::fs::read_to_string(entry.expect("entry").path()).expect("read");

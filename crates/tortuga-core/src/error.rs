@@ -88,6 +88,14 @@ pub enum Error {
     #[error("could not import the OpenAPI description: {0}")]
     InvalidOpenApi(String),
 
+    /// R-COL-16
+    #[error("could not import the Postman collection: {0}")]
+    InvalidPostman(String),
+
+    /// R-COL-17
+    #[error("could not import the HTTP file: {0}")]
+    InvalidHttpFile(String),
+
     /// R-VAR-3, R-LOC-2
     #[error("could not access secret values: {0}")]
     SecretStore(String),

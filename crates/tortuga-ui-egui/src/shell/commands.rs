@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use tortuga_core::import::ImportKind;
 use tortuga_core::{Item, Request};
 
 use super::{Modal, Selection, TortugaUi, WorkspaceAction};
@@ -43,7 +44,25 @@ pub(super) enum Command {
     RuntimeVars(Option<PathBuf>),
     AddProjects,
     NewProject,
-    ImportOpenApi,
+    Import(ImportKind),
+}
+
+/// Adding, creating and importing projects (R-WS-3, R-COL-15, R-COL-16, R-COL-17).
+fn project_commands() -> [PaletteItem<PaletteChoice>; 5] {
+    let run = |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+    [
+        run("Add existing projects…", Command::AddProjects),
+        run("New project…", Command::NewProject),
+        run("Import OpenAPI…", Command::Import(ImportKind::OpenApi))
+            .keywords("swagger spec yaml json"),
+        run(
+            "Import Postman collection…",
+            Command::Import(ImportKind::Postman),
+        )
+        .keywords("postman collection json"),
+        run("Import .http file…", Command::Import(ImportKind::Http))
+            .keywords("http rest client jetbrains requests"),
+    ]
 }
 
 impl TortugaUi {
@@ -166,11 +185,7 @@ impl TortugaUi {
             items.push(run("Show history", Command::History).keywords("sent past responses"));
         }
         if self.state.host.can_pick_folders() {
-            items.push(run("Add existing projects…", Command::AddProjects));
-            items.push(run("New project…", Command::NewProject));
-            items.push(
-                run("Import OpenAPI…", Command::ImportOpenApi).keywords("swagger spec yaml json"),
-            );
+            items.extend(project_commands());
         }
         items
     }
@@ -247,7 +262,7 @@ impl TortugaUi {
             Command::RuntimeVars(root) => self.show_runtime_vars(root),
             Command::AddProjects => self.add_projects(),
             Command::NewProject => self.new_project(),
-            Command::ImportOpenApi => self.import_openapi(),
+            Command::Import(kind) => self.import_file(kind),
         }
     }
 }

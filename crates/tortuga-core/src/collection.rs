@@ -104,7 +104,12 @@ impl Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewItem {
     Request(Box<Request>),
-    Folder { name: String, items: Vec<NewItem> },
+    Folder {
+        name: String,
+        /// What the folder's requests inherit (R-COL-11).
+        defaults: FolderDefaults,
+        items: Vec<NewItem>,
+    },
 }
 
 /// Direction for [`Collection::move_by`].
@@ -215,7 +220,7 @@ impl Collection {
     }
 
     /// Adds requests and folders of requests at the end of `parent` in one go, e.g. from
-    /// an import (R-COL-15). The collection must be opened again to see them.
+    /// an import (R-COL-15, R-COL-16). The collection must be opened again to see them.
     pub fn add_items(&self, storage: &dyn Storage, parent: &Path, items: &[NewItem]) -> Result<()> {
         self.ensure_writable()?;
         self.write_new_items(storage, parent, self.next_seq(parent), items)
@@ -239,13 +244,13 @@ impl Collection {
                         &format::write_request(request, Some(seq)),
                     )?;
                 }
-                NewItem::Folder { name, items } => {
+                NewItem::Folder {
+                    name,
+                    defaults,
+                    items,
+                } => {
                     let path = self.free_dir_path(storage, parent, name, None);
-                    let meta = FolderMeta::new(
-                        name.trim().to_owned(),
-                        Some(seq),
-                        &FolderDefaults::default(),
-                    );
+                    let meta = FolderMeta::new(name.trim().to_owned(), Some(seq), defaults);
                     write(
                         storage,
                         &self.root.join(&path).join(FOLDER_FILE),

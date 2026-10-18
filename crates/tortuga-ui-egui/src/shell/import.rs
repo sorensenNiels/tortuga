@@ -1,9 +1,10 @@
-//! Importing an OpenAPI description as a new project (R-COL-15).
+//! Importing an OpenAPI description (R-COL-15), a Postman collection (R-COL-16) or a
+//! `.http` file (R-COL-17) as a new project.
 
 use std::path::PathBuf;
 
 use tortuga_core::collection::MANIFEST_FILE;
-use tortuga_core::openapi;
+use tortuga_core::import::{self, ImportKind};
 
 use super::{Modal, TortugaUi};
 use crate::components::{DialogResult, EnvironmentsDialog, ImportDialog, ImportTarget};
@@ -18,21 +19,29 @@ pub(super) struct OpenImport {
 }
 
 impl TortugaUi {
-    /// Picks a description file, reads it and shows what the import will make.
-    pub(super) fn import_openapi(&mut self) {
-        let Some(path) = self
-            .state
-            .host
-            .pick_any_file("Choose an OpenAPI description (JSON or YAML)")
-        else {
+    /// Picks a file to import, reads it and shows what the import will make. A file of
+    /// the other kind is imported as what it is.
+    pub(super) fn import_file(&mut self, kind: ImportKind) {
+        let title = match kind {
+            ImportKind::OpenApi => "Choose an OpenAPI description (JSON or YAML)",
+            ImportKind::Postman => "Choose a Postman collection (exported as JSON)",
+            ImportKind::Http => "Choose a .http file (REST Client or JetBrains HTTP Client)",
+        };
+        let Some(path) = self.state.host.pick_any_file(title) else {
             return;
         };
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let read = self
             .state
             .storage()
             .read_to_string(&path)
             .map_err(|e| e.to_string())
-            .and_then(|text| openapi::parse(&text).map_err(|e| tortuga_core::error::message(&e)));
+            .and_then(|text| {
+                import::parse(&text, &file_name, kind).map_err(|e| tortuga_core::error::message(&e))
+            });
         match read {
             Ok(import) => {
                 let mut open = OpenImport {
@@ -41,7 +50,7 @@ impl TortugaUi {
                     repository: None,
                 };
                 self.check_import_folder(&mut open);
-                self.modal = Some(Modal::ImportOpenApi(Box::new(open)));
+                self.modal = Some(Modal::Import(Box::new(open)));
             }
             Err(e) => self
                 .state
@@ -90,11 +99,13 @@ impl TortugaUi {
         }
     }
 
-    /// Writes the project and adds it to the workspace. With secret variables, the
-    /// environments dialog opens so their values can be filled in.
+    /// Writes the project and adds it to the workspace. Secret values found in the file
+    /// go to this machine's secret store (D35); with secret variables still without a
+    /// value, the environments dialog opens so they can be filled in.
     fn finish_import(&mut self, dialog: &ImportDialog) {
         let dir = &dialog.dir;
-        if let Err(e) = openapi::create_project(self.state.storage(), dir, &dialog.import) {
+        let found = &dialog.import.secret_values;
+        if let Err(e) = import::create_project(self.state.storage(), dir, &dialog.import) {
             self.state.notify(format!(
                 "Could not import: {}",
                 tortuga_core::error::message(&e)
@@ -105,7 +116,25 @@ impl TortugaUi {
             self.state.notify(e.to_string());
             return;
         }
-        if !dialog.import.manifest.secrets.is_empty() {
+        if !found.is_empty() {
+            let mut values = self.state.secrets.get(dir).cloned().unwrap_or_default();
+            values.values.extend(
+                found
+                    .iter()
+                    .map(|(name, value)| ((None, name.clone()), value.clone())),
+            );
+            if let Err(e) = self.state.save_secrets(dir, values) {
+                self.state
+                    .notify(format!("Could not keep the secret values: {e}"));
+            }
+        }
+        let missing = dialog
+            .import
+            .manifest
+            .secrets
+            .iter()
+            .any(|name| !found.contains_key(name));
+        if missing {
             self.modal = Some(Modal::Environments(EnvironmentsDialog::new(
                 &self.state,
                 dir.clone(),
@@ -132,7 +161,7 @@ mod tests {
         let mut ui = TortugaUi::new(Box::new(TestHost::default()));
         let mut open = OpenImport {
             dialog: ImportDialog::new(
-                openapi::parse(spec).expect("parse"),
+                import::parse(spec, "openapi.json", ImportKind::OpenApi).expect("parse"),
                 dir.join("openapi.json"),
             ),
             taken: false,
@@ -158,6 +187,45 @@ mod tests {
                 .is_some_and(|n| n.contains("already"))
         );
         assert!(ui.modal.is_none());
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    fn postman(dir: &std::path::Path, password: &str) -> OpenImport {
+        let collection = format!(
+            r#"{{"info": {{"name": "Shop"}},
+            "auth": {{"type": "basic", "basic": [{{"key": "username", "value": "ann"}},
+                                               {{"key": "password", "value": "{password}"}}]}},
+            "item": [{{"name": "Ping", "request": "https://shop.test/ping"}}]}}"#
+        );
+        let import = import::parse(&collection, "shop.json", ImportKind::Postman).expect("parse");
+        OpenImport {
+            dialog: ImportDialog::new(import, dir.join("shop.postman_collection.json")),
+            taken: false,
+            repository: None,
+        }
+    }
+
+    /// R-COL-16, D35: credentials found in a Postman collection are kept in this
+    /// machine's secret store; the environments dialog only opens for secrets that
+    /// still have no value.
+    #[test]
+    fn postman_import_keeps_found_secrets_locally() {
+        let dir = std::env::temp_dir().join(format!("tortuga-ui-postman-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        ui.finish_import(&postman(&dir.join("a"), "hunter2").dialog);
+        let root = dir.join("a").join("shop");
+        assert_eq!(ui.state.collection(&root).expect("added").name(), "Shop");
+        assert!(ui.modal.is_none(), "every secret has a value");
+        let stored = &ui.state.secrets[&root].values;
+        assert_eq!(stored[&(None, "username".to_owned())], "ann");
+        assert_eq!(stored[&(None, "password".to_owned())], "hunter2");
+        let manifest = std::fs::read_to_string(root.join(MANIFEST_FILE)).expect("manifest");
+        assert!(!manifest.contains("hunter2"));
+
+        // An empty password in the collection: fill it in under Environments.
+        ui.finish_import(&postman(&dir.join("b"), "").dialog);
+        assert!(matches!(ui.modal, Some(Modal::Environments(_))));
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 }

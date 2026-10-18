@@ -57,7 +57,9 @@ Tortuga writes nothing local into the project folder, so you don't need a `.giti
 
 1. In your API's repository, choose **+ Add → New project…** in the sidebar and pick (or create) a folder such as
    `api-requests/`. If the API has an OpenAPI description, **+ Add → Import OpenAPI…** creates the project with
-   its requests, environments and auth for you; then continue with step 4.
+   its requests, environments and auth for you; coming from Postman, **+ Add → Import Postman collection…** does the
+   same with an exported collection, and **+ Add → Import .http file…** with the `.http` files of the VS Code REST Client or
+   JetBrains HTTP Client. Then continue with step 4.
 2. In the project's **…** menu, open **Environments…**. Add your environments (e.g. *Local*, *Dev*, *Staging*),
    your servers with a base URL for each environment, and the variables the requests need. Mark credentials as
    **secret** (🔒): only the variable name goes into the files, the value stays on your machine.
@@ -172,6 +174,18 @@ project: a folder per tag, a request per operation with its parameters and an ex
 environments, and its security schemes as auth that uses secret variables. The dialog shows what you'll get and where
 before anything is written; afterwards, fill in the secret values under **Environments…**. Swagger 2.0 files need to be
 converted to OpenAPI 3 first.
+
+**From Postman.** Export the collection from Postman (*Export → Collection v2.1*) and choose **+ Add → Import Postman
+collection…**: folders, requests, bodies and variables come along, folder auth and variables become folder defaults,
+and a variable such as `{{baseUrl}}` at the start of the URLs becomes a server whose base URL you set per environment.
+Credentials become secret variables: values found in the collection are kept on your machine only, never in the
+project files. Postman scripts use the `pm` API, so they are kept as comments for you to port to Tortuga's `vars`,
+`test` and `expect`.
+
+**From a .http file.** **+ Add → Import .http file…** turns a REST Client / JetBrains HTTP Client file into a project:
+a request per `###` block, named by its `###` title, with `@variables` as project variables and `{{baseUrl}}` as a
+server. Credentials in `Authorization` headers become secret variables kept on your machine, and request variables such
+as `{{login.response.body.$.token}}` become a capture in the `login` request, so chained requests keep working.
 
 **From curl to request.** Paste a `curl` command (e.g. from API docs or the browser's "Copy as cURL") into the URL
 field: method, URL, headers, body and auth are filled in. In a saved request this is an unsaved change; **Revert**
