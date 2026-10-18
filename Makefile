@@ -5,6 +5,7 @@
 
 APP := tortuga-app
 UI := tortuga-ui-egui
+CLI := tortuga-cli
 WASM_TARGET := wasm32-unknown-unknown
 
 ifeq ($(OS),Windows_NT)
@@ -32,7 +33,7 @@ endif
 RUN_ENV := $(if $(IS_WSL),GALLIUM_DRIVER=$${GALLIUM_DRIVER:-d3d12} ,)
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run run-web build release package startup-time icons test test-core test-ui \
+.PHONY: help setup run run-web build release cli package startup-time icons test test-core test-ui \
         lint lint-desktop lint-web fmt fmt-check deny verify doc clean
 
 help:
@@ -55,6 +56,7 @@ help:
 	@echo "  Building"
 	@echo "    build         Debug build of the desktop app"
 	@echo "    release       Optimised build of the desktop app"
+	@echo "    cli           Optimised build of the command-line runner (target/release/tortuga-cli)"
 	@echo "    package       Installers for this OS in target/packages (needs cargo-packager)"
 	@echo "    startup-time  Measure start-up of the optimised build (R-NF-1)"
 	@echo "    icons         Render the app icon from crates/tortuga-app/icons/tortuga.svg (needs resvg)"
@@ -88,6 +90,10 @@ build: require-desktop-deps
 
 release: require-desktop-deps
 	cargo build -p $(APP) --release
+
+# The command-line runner (R-CLI-1) needs no GUI libraries.
+cli:
+	cargo build -p $(CLI) --release
 
 # Installers (R-NF-4): .deb and .AppImage on Linux, .msi on Windows, .dmg on macOS.
 PACKAGE_FORMATS_linux := deb,appimage
@@ -126,10 +132,11 @@ test:
 	cargo test --workspace
 lint: lint-desktop lint-web
 else
-# The UI crate and its tests need no system libraries, only the desktop launcher does.
+# The UI crate, the CLI and their tests need no system libraries, only the desktop launcher does.
 test: test-core test-ui
+	cargo test -p $(CLI)
 lint: lint-web
-	cargo clippy -p tortuga-core -p $(UI) --all-targets -- -D warnings
+	cargo clippy -p tortuga-core -p $(UI) -p $(CLI) --all-targets -- -D warnings
 	@echo "NOTE: GTK 3 not found - the desktop launcher (tortuga-app) was not linted. Run 'make setup' to fix."
 endif
 

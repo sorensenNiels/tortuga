@@ -86,6 +86,12 @@ The scratch request (top of the sidebar) is for quick one-off calls; **Save to p
 **Moving around.** **Ctrl+P** (or **Go to request…**) finds any request in the workspace by typing part of its name,
 folder or URL. **Ctrl+K** lists every command (send, save, switch environment, settings, …).
 
+**Tabs.** A click opens a request in the *preview tab* (title in italics), which the next click replaces, so browsing
+doesn't pile up tabs. Double-click the tab or the request, or edit it, and the tab stays. With requests from several
+projects open, each project's tabs are grouped behind a coloured chip; click the chip to fold the group away.
+**Ctrl+Tab** goes back to the previous tab, **Ctrl+PageDown/PageUp** to the next/previous one, **Ctrl+W** closes it
+(unsaved edits are kept).
+
 **From curl to request.** Paste a `curl` command (e.g. from API docs or the browser's "Copy as cURL") into the URL
 field: method, URL, headers, body and auth are filled in. In a saved request this is an unsaved change; **Revert**
 undoes it.
@@ -111,6 +117,46 @@ that folder. They are saved in the folder's `_folder.toml`, so they are shared t
 Unsaved edits are kept when you close Tortuga. **Copy as curl** (next to Save) copies the request with variables
 filled in; if it uses secret values, you choose whether to mask them.
 
+**Tests and scripts.** A request's **Scripts** tab holds JavaScript that is saved in the request file and reviewed in
+git like code:
+
+```js
+// Tests: run after the response arrives; results appear in the response's Tests tab.
+test("created", () => expect(res.status).toBe(201));
+test("has an id", () => expect(res.json()).toHaveProperty("id"));
+
+// Pre-request script: runs before variables are filled in.
+req.setHeader("X-Request-Time", String(Date.now()));
+vars.set("run", "nightly");
+```
+
+Scripts have `res` (`status`, `headers`, `json()`, `header(name)`, `time`, …), `req`, `vars` (`get`, `set`, `unset`,
+`has`) and `console.log`; `expect` has the usual matchers (`toBe`, `toEqual`, `toContain`, `toMatch`,
+`toHaveProperty`, `toBeLessThan`, … and `.not`). Scripts can't read files or use the network.
+
+**Captures** (under the scripts) put a value from the response into a variable: `$.access_token` (JSONPath),
+`header:Location` or `status`. Captured and script-set values are *runtime variables*: they are used by every request
+of the project until you close Tortuga, are never saved, and are listed (and cleared) under **Runtime variables…** in
+the project's **…** menu.
+
+**Workflows.** **New workflow…** in a project's **…** menu creates a workflow: a list of the project's requests that
+run in order, each step with optional extra captures and tests. Values captured by a step are available to the next
+ones as `{{variables}}`. Choose a CSV or JSON **data file** to run the workflow once per row. Workflows are saved in
+the project's `workflows/` folder, so they are shared through git too. **Run** (or **Ctrl+Enter**) shows each step's
+result; click a step for its tests and response.
+
+**In CI.** `tortuga-cli` runs the same files from a terminal, without a window:
+
+```sh
+tortuga-cli run path/to/project user-lifecycle --env Staging --report junit --out results.xml
+tortuga-cli run path/to/project users/            # every request in a folder
+TORTUGA_VAR_token=$TOKEN tortuga-cli run path/to/project users/get-user.toml --var user_id=42
+```
+
+It prints each step with its tests and exits with 0 when everything passed, 1 when something failed and 2 for
+usage errors. Pass secrets with `--var name=value` or `TORTUGA_VAR_<name>` environment variables. `--data FILE`
+runs once per row; `--report json` writes JSON instead of JUnit XML. Build it with `make cli`.
+
 ## Make targets
 
 | Target | What it does |
@@ -124,22 +170,25 @@ filled in; if it uses secret values, you choose whether to mask them.
 | `make fmt` | Format all code. |
 | `make deny` | Check dependency licences and security advisories. |
 | `make build` / `make release` | Debug / optimised build of the desktop app. |
+| `make cli` | Optimised build of the command-line runner, `target/release/tortuga-cli`. |
 | `make package` | Installers for this OS in `target/packages/` (see [docs/RELEASING.md](docs/RELEASING.md)). |
 | `make startup-time` | Open the optimised app with your workspace, print how long start-up took, and quit. |
 | `make doc` | Build and open the API documentation. |
 | `make clean` | Remove build output. |
 
 On Linux without the GTK 3 headers installed, `make test` and `make lint` still check everything that can be built
-(engine, UI and its tests, web target) and tell you what was skipped; `make run` asks you to run `make setup`.
+(engine, UI and its tests, CLI, web target) and tell you what was skipped; `make run` asks you to run `make setup`.
 
 ## Project layout
 
 ```
 crates/
-  tortuga-core/    The engine: request model, HTTP execution, projects, variables, workspaces. No UI code.
+  tortuga-core/    The engine: request model, HTTP execution, projects, variables, workspaces, scripts and
+                   workflows. No UI code.
   tortuga-ui-egui/ The user interface (egui): components and UI state. No platform code.
   tortuga-app/     Launches the UI on desktop (web later) and provides files, dialogs and settings storage.
                    Builds the `tortuga` binary.
+  tortuga-cli/     The command-line runner for workflows and tests in CI (`tortuga-cli` binary). No GUI libraries.
 docs/
   ROADMAP.md       The plan: vision, milestones and phases, requirements, ideas and decisions.
   FEATURES.md      What is implemented and verified, per requirement.

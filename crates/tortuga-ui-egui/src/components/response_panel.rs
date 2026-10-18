@@ -23,11 +23,54 @@ pub enum Outcome {
 impl Outcome {
     /// Prepares a result for display. Can be slow for big bodies (pretty-printing,
     /// splitting into rows), so call it off the UI thread (R-NF-2).
+    #[cfg(test)]
     pub fn from_result(result: tortuga_core::Result<Response>) -> Self {
         match result {
             Ok(response) => Self::Response(Arc::new(ResponseView::new(response))),
             Err(e) => Self::Error(format::sentence(&e.to_string())),
         }
+    }
+
+    /// The outcome of a run with scripts (R-TEST-2): with no response, the first error
+    /// (e.g. from the pre-request script) explains why.
+    pub fn from_step(response: Option<Result<Response, String>>, errors: &[String]) -> Self {
+        match response {
+            Some(Ok(response)) => Self::Response(Arc::new(ResponseView::new(response))),
+            Some(Err(e)) => Self::Error(e),
+            None => Self::Error(
+                errors
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "Not sent.".into()),
+            ),
+        }
+    }
+}
+
+/// What the scripts and captures of a send did (R-TEST-1, R-TEST-4, R-TEST-5).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TestsView {
+    pub tests: Vec<tortuga_core::script::TestResult>,
+    pub logs: Vec<String>,
+    pub errors: Vec<String>,
+    /// Variables set (`Some`) or removed (`None`).
+    pub vars: std::collections::BTreeMap<String, Option<String>>,
+}
+
+impl TestsView {
+    /// `None` when the request has no scripts or captures.
+    pub fn from_step(o: &tortuga_core::runner::StepOutcome) -> Option<Self> {
+        let view = Self {
+            tests: o.tests.clone(),
+            logs: o.logs.clone(),
+            errors: o.errors.clone(),
+            vars: o.vars.clone(),
+        };
+        (view != Self::default()).then_some(view)
+    }
+
+    fn failed(&self) -> usize {
+        self.tests.iter().filter(|t| !t.passed).count()
     }
 }
 
@@ -198,6 +241,8 @@ enum Tab {
     #[default]
     Body,
     Headers,
+    /// Test results, captured values and console output (R-TEST-1).
+    Tests,
 }
 
 /// Panel state that is not part of the response; reset for each new response.
@@ -262,6 +307,8 @@ pub struct PanelContext<'a> {
     /// The JSON filter typed for this request.
     pub filter: &'a mut String,
     pub filtered: Filtered<'a>,
+    /// What the request's scripts and captures did, if it has any (R-TEST-1).
+    pub tests: Option<&'a TestsView>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,6 +388,7 @@ fn details(
         can_save,
         filter,
         filtered,
+        tests,
         ..
     } = cx;
     let response = &view.response;
@@ -383,17 +431,25 @@ fn details(
         st.tab = Tab::Body;
     }
     let header_count = response.headers.len().to_string();
-    theme::tabs(
-        ui,
-        &mut st.tab,
-        &[
-            (Tab::Body, "Body", None),
-            (Tab::Headers, "Headers", Some(header_count)),
-        ],
-    );
+    let mut tabs = vec![
+        (Tab::Body, "Body", None),
+        (Tab::Headers, "Headers", Some(header_count)),
+    ];
+    if let Some(t) = tests {
+        let label = if t.tests.is_empty() {
+            (!t.errors.is_empty()).then(|| "✗".to_owned())
+        } else {
+            Some(format!("{}/{}", t.tests.len() - t.failed(), t.tests.len()))
+        };
+        tabs.push((Tab::Tests, "Tests", label));
+    } else if st.tab == Tab::Tests {
+        st.tab = Tab::Body;
+    }
+    theme::tabs(ui, &mut st.tab, &tabs);
 
     theme::card(ui).show(ui, |ui| match st.tab {
         Tab::Body => body(ui, &view.body, st, filter, filtered),
+        Tab::Tests => tests_tab(ui, tests),
         Tab::Headers => {
             ScrollArea::vertical()
                 .id_salt("response-headers")
@@ -455,6 +511,81 @@ fn body(
         );
     }
     text_rows(ui, shown, st);
+}
+
+/// Test results, errors, variables set and console output (R-TEST-1, R-TEST-4, R-TEST-5).
+fn tests_tab(ui: &mut Ui, tests: Option<&TestsView>) {
+    let Some(t) = tests else {
+        return;
+    };
+    ScrollArea::vertical()
+        .id_salt("response-tests")
+        .auto_shrink(false)
+        .show(ui, |ui| tests_details(ui, t));
+}
+
+/// Test results, errors, variables set and console output of a run (R-TEST-1, R-TEST-5).
+pub fn tests_details(ui: &mut Ui, t: &TestsView) {
+    let p = theme::palette(ui);
+    {
+        {
+            if t.tests.is_empty() && t.errors.is_empty() {
+                theme::hint(
+                    ui,
+                    "No tests ran. Add some with test(\"name\", () => expect(res.status).toBe(200)) in the Scripts tab.",
+                );
+            }
+            for test in &t.tests {
+                ui.horizontal_wrapped(|ui| {
+                    if test.passed {
+                        ui.label(RichText::new("✓").color(p.ok));
+                        ui.label(&test.name);
+                    } else {
+                        ui.label(RichText::new("✗").color(p.fail));
+                        ui.label(RichText::new(&test.name).color(p.fail));
+                        if let Some(m) = &test.message {
+                            ui.label(RichText::new(m).color(p.muted));
+                        }
+                    }
+                });
+            }
+            for e in &t.errors {
+                ui.add(Label::new(RichText::new(e).color(p.fail)).wrap());
+            }
+            if !t.vars.is_empty() {
+                ui.add_space(8.0);
+                theme::section_label(ui, "Variables set");
+                Grid::new("tests-vars")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        for (name, value) in &t.vars {
+                            ui.label(RichText::new(name).monospace());
+                            let shown = value.as_deref().map_or_else(
+                                || "(removed)".to_owned(),
+                                |v| format::truncate(v, 120).0.to_owned(),
+                            );
+                            ui.add(
+                                Label::new(RichText::new(shown).monospace().color(p.muted))
+                                    .truncate(),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                theme::hint(
+                    ui,
+                    "Kept for this project until Tortuga closes; they win over environment values.",
+                );
+            }
+            if !t.logs.is_empty() {
+                ui.add_space(8.0);
+                theme::section_label(ui, "Console");
+                for line in &t.logs {
+                    ui.add(Label::new(RichText::new(line).monospace()).wrap());
+                }
+            }
+        }
+    }
 }
 
 /// The JSON filter (for JSON bodies) and the search field, above the body.
@@ -635,6 +766,7 @@ mod tests {
                 can_save: true,
                 filter: &mut filter,
                 filtered: Filtered::Off,
+                tests: None,
             };
             response_panel(ui, outcome.as_ref(), &mut st, cx);
         });

@@ -256,6 +256,30 @@ pub struct Request {
     /// Use the collection's cookie jar: send its cookies and store new ones (R-CK-2).
     #[serde(default = "enabled_by_default", skip_serializing_if = "is_true")]
     pub cookies: bool,
+    /// Pre-request and test scripts (R-TEST-1, R-TEST-2).
+    #[serde(default, skip_serializing_if = "Scripts::is_empty")]
+    pub scripts: Scripts,
+    /// Values put into variables from the response: variable name → `$.json.path`,
+    /// `header:<name>` or `status` (R-TEST-4).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub capture: std::collections::BTreeMap<String, String>,
+}
+
+/// The scripts of a request (R-TEST-1, R-TEST-2).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Scripts {
+    /// Runs before variables are filled in and the request is sent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pre_request: String,
+    /// Runs after the response arrived.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tests: String,
+}
+
+impl Scripts {
+    pub fn is_empty(&self) -> bool {
+        self.pre_request.trim().is_empty() && self.tests.trim().is_empty()
+    }
 }
 
 impl Default for Request {
@@ -280,6 +304,8 @@ impl Request {
             timeout_ms: None,
             auth: None,
             cookies: true,
+            scripts: Scripts::default(),
+            capture: std::collections::BTreeMap::new(),
         };
         request.sync_path_variables();
         request

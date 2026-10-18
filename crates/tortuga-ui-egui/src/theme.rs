@@ -280,6 +280,62 @@ pub fn method_short(method: HttpMethod) -> &'static str {
     }
 }
 
+/// Project colours (R-COL-14): (light, dark) pairs that read well on both backgrounds.
+const PROJECT_COLORS: [(Color32, Color32); 8] = [
+    (
+        Color32::from_rgb(0x0d, 0x94, 0x88),
+        Color32::from_rgb(0x2d, 0xd4, 0xbf),
+    ),
+    (
+        Color32::from_rgb(0x25, 0x63, 0xeb),
+        Color32::from_rgb(0x60, 0xa5, 0xfa),
+    ),
+    (
+        Color32::from_rgb(0x93, 0x33, 0xea),
+        Color32::from_rgb(0xc0, 0x84, 0xfc),
+    ),
+    (
+        Color32::from_rgb(0xdb, 0x27, 0x77),
+        Color32::from_rgb(0xf4, 0x72, 0xb6),
+    ),
+    (
+        Color32::from_rgb(0xea, 0x58, 0x0c),
+        Color32::from_rgb(0xfb, 0x92, 0x3c),
+    ),
+    (
+        Color32::from_rgb(0x16, 0xa3, 0x4a),
+        Color32::from_rgb(0x4a, 0xde, 0x80),
+    ),
+    (
+        Color32::from_rgb(0x4f, 0x46, 0xe5),
+        Color32::from_rgb(0x81, 0x8c, 0xf8),
+    ),
+    (
+        Color32::from_rgb(0xca, 0x8a, 0x04),
+        Color32::from_rgb(0xfa, 0xcc, 0x15),
+    ),
+];
+
+/// The colour of a project's tab group and sidebar dot, worked out from its name, so
+/// it is the same every time and on every machine (R-COL-14, D32).
+pub fn project_color(ui: &Ui, name: &str) -> Color32 {
+    let (light, dark) = PROJECT_COLORS[project_color_index(name)];
+    if ui.visuals().dark_mode { dark } else { light }
+}
+
+fn project_color_index(name: &str) -> usize {
+    // FNV-1a: stable across runs and platforms, unlike `std`'s hasher.
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the remainder is below the number of colours"
+    )]
+    let index = (hash % PROJECT_COLORS.len() as u64) as usize;
+    index
+}
+
 /// A rounded, tinted pill (status codes, counts, "Unsaved").
 pub fn badge(ui: &mut Ui, text: impl Into<String>, color: Color32) -> Response {
     Frame::new()
@@ -440,6 +496,19 @@ pub fn ghost_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn project_colours_are_stable_and_spread() {
+        assert_eq!(
+            super::project_color_index("Orders API"),
+            super::project_color_index("Orders API")
+        );
+        let used: std::collections::HashSet<usize> = ["Users API", "Orders API", "Billing", "Auth"]
+            .iter()
+            .map(|n| super::project_color_index(n))
+            .collect();
+        assert!(used.len() > 1, "different projects get different colours");
+    }
 
     #[test]
     fn tab_clicks_work_inside_dialogs() {

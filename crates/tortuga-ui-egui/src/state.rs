@@ -19,6 +19,14 @@ use tortuga_core::{Client, ClientSettings, Collection, Request, vars};
 use crate::format::sentence;
 use crate::host::{Host, LocalState, Workspace};
 
+/// Identifies a workflow of an open project (R-FLOW-2).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WorkflowKey {
+    pub root: PathBuf,
+    /// The workflow file's stem.
+    pub id: String,
+}
+
 /// Identifies a request in an open collection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ItemKey {
@@ -76,6 +84,9 @@ pub struct AppState {
     live: Live,
     /// Last problem or message to show the user; cleared when dismissed.
     pub notice: Option<String>,
+    /// Values captured or set by scripts, per project (`None`: the scratch request);
+    /// kept until the app closes, never on disk (R-TEST-5, D26).
+    pub runtime: BTreeMap<Option<PathBuf>, BTreeMap<String, String>>,
 }
 
 impl fmt::Debug for AppState {
@@ -158,6 +169,7 @@ impl AppState {
             git: BTreeMap::new(),
             live: Live::default(),
             notice: (!problems.is_empty()).then(|| problems.join("\n")),
+            runtime: BTreeMap::new(),
         };
         state.open_workspace();
         state
@@ -489,6 +501,19 @@ impl AppState {
         }
     }
 
+    /// Keeps the workspace's open tabs (R-COL-13), writing local data only if they changed.
+    pub fn remember_tabs(&mut self, tabs: crate::host::SavedTabs) {
+        if self.workspace().tabs != tabs {
+            self.workspace_mut().tabs = tabs;
+            self.save_local();
+        }
+    }
+
+    /// The open tabs of the workspace as last remembered.
+    pub fn remembered_tabs(&self) -> &crate::host::SavedTabs {
+        &self.workspace().tabs
+    }
+
     /// The remembered selection of the workspace, if that request still exists.
     pub fn remembered_selection(&self) -> Option<ItemKey> {
         let (root, path) = self.workspace().selection.clone()?;
@@ -553,7 +578,7 @@ impl AppState {
     pub fn context(&self, root: Option<&Path>) -> vars::Context {
         match root {
             Some(root) => self.context_at(root, None),
-            None => vars::Context::default(),
+            None => self.with_runtime(vars::Context::default(), None),
         }
     }
 
@@ -562,8 +587,40 @@ impl AppState {
     pub fn request_context(&self, key: Option<&ItemKey>) -> vars::Context {
         match key {
             Some(key) => self.context_at(&key.root, Some(&key.path)),
-            None => vars::Context::default(),
+            None => self.with_runtime(vars::Context::default(), None),
         }
+    }
+
+    /// Runtime variables win over every other value (R-TEST-5).
+    fn with_runtime(&self, mut ctx: vars::Context, root: Option<&Path>) -> vars::Context {
+        if let Some(runtime) = self.runtime.get(&root.map(Path::to_path_buf)) {
+            ctx.variables.extend(runtime.clone());
+        }
+        ctx
+    }
+
+    /// The runtime variables of a project (`None`: the scratch request) (R-TEST-5).
+    pub fn runtime_vars(&self, root: Option<&Path>) -> Option<&BTreeMap<String, String>> {
+        self.runtime
+            .get(&root.map(Path::to_path_buf))
+            .filter(|v| !v.is_empty())
+    }
+
+    /// Applies variables set or unset by a run (R-TEST-5).
+    pub fn apply_runtime(
+        &mut self,
+        root: Option<&Path>,
+        changes: &BTreeMap<String, Option<String>>,
+    ) {
+        if changes.is_empty() {
+            return;
+        }
+        let vars = self.runtime.entry(root.map(Path::to_path_buf)).or_default();
+        tortuga_core::runner::apply_changes(vars, changes);
+    }
+
+    pub fn clear_runtime(&mut self, root: Option<&Path>) {
+        self.runtime.remove(&root.map(Path::to_path_buf));
     }
 
     fn context_at(&self, root: &Path, path: Option<&Path>) -> vars::Context {
@@ -573,9 +630,11 @@ impl AppState {
             .get(root)
             .map(|s| s.for_environment(env.as_deref()))
             .unwrap_or_default();
-        self.collection(root)
+        let ctx = self
+            .collection(root)
             .map(|c| vars::Context::for_request(c, env.as_deref(), path).with_secrets(secrets))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.with_runtime(ctx, Some(root))
     }
 
     // ------------------------------------------------------------ live changes (M6)

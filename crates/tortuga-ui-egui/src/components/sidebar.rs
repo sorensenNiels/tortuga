@@ -8,14 +8,16 @@ use tortuga_core::git::{FileStatus, GitStatus};
 use tortuga_core::workspace::ProjectRef;
 use tortuga_core::{Collection, Item};
 
-use crate::state::{AppState, ItemKey};
+use crate::state::{AppState, ItemKey, WorkflowKey};
 use crate::theme;
 
 /// Something the user asked for in the sidebar; handled by the shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SidebarAction {
-    /// `None` = the scratch request.
+    /// Open in the preview tab (R-COL-13); `None` = the scratch request.
     Select(Option<ItemKey>),
+    /// Open in a tab that stays (double click, R-COL-13).
+    Keep(Option<ItemKey>),
     NewRequest {
         root: PathBuf,
         parent: PathBuf,
@@ -42,6 +44,14 @@ pub enum SidebarAction {
     EditDefaults(PathBuf),
     /// Default headers, auth and variables of a folder (R-COL-11).
     EditFolderDefaults(ItemKey),
+    /// Workflows (R-FLOW-2, R-FLOW-3).
+    NewWorkflow(PathBuf),
+    SelectWorkflow(WorkflowKey),
+    RunWorkflow(WorkflowKey),
+    RenameWorkflow(WorkflowKey),
+    DeleteWorkflow(WorkflowKey),
+    /// Show (and clear) the project's runtime variables (R-TEST-5).
+    RuntimeVariables(PathBuf),
     /// Drag and drop: put the item in `parent` before `before` (`None`: at the end) (R-COL-12).
     Place {
         key: ItemKey,
@@ -112,6 +122,7 @@ impl Rename {
 struct Tree<'a> {
     st: &'a mut SidebarState,
     selected: Option<&'a ItemKey>,
+    selected_workflow: Option<&'a WorkflowKey>,
     dirty: &'a HashSet<ItemKey>,
     /// Requests whose file changed on disk while they had unsaved edits (R-GIT-11).
     conflicts: &'a HashSet<ItemKey>,
@@ -122,6 +133,8 @@ struct Tree<'a> {
     /// Set when the project doesn't have the workspace's environment (R-WS-6).
     env_note: Option<EnvNote>,
     can_open_folders: bool,
+    /// Projects show their tab-group colour when there are several (R-COL-14).
+    color_dots: bool,
     actions: Vec<SidebarAction>,
 }
 
@@ -131,36 +144,26 @@ pub fn sidebar(
     state: &AppState,
     st: &mut SidebarState,
     selected: Option<&ItemKey>,
+    selected_workflow: Option<&WorkflowKey>,
     dirty: &HashSet<ItemKey>,
     conflicts: &HashSet<ItemKey>,
 ) -> Vec<SidebarAction> {
+    let scratch_selected = selected.is_none() && selected_workflow.is_none();
     let mut tree = Tree {
         st,
         selected,
+        selected_workflow,
         dirty,
         conflicts,
         git: None,
         show_branch: true,
         env_note: None,
         can_open_folders: state.host.can_open_folders(),
+        color_dots: state.collections.len() > 1,
         actions: Vec::new(),
     };
 
-    let full = egui::vec2(ui.available_width(), ROW_HEIGHT);
-    if ui
-        .add(
-            Button::selectable(
-                selected.is_none(),
-                (Atom::from("✏"), Atom::from("Scratch request")),
-            )
-            .min_size(full)
-            .frame_when_inactive(selected.is_none()),
-        )
-        .on_hover_text("A request that is not saved anywhere, for quick one-off calls")
-        .clicked()
-    {
-        tree.actions.push(SidebarAction::Select(None));
-    }
+    scratch_row(ui, scratch_selected, &mut tree);
     ui.add_space(14.0);
     egui::Sides::new().show(
         ui,
@@ -237,6 +240,26 @@ pub fn sidebar(
     tree.actions
 }
 
+/// The scratch request, above the projects.
+fn scratch_row(ui: &mut Ui, scratch_selected: bool, tree: &mut Tree<'_>) {
+    let full = egui::vec2(ui.available_width(), ROW_HEIGHT);
+    let scratch = ui
+        .add(
+            Button::selectable(
+                scratch_selected,
+                (Atom::from("✏"), Atom::from("Scratch request")),
+            )
+            .min_size(full)
+            .frame_when_inactive(scratch_selected),
+        )
+        .on_hover_text("A request that is not saved anywhere, for quick one-off calls");
+    if scratch.double_clicked() {
+        tree.actions.push(SidebarAction::Keep(None));
+    } else if scratch.clicked() {
+        tree.actions.push(SidebarAction::Select(None));
+    }
+}
+
 fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tree: &mut Tree<'_>) {
     let root = c.root.clone();
     let key = ItemKey::new(&root, "");
@@ -255,10 +278,12 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
             });
         }
     } else {
-        let mut atoms = vec![
-            Atom::from(twisty(collapsed)),
-            Atom::from(theme::semibold(c.name())).atom_shrink(true),
-        ];
+        let mut atoms = vec![Atom::from(twisty(collapsed))];
+        if tree.color_dots {
+            let color = theme::project_color(ui, c.name());
+            atoms.push(Atom::from(RichText::new("⏺").size(9.0).color(color)));
+        }
+        atoms.push(Atom::from(theme::semibold(c.name())).atom_shrink(true));
         if read_only {
             atoms.push(Atom::from(RichText::new("read-only").small().weak()));
         }
@@ -325,6 +350,100 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
                     b.error
                 )));
             }
+        }
+        workflows(ui, c, depth + 1, tree);
+    }
+}
+
+/// The project's workflows, as a group under its requests (R-FLOW-2).
+fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
+    if c.workflows.is_empty() && c.broken_workflows.is_empty() {
+        return;
+    }
+    let p = theme::palette(ui);
+    // `workflows/` is never a folder of requests, so this key is free for the group.
+    let group = ItemKey::new(&c.root, tortuga_core::workflow::WORKFLOWS_DIR);
+    let collapsed = tree.st.collapsed.contains(&group);
+    let atoms = [
+        Atom::from(twisty(collapsed)),
+        Atom::from(theme::semibold("Workflows")),
+        Atom::from(
+            RichText::new(c.workflows.len().to_string())
+                .small()
+                .color(p.muted),
+        ),
+        Atom::grow(),
+    ];
+    let (row, ()) = tree_row(ui, depth, false, atoms, |_| {});
+    if row
+        .on_hover_text("Requests run one after the other, with checks (R-FLOW-1)")
+        .clicked()
+    {
+        toggle(&mut tree.st.collapsed, &group);
+    }
+    if collapsed {
+        return;
+    }
+    for w in &c.workflows {
+        let key = WorkflowKey {
+            root: c.root.clone(),
+            id: w.id.clone(),
+        };
+        let selected = tree.selected_workflow == Some(&key);
+        let atoms = [
+            Atom::from(RichText::new("⏵").size(10.5).color(p.accent)),
+            Atom::from(w.name.clone()).atom_shrink(true),
+            Atom::from(
+                RichText::new(format!("{} steps", w.steps.len()))
+                    .small()
+                    .color(p.muted),
+            ),
+            Atom::grow(),
+        ];
+        let read_only = c.read_only;
+        let menu = |ui: &mut Ui| {
+            let mut choice = None;
+            if ui.button("Run").clicked() {
+                choice = Some(MenuChoice::Action(SidebarAction::RunWorkflow(key.clone())));
+            }
+            if !read_only && ui.button("Rename…").clicked() {
+                choice = Some(MenuChoice::Action(SidebarAction::RenameWorkflow(
+                    key.clone(),
+                )));
+            }
+            if !read_only
+                && ui
+                    .button(RichText::new("Delete…").color(theme::palette(ui).fail))
+                    .clicked()
+            {
+                choice = Some(MenuChoice::Action(SidebarAction::DeleteWorkflow(
+                    key.clone(),
+                )));
+            }
+            choice
+        };
+        let (row, from_button) = ui
+            .push_id(("workflow", &w.id), |ui| {
+                tree_row(ui, depth + 1, selected, atoms, |ui| menu_button(ui, menu))
+            })
+            .inner;
+        if row.clicked() {
+            tree.actions
+                .push(SidebarAction::SelectWorkflow(key.clone()));
+        }
+        if let Some(MenuChoice::Action(action)) = from_button.or_else(|| context_menu(&row, menu)) {
+            tree.actions.push(action);
+        }
+    }
+    for b in &c.broken_workflows {
+        let label = Atom::from(format!("⚠ {}", b.path.display()));
+        let (row, ()) = tree_row(ui, depth + 1, false, [label, Atom::grow()], |_| {});
+        if row.clicked() {
+            tree.actions.push(SidebarAction::ShowError(format!(
+                "{}: {}",
+                b.path.display(),
+                b.error
+            )));
         }
     }
 }
@@ -630,7 +749,9 @@ fn tree_item(
         if let Some(text) = row_hover(folder_error, conflict, dirty, git_status) {
             row = row.on_hover_text(text);
         }
-        if row.clicked() {
+        if row.double_clicked() && !is_folder {
+            tree.actions.push(SidebarAction::Keep(Some(key.clone())));
+        } else if row.clicked() {
             if is_folder {
                 toggle(&mut tree.st.collapsed, &key);
             } else {
@@ -715,6 +836,14 @@ fn collection_menu(
     });
     item(ui, "Defaults (headers, auth)…".into(), &|| {
         MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
+    });
+    if !c.read_only {
+        item(ui, "New workflow…".into(), &|| {
+            MenuChoice::Action(SidebarAction::NewWorkflow(root.clone()))
+        });
+    }
+    item(ui, "Runtime variables…".into(), &|| {
+        MenuChoice::Action(SidebarAction::RuntimeVariables(root.clone()))
     });
     let clear = ui
         .add_enabled(

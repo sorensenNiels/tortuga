@@ -73,11 +73,43 @@ pub struct Workspace {
     /// The request that was selected: (project root, path in the project).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selection: Option<(PathBuf, PathBuf)>,
+    /// The open request tabs (R-COL-13, R-COL-14).
+    #[serde(skip_serializing_if = "SavedTabs::is_empty")]
+    pub tabs: SavedTabs,
     /// Projects in sidebar order, including ones that are missing on this machine.
     pub projects: Vec<ProjectRef>,
     /// Project root (as text) → environment id, for projects without an environment
     /// named like the workspace's (R-WS-6).
     pub project_environments: BTreeMap<String, String>,
+}
+
+/// The open request tabs of a workspace (R-COL-13), in strip order.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedTabs {
+    pub open: Vec<SavedTab>,
+    /// Roots of the projects whose tab group is collapsed (R-COL-14).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collapsed: Vec<PathBuf>,
+}
+
+impl SavedTabs {
+    pub fn is_empty(&self) -> bool {
+        self.open.is_empty() && self.collapsed.is_empty()
+    }
+}
+
+/// One open tab: a request (project root, path in the project), or the scratch request.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedTab {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+    /// The preview tab, which the next opened request replaces.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub preview: bool,
 }
 
 /// Unsaved request edits, kept across restarts (R-COL-8). Local data only (§6.7): it

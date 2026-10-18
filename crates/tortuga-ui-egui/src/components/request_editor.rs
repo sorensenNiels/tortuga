@@ -11,6 +11,8 @@ enum Tab {
     Auth,
     Body,
     Options,
+    /// Pre-request script, test script and captures (R-TEST-1, R-TEST-2, R-TEST-4).
+    Scripts,
     /// The request as it will be sent (R-HTTP-14).
     Preview,
 }
@@ -25,6 +27,8 @@ pub struct EditorState {
     tab: Tab,
     body: BodyDrafts,
     focus_url: bool,
+    /// The captures as table rows (R-TEST-4).
+    captures: Vec<KeyValue>,
 }
 
 impl EditorState {
@@ -48,6 +52,11 @@ impl EditorState {
             tab: Tab::Params,
             body: BodyDrafts::new(&request.body),
             focus_url: true,
+            captures: request
+                .capture
+                .iter()
+                .map(|(name, from)| KeyValue::new(name, from))
+                .collect(),
         }
     }
 }
@@ -150,6 +159,12 @@ pub fn request_editor(
             (Tab::Auth, "Auth", has_auth.then(|| "⏺".to_owned())),
             (Tab::Body, "Body", has_body.then(|| "⏺".to_owned())),
             (Tab::Options, "Options", None),
+            (
+                Tab::Scripts,
+                "Scripts",
+                (!request.scripts.is_empty() || !request.capture.is_empty())
+                    .then(|| "⏺".to_owned()),
+            ),
             (Tab::Preview, "Preview", None),
         ],
     );
@@ -212,6 +227,7 @@ fn tab_content(
             }
         }
         Tab::Options => request_options(ui, request, st, cx),
+        Tab::Scripts => request_scripts(ui, request, st),
         Tab::Preview => request_preview(ui, cx.preview),
     }
     action
@@ -453,6 +469,62 @@ fn take_pasted_curl(input: &mut egui::InputState) -> Option<String> {
     }
 }
 
+/// The scripts and captures of a request (R-TEST-1, R-TEST-2, R-TEST-4).
+fn request_scripts(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
+    theme::section_label(ui, "Pre-request script");
+    code_editor(
+        ui,
+        "pre-request",
+        &mut request.scripts.pre_request,
+        4,
+        "vars.set(\"now\", String(Date.now()));\nreq.setHeader(\"X-Request-Id\", vars.get(\"now\"));",
+    );
+    theme::hint(
+        ui,
+        "Runs before variables are filled in: vars.get/set/unset, req.setHeader(name, value), console.log.",
+    );
+    ui.add_space(10.0);
+    theme::section_label(ui, "Tests");
+    code_editor(
+        ui,
+        "tests",
+        &mut request.scripts.tests,
+        6,
+        "test(\"status is 200\", () => expect(res.status).toBe(200));\ntest(\"has an id\", () => expect(res.json()).toHaveProperty(\"id\"));",
+    );
+    theme::hint(
+        ui,
+        "Runs after the response: test(name, fn), expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not), \
+         res.status, res.json(), res.header(name), res.time, vars, console.log.",
+    );
+    ui.add_space(10.0);
+    theme::section_label(ui, "Captures");
+    if key_value_table(ui, "captures", &mut st.captures, "Variable", &[]) {
+        request.capture = st
+            .captures
+            .iter()
+            .filter(|c| c.is_active())
+            .map(|c| (c.name.trim().to_owned(), c.value.trim().to_owned()))
+            .collect();
+    }
+    theme::hint(
+        ui,
+        "Puts a value from the response into a variable: $.json.path, header:Name or status. \
+         Captured values are kept until Tortuga closes and win over environment values.",
+    );
+}
+
+fn code_editor(ui: &mut Ui, id: &str, text: &mut String, rows: usize, hint: &str) {
+    ui.add(
+        TextEdit::multiline(text)
+            .id_salt(("script", id))
+            .code_editor()
+            .desired_width(f32::INFINITY)
+            .desired_rows(rows)
+            .hint_text(hint),
+    );
+}
+
 /// The request exactly as it will be sent, secrets masked (R-HTTP-14).
 fn request_preview(ui: &mut Ui, preview: Option<&Result<Request, String>>) {
     let p = theme::palette(ui);
@@ -674,6 +746,55 @@ mod tests {
         h.get_by_label("https://api.test/users?page=2");
         h.get_by_label("Basic alice:<secret:pw>");
         h.get_by_label("{\"a\": 1}");
+    }
+
+    /// R-TEST-1, R-TEST-4: scripts and captures are edited in the Scripts tab.
+    #[test]
+    fn scripts_tab_edits_scripts_and_captures() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/");
+        let mut st = EditorState::new(&request);
+        st.focus_url = false;
+        st.tab = Tab::Scripts;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                request_editor(
+                    ui,
+                    &mut request,
+                    &mut st,
+                    EditorContext {
+                        servers: &[],
+                        server_base: None,
+                        undefined: &[],
+                        sending: false,
+                        default_timeout_ms: 1000,
+                        collection_auth: None,
+                        inherited_headers: &[],
+                        auth_origin: "the project",
+                        cookie_count: 0,
+                        in_collection: false,
+                        preview: None,
+                        can_pick_files: false,
+                    },
+                );
+            });
+            h.run();
+            let fields: Vec<_> = h
+                .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+                .collect();
+            assert_eq!(fields.len(), 2, "pre-request and tests");
+            fields[1].focus();
+            fields[1].type_text("test('ok', () => {})");
+            h.run();
+            let capture_name = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .find(|n| n.value().as_deref() == Some(""))
+                .expect("capture row");
+            capture_name.focus();
+            capture_name.type_text("token");
+            h.run();
+        }
+        assert_eq!(request.scripts.tests, "test('ok', () => {})");
+        assert_eq!(request.capture.keys().collect::<Vec<_>>(), ["token"]);
     }
 
     #[test]

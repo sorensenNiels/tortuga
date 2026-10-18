@@ -3,6 +3,8 @@
 
 mod commands;
 mod history;
+mod tabs;
+mod workflows;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -21,13 +23,16 @@ use crate::components::{
     CreateProjectDialog, DefaultsDialog, DialogResult, EditorAction, EditorContext, EditorState,
     EnvironmentsDialog, Filtered, MoveDialog, NameDialog, Outcome, Palette, PanelContext,
     ResponseAction, ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog,
-    SidebarAction, SidebarState, TextBody, request_editor, response_panel, sidebar,
+    SidebarAction, SidebarState, TabStripState, TestsView, TextBody, request_editor,
+    response_panel, sidebar,
 };
 use crate::format::sentence;
 use crate::host::{DraftConflict, Host, SavedDraft, SavedDrafts};
 use crate::state::{AppState, ItemKey};
 use crate::theme;
 use history::{HistoryState, SidebarView};
+use tabs::Tabs;
+use workflows::{WorkflowEvent, Workflows};
 
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SEND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
@@ -36,6 +41,11 @@ const QUICK_OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, K
 const COMMANDS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::K);
 const COMMANDS_TOO: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::P);
+// Tabs (R-COL-13). Ctrl, also on macOS, as in browsers and editors.
+const PREVIOUS_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::Tab);
+const NEXT_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::PageDown);
+const TAB_BEFORE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::PageUp);
+const CLOSE_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::W);
 
 #[derive(Debug)]
 enum Modal {
@@ -54,6 +64,11 @@ enum Modal {
     /// Quick open and the command palette (R-COL-9, R-COL-10).
     Palette(Palette),
     ClearHistory(ClearHistory, ConfirmDialog),
+    /// Workflows (R-FLOW-2) and runtime variables (R-TEST-5).
+    NewWorkflow(PathBuf, NameDialog),
+    RenameWorkflow(crate::state::WorkflowKey, NameDialog),
+    DeleteWorkflow(crate::state::WorkflowKey, ConfirmDialog),
+    RuntimeVars(crate::components::RuntimeVarsDialog),
 }
 
 /// What the user picked in the workspace menu (R-WS-1, R-WS-5).
@@ -84,6 +99,8 @@ struct Finished {
     outcome: Outcome,
     /// What to keep in the history (R-HIST-1); `None` if it was never sent.
     entry: Option<tortuga_core::history::Entry>,
+    /// What the scripts and captures did (R-TEST-1).
+    tests: Option<TestsView>,
 }
 
 /// The JSON filter being applied to the shown response (R-HTTP-13).
@@ -114,6 +131,9 @@ pub struct TortugaUi {
     current: Request,
     scratch: Request,
     drafts: HashMap<ItemKey, Request>,
+    /// The requests open in tabs (R-COL-13, R-COL-14).
+    tabs: Tabs,
+    tab_strip: TabStripState,
     editor: EditorState,
     sidebar: SidebarState,
 
@@ -144,6 +164,12 @@ pub struct TortugaUi {
     filter_rx: Receiver<FilterDone>,
     sidebar_view: SidebarView,
     history: HistoryState,
+    /// What each request's scripts and captures did on its last send (R-TEST-1).
+    test_results: HashMap<Selection, TestsView>,
+    /// Open workflows and their runs (R-FLOW-2, R-FLOW-3).
+    workflows: Workflows,
+    workflow_tx: Sender<WorkflowEvent>,
+    workflow_rx: Receiver<WorkflowEvent>,
 }
 
 /// How often unsaved edits are written to local data, at most (R-COL-8).
@@ -169,6 +195,7 @@ impl TortugaUi {
         let current = Request::default();
         let (finished_tx, finished_rx) = channel();
         let (filter_tx, filter_rx) = channel();
+        let (workflow_tx, workflow_rx) = channel();
         let mut ui = Self {
             state: AppState::new(host),
             modal: None,
@@ -177,6 +204,8 @@ impl TortugaUi {
             current,
             scratch: Request::default(),
             drafts: HashMap::new(),
+            tabs: Tabs::default(),
+            tab_strip: TabStripState::default(),
             sidebar: SidebarState::default(),
             outcomes: HashMap::new(),
             response: ResponseState::default(),
@@ -197,9 +226,14 @@ impl TortugaUi {
             filter_rx,
             sidebar_view: SidebarView::default(),
             history: HistoryState::default(),
+            test_results: HashMap::new(),
+            workflows: Workflows::default(),
+            workflow_tx,
+            workflow_rx,
         };
         ui.restore_drafts();
-        // Back where the user left off (R-WS-1).
+        // Back where the user left off (R-WS-1, R-COL-13).
+        ui.restore_tabs();
         let remembered = ui.state.remembered_selection();
         ui.select(remembered);
         ui
@@ -213,6 +247,8 @@ impl TortugaUi {
             self.styled = true;
         }
         self.collect_finished();
+        self.collect_workflow_events();
+        self.drop_missing_workflows();
         self.save_drafts_now_and_then(ui.input(|i| i.time));
         for root in self.state.take_changes() {
             self.on_disk_change(&root);
@@ -267,6 +303,7 @@ impl TortugaUi {
         }
 
         self.left_panel(ui);
+        self.tab_bar(ui);
 
         CentralPanel::default()
             .frame(
@@ -274,9 +311,16 @@ impl TortugaUi {
                     .fill(p.bg)
                     .inner_margin(Margin::symmetric(20, 16)),
             )
-            .show(ui, |ui| self.workspace(ui));
+            .show(ui, |ui| {
+                if self.workflows.open.is_some() {
+                    self.workflow_page(ui);
+                } else {
+                    self.workspace(ui);
+                }
+            });
 
         self.show_modal(ui.ctx());
+        self.sync_tabs();
     }
 
     /// The sidebar: projects, or the history (R-HIST-2).
@@ -310,7 +354,10 @@ impl TortugaUi {
                         ui,
                         &self.state,
                         &mut self.sidebar,
-                        self.selection.as_ref(),
+                        self.selection
+                            .as_ref()
+                            .filter(|_| self.workflows.open.is_none()),
+                        self.workflows.open.as_ref(),
                         &dirty,
                         &conflicts,
                     ),
@@ -322,18 +369,28 @@ impl TortugaUi {
             })
             .inner;
         for action in actions {
-            self.on_sidebar(action);
+            self.on_sidebar(action, ui.ctx());
         }
     }
 
     /// Keyboard shortcuts that work anywhere outside dialogs.
     fn shortcuts(&mut self, ui: &mut Ui) {
         let (save, send) = ui.input_mut(|i| (i.consume_shortcut(&SAVE), i.consume_shortcut(&SEND)));
-        if save {
-            self.save();
-        }
-        if send && self.sending().is_none() {
-            self.send(ui.ctx());
+        // With a workflow open, they save and run the workflow (R-FLOW-2, R-FLOW-3).
+        if let Some(key) = self.workflows.open.clone() {
+            if save {
+                self.save_open_workflow();
+            }
+            if send {
+                self.run_workflow(&key, ui.ctx());
+            }
+        } else {
+            if save {
+                self.save();
+            }
+            if send && self.sending().is_none() {
+                self.send(ui.ctx());
+            }
         }
         // Ctrl+Shift+P first: Ctrl+P would match it too.
         let (commands, quick_open) = ui.input_mut(|i| {
@@ -350,6 +407,7 @@ impl TortugaUi {
         if ui.input_mut(|i| i.consume_shortcut(&FIND)) {
             self.response.focus_search = true;
         }
+        self.tab_shortcuts(ui);
     }
 
     /// Call when the app closes: keeps unsaved edits for next time (R-COL-8).
@@ -649,10 +707,14 @@ impl TortugaUi {
     /// Runs `change` (which may switch workspace), keeping unsaved edits of the old
     /// workspace for this session, then selects the new workspace's remembered request.
     fn switch_workspace(&mut self, change: impl FnOnce(&mut AppState)) {
+        self.keep_if_edited();
+        self.state.remember_tabs(self.tabs.to_saved());
         self.select_and_remember(None, false);
         change(&mut self.state);
         self.check_restored_drafts();
+        self.restore_tabs();
         let remembered = self.state.remembered_selection();
+        self.tabs.open(&remembered, false);
         self.select_and_remember(remembered, false);
     }
 
@@ -837,6 +899,7 @@ impl TortugaUi {
             can_save,
             filter: self.filters.entry(key.clone()).or_default(),
             filtered,
+            tests: self.test_results.get(key),
         };
         if let Some(ResponseAction::SaveBody) = response_panel(ui, outcome, &mut self.response, cx)
             && let Some(Outcome::Response(view)) = outcome
@@ -1021,12 +1084,21 @@ impl TortugaUi {
         self.response = ResponseState::default();
     }
 
+    /// Opens a request in the preview tab, or switches to its tab (R-COL-13).
     fn select(&mut self, new: Selection) {
+        self.open_tab(new, false);
+    }
+
+    /// Opens a request in a tab; `keep` makes it a tab that stays (R-COL-13).
+    fn open_tab(&mut self, new: Selection, keep: bool) {
+        self.keep_if_edited();
+        self.tabs.open(&new, keep);
         self.select_and_remember(new, true);
     }
 
     /// Selects a request; `remember` keeps it as the workspace's selection (R-WS-1).
     fn select_and_remember(&mut self, new: Selection, remember: bool) {
+        self.workflows.open = None;
         if remember {
             self.state.remember_selection(new.as_ref());
         }
@@ -1057,6 +1129,8 @@ impl TortugaUi {
 
     /// Keys follow files and folders that were renamed or moved.
     fn remap(&mut self, root: &Path, old: &Path, new: &Path) {
+        self.retarget_workflows(root, old, new);
+        self.tabs.remap(root, old, new);
         let moved: Vec<_> = self
             .drafts
             .keys()
@@ -1108,9 +1182,22 @@ impl TortugaUi {
         self.drafts.retain(|k, _| !gone(k));
         self.conflicts.retain(|k, _| !gone(k));
         self.outcomes.retain(|k, _| !k.as_ref().is_some_and(gone));
+        self.tabs.retain(|k| !k.as_ref().is_some_and(gone));
         if self.selection.as_ref().is_some_and(gone) {
-            self.selection = None;
-            self.load(self.scratch.clone());
+            // Not `select`: the request is gone, so its edits are not kept.
+            let next = self.tabs.fallback().unwrap_or_default();
+            let request = match &next {
+                None => self.scratch.clone(),
+                Some(k) => self
+                    .drafts
+                    .get(k)
+                    .cloned()
+                    .or_else(|| self.state.saved_request(k))
+                    .unwrap_or_default(),
+            };
+            self.state.remember_selection(next.as_ref());
+            self.selection = next;
+            self.load(request);
         }
     }
 
@@ -1127,14 +1214,15 @@ impl TortugaUi {
         let ctx = self.state.request_context(key.as_ref());
         self.response = ResponseState::default();
         self.forget_past(&key);
-        let prepared = match vars::prepare(&self.current, &ctx) {
-            Ok(prepared) => prepared,
-            Err(e) => {
-                self.outcomes
-                    .insert(key, Outcome::Error(sentence(&e.to_string())));
-                return;
-            }
-        };
+        self.test_results.remove(&key);
+        // Undefined variables etc. show at once, unless a pre-request script may define them.
+        if self.current.scripts.pre_request.trim().is_empty()
+            && let Err(e) = vars::prepare(&self.current, &ctx)
+        {
+            self.outcomes
+                .insert(key, Outcome::Error(sentence(&e.to_string())));
+            return;
+        }
         self.next_send_id += 1;
         let id = self.next_send_id;
         let client = self.state.client.clone();
@@ -1150,23 +1238,38 @@ impl TortugaUi {
         let request = self.current.clone();
         let environment = ctx.environment.clone();
         let (task, abort) = abortable(async move {
-            let result = client.execute_with_cookies(&prepared, Some(&jar)).await;
+            // The pre-request script, sending, captures and tests (R-TEST-1..4).
+            let mut step = tortuga_core::runner::run_step(
+                &client,
+                Some(&jar),
+                &request,
+                &ctx,
+                tortuga_core::runner::Extra::default(),
+            )
+            .await;
             // Off the UI thread: copying up to 1 MB of body for the history.
+            let for_history = match &step.response {
+                Some(Ok(r)) => Ok(r),
+                Some(Err(e)) => Err(e.clone()),
+                None => Err(step.errors.first().cloned().unwrap_or_default()),
+            };
             let entry = tortuga_core::history::Entry::new(
                 entry_id,
                 sent_at,
                 path,
                 &request,
                 environment,
-                result.as_ref().map_err(|e| sentence(&e.to_string())),
+                for_history,
             );
+            let tests = TestsView::from_step(&step);
             // Prepared here, off the UI thread: pretty-printing big bodies takes a while (R-NF-2).
-            let outcome = Outcome::from_result(result);
+            let outcome = Outcome::from_step(step.response.take(), &step.errors);
             // The receiver only goes away with the app.
             let _ = tx.send(Finished {
                 id,
                 outcome,
                 entry: Some(entry),
+                tests,
             });
             repaint.request_repaint();
         });
@@ -1244,6 +1347,11 @@ impl TortugaUi {
                     .save_cookies(f.key.as_ref().map(|k| k.root.as_path()));
                 if let Some(entry) = done.entry {
                     self.record_history(f.key.as_ref().map(|k| k.root.as_path()), entry);
+                }
+                if let Some(tests) = done.tests {
+                    self.state
+                        .apply_runtime(f.key.as_ref().map(|k| k.root.as_path()), &tests.vars);
+                    self.test_results.insert(f.key.clone(), tests);
                 }
                 self.outcomes.insert(f.key, done.outcome);
             }
@@ -1406,9 +1514,10 @@ impl TortugaUi {
 
     // ---------------------------------------------------------------- sidebar
 
-    fn on_sidebar(&mut self, action: SidebarAction) {
+    fn on_sidebar(&mut self, action: SidebarAction, ctx: &egui::Context) {
         match action {
             SidebarAction::Select(key) => self.select(key),
+            SidebarAction::Keep(key) => self.open_tab(key, true),
             SidebarAction::NewRequest { root, parent } => {
                 let request = Request {
                     name: "New request".into(),
@@ -1418,7 +1527,7 @@ impl TortugaUi {
                     .state
                     .run(&root, |c, s| c.new_request(s, &parent, &request))
                 {
-                    self.select(Some(ItemKey::new(&root, path)));
+                    self.open_tab(Some(ItemKey::new(&root, path)), true);
                 }
             }
             SidebarAction::NewFolder { root, parent } => {
@@ -1436,20 +1545,12 @@ impl TortugaUi {
                 }
             }
             SidebarAction::Rename { key, name } => self.rename(&key, name),
-            SidebarAction::RenameCollection { root, name } => {
-                self.state.run(&root, |c, s| {
-                    let manifest = tortuga_core::Manifest {
-                        name: name.clone(),
-                        ..c.manifest.clone()
-                    };
-                    c.save_config(s, &manifest, &c.environments)
-                });
-            }
+            SidebarAction::RenameCollection { root, name } => self.rename_project(&root, &name),
             SidebarAction::Duplicate(key) => {
                 if let Some(path) = self.state.run(&key.root, |c, s| c.duplicate(s, &key.path))
                     && path.extension().is_some_and(|e| e == "toml")
                 {
-                    self.select(Some(ItemKey::new(&key.root, path)));
+                    self.open_tab(Some(ItemKey::new(&key.root, path)), true);
                 }
             }
             SidebarAction::MoveBy(key, direction) => {
@@ -1476,6 +1577,12 @@ impl TortugaUi {
                 parent,
                 before,
             } => self.place(&key, &parent, before.as_deref()),
+            action @ (SidebarAction::NewWorkflow(_)
+            | SidebarAction::SelectWorkflow(_)
+            | SidebarAction::RunWorkflow(_)
+            | SidebarAction::RenameWorkflow(_)
+            | SidebarAction::DeleteWorkflow(_)
+            | SidebarAction::RuntimeVariables(_)) => self.on_workflow_sidebar(action, ctx),
             SidebarAction::EditFolderDefaults(key) => {
                 self.modal = Some(Modal::Defaults(DefaultsDialog::for_folder(
                     &self.state,
@@ -1507,6 +1614,16 @@ impl TortugaUi {
             SidebarAction::LocateMissing(path) => self.locate_missing(&path),
             SidebarAction::RemoveMissing(path) => self.state.remove_missing(&path),
         }
+    }
+
+    fn rename_project(&mut self, root: &Path, name: &str) {
+        self.state.run(root, |c, s| {
+            let manifest = tortuga_core::Manifest {
+                name: name.to_owned(),
+                ..c.manifest.clone()
+            };
+            c.save_config(s, &manifest, &c.environments)
+        });
     }
 
     /// A dropped tree row (R-COL-12): edits and selection follow it if it moved folder.
@@ -1697,9 +1814,10 @@ impl TortugaUi {
                     if let Some(path) = self.state.run(&folder.root, |c, s| {
                         c.new_request(s, &folder.path, &request)
                     }) {
-                        // The scratch request starts over; the saved copy is selected.
+                        // The scratch request starts over; the saved copy takes its tab.
                         self.current = Request::default();
-                        self.select(Some(ItemKey::new(&folder.root, path)));
+                        self.tabs.close(&None);
+                        self.open_tab(Some(ItemKey::new(&folder.root, path)), true);
                     }
                     false
                 }
@@ -1714,6 +1832,10 @@ impl TortugaUi {
                 result => result == DialogResult::Open,
             },
             Modal::Palette(palette) => self.show_palette(ctx, palette),
+            Modal::NewWorkflow(..)
+            | Modal::RenameWorkflow(..)
+            | Modal::DeleteWorkflow(..)
+            | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
             Modal::ClearHistory(target, d) => match d.show(ctx) {
                 DialogResult::Done(()) => {
                     self.clear_history(target);
@@ -1906,6 +2028,7 @@ mod tests {
     use tortuga_core::storage::FsStorage;
 
     use super::*;
+    use crate::components::TabAction;
     use crate::test_host::TestHost;
 
     type Shared<T> = std::rc::Rc<std::cell::RefCell<T>>;
@@ -2065,6 +2188,166 @@ mod tests {
         ui.copy_as_curl(&egui_ctx);
         assert!(matches!(ui.modal, Some(Modal::CopyCurl(_))), "asks first");
         std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// The tabs in strip order, with whether each is the preview tab.
+    fn strip(ui: &TortugaUi) -> Vec<(Selection, bool)> {
+        ui.tabs.strip().map(|(k, p)| (k.clone(), p)).collect()
+    }
+
+    /// Adds a request to the project on disk.
+    fn add_request(ui: &mut TortugaUi, root: &Path, name: &str) -> ItemKey {
+        let request = Request {
+            name: name.into(),
+            ..Request::default()
+        };
+        let path = ui
+            .state
+            .run(root, |c, s| c.new_request(s, Path::new(""), &request))
+            .expect("request");
+        ItemKey::new(root, path)
+    }
+
+    /// R-COL-13, D31: a single click previews, double click or an edit keeps the tab,
+    /// sending does not; closing keeps edits; tabs come back after a restart.
+    #[test]
+    fn tabs_preview_keep_close_and_restore() {
+        let (mut ui, root, first, local, drafts) = setup_shared("tabs");
+        let second = add_request(&mut ui, &root, "List users");
+        let first_tab = Some(first.clone());
+        let second_tab = Some(second.clone());
+
+        ui.select(second_tab.clone());
+        assert_eq!(strip(&ui), [(second_tab.clone(), true)], "preview replaced");
+
+        ui.open_tab(first_tab.clone(), true);
+        ui.select(second_tab.clone());
+        ui.send(&egui::Context::default());
+        ui.sync_tabs();
+        assert_eq!(
+            strip(&ui),
+            [(first_tab.clone(), false), (second_tab.clone(), true)],
+            "sending does not keep the tab"
+        );
+
+        ui.current.set_display_url("https://a.test/edited");
+        ui.sync_tabs();
+        assert!(!ui.tabs.is_preview(&second_tab), "editing keeps the tab");
+
+        ui.close_tabs(std::slice::from_ref(&second_tab));
+        assert_eq!(ui.selection, first_tab, "back to the tab used before");
+        assert!(ui.drafts.contains_key(&second), "closing keeps the edits");
+        assert_eq!(strip(&ui), [(first_tab.clone(), false)]);
+
+        ui.select(second_tab.clone());
+        assert_eq!(ui.current.url, "https://a.test/edited");
+        ui.sync_tabs();
+        ui.on_exit();
+        let again = TortugaUi::new(Box::new(TestHost {
+            local,
+            drafts,
+            ..TestHost::default()
+        }));
+        assert_eq!(strip(&again), strip(&ui), "tabs restored");
+        assert_eq!(again.selection, second_tab);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-13: Ctrl+Tab goes back to the tab shown before, and pressed again returns.
+    #[test]
+    fn ctrl_tab_goes_back_to_the_previous_tab() {
+        let (mut ui, root, first) = setup("ctrl-tab");
+        let second = add_request(&mut ui, &root, "List users");
+        let third = add_request(&mut ui, &root, "Create user");
+        ui.open_tab(Some(first.clone()), true);
+        ui.open_tab(Some(second.clone()), true);
+        ui.open_tab(Some(third.clone()), true);
+        ui.select(Some(first.clone()));
+
+        // The request shown after each frame.
+        let shown: Shared<Selection> = Shared::default();
+        let seen = shown.clone();
+        let mut harness = crate::test_host::harness(move |egui_ui| {
+            ui.ui(egui_ui);
+            *seen.borrow_mut() = ui.selection.clone();
+        });
+        harness.run();
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Tab);
+        harness.run();
+        assert_eq!(*shown.borrow(), Some(third), "back to the previous tab");
+        harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Tab);
+        harness.run();
+        assert_eq!(*shown.borrow(), Some(first), "and back again");
+        drop(harness);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-13: tabs follow renames and close when their request is deleted.
+    #[test]
+    fn tabs_follow_renames_and_deletes() {
+        let (mut ui, root, first) = setup("tabs-disk");
+        let second = add_request(&mut ui, &root, "List users");
+        ui.open_tab(Some(first.clone()), true);
+        ui.open_tab(Some(second.clone()), true);
+
+        ui.rename(&second, "All users".into());
+        let renamed = ui.selection.clone();
+        assert_ne!(renamed, Some(second.clone()));
+        assert!(ui.tabs.contains(&renamed), "the tab follows the file");
+
+        let renamed = renamed.expect("a request");
+        std::fs::remove_file(root.join(&renamed.path)).expect("delete");
+        ui.select(Some(first.clone()));
+        ui.on_disk_change(&root);
+        ui.sync_tabs();
+        assert_eq!(
+            strip(&ui),
+            [(Some(first), false)],
+            "deleted in git: tab closed"
+        );
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-14: with tabs of two projects open, each project's tabs get a chip.
+    #[test]
+    fn tabs_are_grouped_by_project() {
+        let (mut ui, root, first) = setup("groups");
+        let other =
+            std::env::temp_dir().join(format!("tortuga-disk-groups2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&other);
+        Collection::create(&FsStorage, &other, "Orders API").expect("create");
+        ui.state.open_collection(&other).expect("open");
+        let order = add_request(&mut ui, &other, "Get order");
+
+        let chips = |ui: &mut TortugaUi| {
+            let mut chips = Vec::new();
+            let mut harness = crate::test_host::harness(|egui_ui| {
+                chips = ui
+                    .tab_groups(egui_ui)
+                    .iter()
+                    .map(|g| g.chip.as_ref().map(|c| (c.name.clone(), g.tabs.len())))
+                    .collect();
+            });
+            harness.run();
+            drop(harness);
+            chips
+        };
+        ui.open_tab(Some(first.clone()), true);
+        assert_eq!(chips(&mut ui), [None], "one project: no chips");
+
+        let second = add_request(&mut ui, &root, "List users");
+        ui.open_tab(Some(order), true);
+        ui.open_tab(Some(second), true);
+        assert_eq!(
+            chips(&mut ui),
+            [Some(("C".into(), 2)), Some(("Orders API".into(), 1))],
+            "grouped, in the order the projects were opened"
+        );
+
+        ui.on_tab(TabAction::CloseGroup(other.clone()));
+        assert_eq!(chips(&mut ui), [None]);
+        std::fs::remove_dir_all(root).expect("clean up");
+        std::fs::remove_dir_all(other).expect("clean up");
     }
 
     /// R-WS-1: switching workspaces keeps unsaved edits for the session and brings
@@ -2242,6 +2525,7 @@ mod tests {
                     id,
                     outcome: Outcome::from_result(Ok(response)),
                     entry: Some(entry),
+                    tests: None,
                 })
                 .expect("send");
             // Then edit the request further.

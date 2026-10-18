@@ -158,6 +158,39 @@ the request it received.
 Also fixed while checking M8: long names in the sidebar, quick open and history now shorten the name instead of the
 method tag; a new response opens at the top instead of where the last one was scrolled to.
 
+### M9: Workflows and tests (Phase 3)
+
+Checked in the running app on Linux (Ubuntu 24.04, WSL2/WSLg, debug build) with a project of two chained requests
+and a workflow over a two-row CSV file, against a local echo server; the CLI was run on the same project.
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-TEST-1 | Test scripts in the request's **Scripts** tab: `test(name, fn)` and `expect(value)` with `toBe`, `toEqual`, `toBeTruthy`, `toBeFalsy`, `toBeDefined`, `toBeUndefined`, `toBeNull`, `toContain`, `toMatch`, `toHaveLength`, `toHaveProperty`, `toBeGreaterThan(OrEqual)`, `toBeLessThan(OrEqual)` and `.not` (D28). Results, variables set and console output in the response's **Tests** tab (count in the tab title). Saved as `[scripts] tests` in the request file. | Linux | Automated tests (every matcher, `.not`, failure messages, syntax and runtime errors, file format round trip, the Tests tab). In the app: "Log in" showed **Tests 2/2** with both names ticked and its `console.log` line. |
+| R-TEST-2 | Pre-request scripts run before variables are filled in: they read and set variables and set headers; an error stops the send with its message. Saved as `[scripts] pre_request`. | Linux | Automated tests (headers, variables, an error stopping the send; against a mock server). In the app: the server received `X-Run: pre-none` set by the script. |
+| R-TEST-3 | Script API: `res` (`status`, `statusText`, `headers`, `body`, `json()`, `header(name)`, `time`, `size`), `req` (`method`, `url`, `headers`, `body`, `setHeader`), `vars` (`get`, `set`, `unset`, `has`), `console.log`. Boa (D24), off the UI thread, no file or network access; endless loops and deep recursion are stopped with a clear message; response bodies over 10 MB are not passed to scripts. | Linux | Automated tests (each object, no `require`/`fetch`, loop and recursion limits). In the app: as above. |
+| R-TEST-4 | Captures (table under the scripts, and per workflow step): JSONPath (first match), `header:<name>`, `status`. Saved as `[capture]` in the request or step. | Linux | Automated tests (each kind, missing values reported, file format). In the app: `token = $.items[1].name` captured "item 1"; a step capture added in the workflow editor was saved to the workflow file. |
+| R-TEST-5 | Runtime variables: captured and script-set values per project until Tortuga closes, never written to disk (D26); they win over every other value and count as defined; **Runtime variables…** in the project menu lists and clears them. | Linux | Automated tests (precedence, defined, clearing). In the app: after "Log in", `{{token}}` in "Get user" was no longer marked undefined and its value was used; the dialog listed `token = item 1`. |
+| R-FLOW-1 | Workflows are TOML files in `workflows/` (D29): name, `continue_on_failure`, optional `data` file, and steps naming request files with optional `name`, `capture` and `tests`. Steps follow requests that are renamed or moved. | Linux | Automated tests (file format round trip, broken files, moving and renaming requests and folders). In the app: files created, changed and deleted on disk as expected. |
+| R-FLOW-2 | A **Workflows** group under each project in the sidebar; **New workflow…**, **Rename…**, **Delete…**, **Run** in the menus, and **Run workflow: …** / **New workflow…** in the command palette. The editor: name, "Continue after a failed step", data file, steps (add from a picker, reorder, remove, open the request, **Checks…** for a step's name, captures and tests), Unsaved / Save / Revert. | Linux | Automated tests (adding, moving, removing steps; creating, renaming with unsaved edits kept, saving, deleting). In the app: created "Smoke test", added both requests, renamed "Lifecycle" to "User lifecycle", deleted a workflow; checked on disk each time. |
+| R-FLOW-3 | **Run** (or Ctrl+Enter) sends the steps in order with the active environment, the steps' scripts, captures and tests, and the unsaved draft. Captured values flow to later steps without touching the project's runtime variables. A failed step (failed test, error, 4xx/5xx) ends the iteration unless the workflow continues after failures. Results per step: status, time, tests; a step's detail shows the sent request, tests, variables set, console output and the response body. **Cancel** stops a run. | Linux | Automated tests (chained captures against a mock server, stop and continue on failure, cancel, the results view). In the app: two-row run with live progress; a failed test shown under its step and in the detail; Cancel during the second of two slow steps stopped the run ("Cancelled", step 2 never arrived). |
+| R-FLOW-4 | Data-driven runs: a CSV (RFC 4180, first row names the variables) or JSON array of objects, chosen in the editor (saved relative to the project); one iteration per row with that row's values as variables and a fresh cookie jar; results grouped per row. | Linux | Automated tests (CSV quoting and errors, JSON values, one iteration per row). In the app: `users.csv` with `ann` and `bob` gave "Row 1" passed and "Row 2" failed on the `u=ann` test, as written. |
+| R-CLI-1 | `tortuga-cli run <project> [workflow, folder or request]` with `--env`, `--data`, `--var`, `--insecure`, `--cacert`: prints each step with its tests and logs; exit code 0 / 1 / 2. No GUI libraries (D5). | Linux | Automated tests (argument parsing, target lookup, the binary end to end against a mock server, exit codes). By hand: the workflow above (exit 1 with the failing row), a single request (undefined variable reported, exit 1). |
+| R-CLI-2 | Variables from `--var name=value` and `TORTUGA_VAR_<name>` (D30); they win over the project's values. | Linux | Automated tests. By hand: `TORTUGA_VAR_user=ann` was used by the request. |
+| R-CLI-3 | `--report junit --out FILE` (a test suite per iteration, a test case per test or per step without tests, skipped steps as `<skipped/>`) and `--report json`. | Linux | Automated tests (both formats, escaping). By hand: the JUnit file for the two-row run (10 tests, 1 failure). |
+
+Also fixed while checking M9: the results list now uses the whole page until a step is chosen; step names line up;
+counts say "1 step" rather than "1 steps".
+
+### Request tabs (D31, D32)
+
+Checked in the running app on Linux (Ubuntu 24.04, WSL2/WSLg, debug build, dark theme) with two projects, "Users API"
+and "Orders API", in one workspace.
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-COL-13 | Requests open in tabs above the editor. A single click (tree, quick open, history, a workflow step) opens the *preview tab* (italic title; the next single click replaces it); double-clicking the tab or the tree row, or editing the request, keeps it; sending does not. New, duplicated and saved-from-scratch requests open as kept tabs. Closing (🗙, middle-click, Ctrl+W) never discards unsaved edits; the shown tab then goes back to the one used before. Right-click: Keep open, Close, Close others, Close to the right, Close saved tabs. "⏷" lists every tab (unsaved ones with a dot). Ctrl+Tab goes to the previously used tab, Ctrl+PageDown/PageUp to the next/previous one. Tabs follow renames and moves and close when their request is deleted (also in git) unless it has unsaved edits (then the conflict banner asks, R-GIT-11). Open tabs, the preview tab and folded groups are kept per workspace in local data and come back after a restart. | Linux | Automated tests (the tab model: preview, keep, close, used order, neighbours, renames, deletes, saved form; the shell: send does not keep, edit keeps, closing keeps edits, restart, deleted in git; the strip: clicking, closing, chips; the local-data round trip). In the app: single clicks replaced the preview, double-clicks kept tabs, editing "Delete user" kept it with the unsaved dot, Ctrl+Tab, Ctrl+PageDown, Ctrl+W, middle-click and "Close others" (edits of "Delete user" still there), the "⏷" list, and the tabs back after a restart with the unsaved edit. |
+| R-COL-14 | With tabs of two or more projects open, each project's tabs sit together after a chip with its name in a colour worked out from the name; the project rows in the sidebar get a dot in the same colour when the workspace has several projects. Clicking a chip folds the group into "Name · count" (the shown tab stays visible) and unfolds it; opening one of its requests unfolds it; right-click: Collapse/Expand, Close the project's tabs. The preview tab comes after all groups with a stripe in its project's colour and moves into its group when kept. Folded state is forgotten once the chip disappears. | Linux | Automated tests (groups and chips with one and two projects, closing a group, folding, stable colours). In the app: Users API (pink) and Orders API (orange) chips and dots; the preview "List orders" moved into its group when double-clicked; Users API folded to "Users API · 2" and back; closing the last Orders tab removed both chips. Light theme not checked (the app follows the system theme, which is dark here). |
+
 ## In progress
 
 | Requirement | State |
@@ -177,7 +210,7 @@ method tag; a new response opens at the top instead of where the last one was sc
 ## Agreed requirements
 
 The requirements the features above were built to, as agreed in [ROADMAP.md](ROADMAP.md) (moved here on
-2026-10-18, when Phase 2 was done). Open ones are still in the roadmap.
+2026-10-18, when Phase 2 was done, and the Phase 3 ones the same day when it was done). Open ones are still in the roadmap.
 
 ### Principles
 
@@ -239,6 +272,8 @@ The requirements the features above were built to, as agreed in [ROADMAP.md](ROA
 | R-COL-10 | **Command palette** (Ctrl+K, or Ctrl+Shift+P): every frequent action by name, with its shortcut: send, save, revert, copy as curl, new request in the current folder, switch environment, switch workspace, open environments, project defaults, settings, history, add project. Typing filters like quick open. *(IDEA-27)* |
 | R-COL-12 | **Drag and drop in the tree**: drag a request or folder onto a folder to move it into it, or between two items to put it there; the order is saved like "Move up/down" (R-COL-3, R-GIT-6). Only within one project, and not into itself; read-only projects can't be changed. A line or highlight shows where it will land. *(IDEA-9)* |
 | R-COL-11 | **Folder defaults**: a folder can define headers, auth and variables (in its `_folder.toml`), edited from the folder's menu. A request inherits from its folders, nearest first, then from the project: its own header replaces an inherited one with the same name; its auth is its own, else the nearest folder's, else the project's. Variables: local secret, then the active environment, then folder variables (nearest first), then project variables. The editor shows where an inherited header or auth comes from. *(IDEA-1; extends R-COL-4, R-VAR-4)* |
+| R-COL-13 | **Request tabs** (D31). Several requests are open at once in tabs above the editor; only requests open in tabs, not workflows. A single click (tree, quick open, history) opens the request in the *preview tab*: there is at most one, its title is in italics, and the next single click replaces it. Double-clicking the tab or the tree row keeps it open. Editing a request keeps its tab; sending does not. New, duplicated and saved-from-scratch requests open as kept tabs. Closing a tab never discards unsaved edits (they stay, as in R-COL-6). Tab menu: Keep open, Close, Close others, Close to the right, Close saved tabs; middle-click closes. A "⏷" list shows every open tab; Ctrl+Tab goes to the previously used tab, Ctrl+PageUp/PageDown to the neighbours, Ctrl+W closes the shown tab. Tabs follow renames and moves, and close when their request is deleted. Open tabs are local data per workspace (§6.7) and come back after a restart. *(IDEA-31)* |
+| R-COL-14 | **Tabs grouped by project** (D32). Tabs of one project sit together after a chip with the project's name, in a colour worked out from the name; the project's row in the sidebar shows a dot in the same colour. Chips only show when tabs of two or more projects are open. Clicking a chip collapses the group to the chip (with a count) and expands it again; opening a request of a collapsed group expands it. The preview tab sits after all groups, with a stripe in its project's colour, and moves into its group when it is kept. The "⏷" list groups tabs by project. Collapsed groups are remembered with the tabs. |
 
 #### Workspaces & projects
 
@@ -360,6 +395,33 @@ content = '''
 | ID | Requirement |
 |---|---|
 | R-LOC-1 | Secret values, cookies, the selected environment, and UI state are stored in the user's app-data directory, keyed by collection path. Nothing is written inside the repo, so there is no `.gitignore` to forget. |
+
+### Scripts and tests
+
+| ID | Requirement |
+|---|---|
+| R-TEST-1 | **Test scripts**: a request can have a JavaScript test script that runs after the response arrives. `test("name", () => …)` records a named check; `expect(value)` offers `toBe`, `toEqual`, `toBeTruthy`, `toBeFalsy`, `toBeDefined`, `toBeUndefined`, `toBeNull`, `toContain`, `toMatch`, `toHaveLength`, `toHaveProperty`, `toBeGreaterThan(OrEqual)`, `toBeLessThan(OrEqual)`, each also with `.not` (D28). The results (passed, or failed with the reason) and `console.log` output are shown in a Tests tab next to the response. The script is saved in the request file. *(IDEA-23, D3)* |
+| R-TEST-2 | **Pre-request scripts** run before variables are filled in and the request is sent. They can read and set variables and set request headers (e.g. a timestamp or a signature). An error stops the send with its message. *(IDEA-23, D25)* |
+| R-TEST-3 | **Script API and sandbox**: `res` (`status`, `statusText`, `headers`, `body`, `json()`, `header(name)`, `time`, `size`), `req` (`method`, `url`, `headers`, `body`; `setHeader(name, value)` in pre-request scripts), `vars` (`get`, `set`, `unset`, `has`) and `console.log`. Scripts run in Boa (D24), off the UI thread, with no access to files or the network, and are stopped after too many loop iterations or too deep a recursion. |
+| R-TEST-4 | **Captures**: a request, or a workflow step, can put values from its response into variables: a JSONPath expression on the JSON body (R-HTTP-13), `header:<name>`, or `status`. Edited as a table next to the test script; saved in the request file. |
+| R-TEST-5 | **Runtime variables**: values captured or set by scripts are kept per project until the app closes, and never written to disk (D26). They win over every other value (secret, environment, folder, project), count as defined (R-VAR-5), and are listed with their values and can be cleared. |
+
+### Workflows
+
+| ID | Requirement |
+|---|---|
+| R-FLOW-1 | A **workflow** is a TOML file in the project's `workflows/` folder (D4, D29): a name and an ordered list of steps; each step names a request file, and may add captures and a test script of its own. Requests are referenced, not copied: changing a request changes every workflow that uses it. *(IDEA-26)* |
+| R-FLOW-2 | Workflows are listed in the sidebar under their project; they are created, renamed, deleted and edited in the app: add a step by picking a request, reorder, remove, edit its captures and tests. |
+| R-FLOW-3 | **Running a workflow** sends its steps in order with the active environment, each with its pre-request script, captures and tests. Captured values flow to later steps; a run starts with no runtime variables of its own and does not change the project's. It stops at the first failed step (a failed test, an error, or a 4xx/5xx response) unless the workflow says to continue. A result view shows each step: status, time, tests passed and failed, captured values, and its response. A run can be cancelled. |
+| R-FLOW-4 | **Data-driven runs**: a workflow can run once per row of a CSV file (first row: variable names) or a JSON file (an array of objects); each row's values are variables for that iteration (D27). The data file is chosen when running, or named in the workflow file (relative to the project). Results are shown per iteration. |
+
+### Command-line runner
+
+| ID | Requirement |
+|---|---|
+| R-CLI-1 | **`tortuga-cli`**, a separate binary without GUI libraries (D5), runs a workflow, a folder (its requests in order) or a single request of a project: `tortuga-cli run <project> <workflow, folder or request> [--env NAME] [--data FILE] [--var name=value]… [--insecure] [--cacert FILE]…`. It prints each step with its tests and exits with 0 when everything passed, 1 when a test or step failed, and 2 for usage or setup errors. *(IDEA-24)* |
+| R-CLI-2 | Variables and secrets come from `--var name=value` and from environment variables `TORTUGA_VAR_<name>` (D30), so CI can pass secrets; they win over the project's values. |
+| R-CLI-3 | Reports: `--report junit --out FILE` (JUnit XML: a suite per workflow iteration, a test case per test) and `--report json --out FILE`. |
 
 ### Non-functional
 

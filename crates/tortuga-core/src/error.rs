@@ -5,6 +5,20 @@ use thiserror::Error;
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// `text` with its first letter in upper case, to show as a sentence.
+pub fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// An error as a sentence for people.
+pub fn message(error: &Error) -> String {
+    sentence(&error.to_string())
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("invalid URL `{url}`: {source}")]

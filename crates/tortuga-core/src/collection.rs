@@ -12,6 +12,7 @@ use crate::format::{self, Environment, FORMAT_VERSION, FolderDefaults, FolderMet
 use crate::model::Request;
 use crate::slug;
 use crate::storage::Storage;
+use crate::workflow::{WORKFLOWS_DIR, Workflow};
 use crate::{Error, Result};
 
 pub const MANIFEST_FILE: &str = "tortuga.toml";
@@ -33,6 +34,10 @@ pub struct Collection {
     pub environments: Vec<Environment>,
     /// Environment files that could not be read (R-GIT-8).
     pub broken_environments: Vec<Broken>,
+    /// Workflows in `workflows/`, by name (R-FLOW-1).
+    pub workflows: Vec<Workflow>,
+    /// Workflow files that could not be read.
+    pub broken_workflows: Vec<Broken>,
 }
 
 /// An entry in the collection tree. Paths are relative to the collection root.
@@ -129,6 +134,7 @@ impl Collection {
         let read_only = manifest.format > FORMAT_VERSION;
         let items = load_dir(storage, root, Path::new(""))?;
         let (environments, broken_environments) = load_environments(storage, root)?;
+        let (workflows, broken_workflows) = load_workflows(storage, root)?;
         Ok(Self {
             root: root.to_owned(),
             manifest,
@@ -136,6 +142,8 @@ impl Collection {
             items,
             environments,
             broken_environments,
+            workflows,
+            broken_workflows,
         })
     }
 
@@ -283,6 +291,60 @@ impl Collection {
             &self.root.join(path).join(FOLDER_FILE),
             &format::write_folder(&meta),
         )
+    }
+
+    pub fn workflow(&self, id: &str) -> Option<&Workflow> {
+        self.workflows.iter().find(|w| w.id == id)
+    }
+
+    /// Adds an empty workflow called `name` (R-FLOW-2). Returns its id.
+    pub fn new_workflow(&self, storage: &dyn Storage, name: &str) -> Result<String> {
+        self.ensure_writable()?;
+        let id = slug::unique(&slug::slugify(name), |c| {
+            self.workflows.iter().any(|w| w.id == c)
+                || storage.exists(&self.root.join(WORKFLOWS_DIR).join(format!("{c}.toml")))
+        });
+        let workflow = Workflow {
+            id: id.clone(),
+            name: name.trim().to_owned(),
+            ..Workflow::default()
+        };
+        self.save_workflow(storage, &workflow)?;
+        Ok(id)
+    }
+
+    /// Writes a workflow to `workflows/<id>.toml` (unchanged content leaves the file alone).
+    pub fn save_workflow(&self, storage: &dyn Storage, workflow: &Workflow) -> Result<()> {
+        self.ensure_writable()?;
+        if workflow.id.is_empty() || workflow.id.contains(['/', '\\', '.']) {
+            return Err(Error::InvalidOperation(format!(
+                "not a workflow id: {}",
+                workflow.id
+            )));
+        }
+        let path = self
+            .root
+            .join(WORKFLOWS_DIR)
+            .join(format!("{}.toml", workflow.id));
+        write_if_changed(storage, &path, &format::write_workflow(workflow))
+    }
+
+    pub fn delete_workflow(&self, storage: &dyn Storage, id: &str) -> Result<()> {
+        self.ensure_writable()?;
+        let path = self.root.join(WORKFLOWS_DIR).join(format!("{id}.toml"));
+        remove_file(storage, &path)
+    }
+
+    /// Points workflow steps at a request or folder that moved from `old` to `new`
+    /// (R-FLOW-1).
+    pub fn retarget_workflows(&self, storage: &dyn Storage, old: &Path, new: &Path) -> Result<()> {
+        for workflow in &self.workflows {
+            let mut moved = workflow.clone();
+            if moved.retarget(old, new) {
+                self.save_workflow(storage, &moved)?;
+            }
+        }
+        Ok(())
     }
 
     /// The folders `path` is in, outermost first (R-COL-11).
@@ -637,7 +699,7 @@ impl Collection {
         let reserved = parent.as_os_str().is_empty();
         let stem = slug::unique(&slug::slugify(name), |c| {
             let dir = parent.join(c);
-            (reserved && c == ENVIRONMENTS_DIR)
+            (reserved && (c == ENVIRONMENTS_DIR || c == WORKFLOWS_DIR))
                 || (own != Some(dir.as_path())
                     && (storage.exists(&self.root.join(&dir))
                         || storage.exists(&self.root.join(parent.join(format!("{c}.toml"))))))
@@ -673,7 +735,8 @@ fn load_dir(storage: &dyn Storage, root: &Path, rel: &Path) -> Result<Vec<Item>>
         let name = entry.name.as_str();
         if name.starts_with('.')
             || name == FOLDER_FILE
-            || (at_root && (name == MANIFEST_FILE || name == ENVIRONMENTS_DIR))
+            || (at_root
+                && (name == MANIFEST_FILE || name == ENVIRONMENTS_DIR || name == WORKFLOWS_DIR))
         {
             continue;
         }
@@ -738,6 +801,37 @@ fn load_folder(storage: &dyn Storage, root: &Path, path: PathBuf) -> Result<Opti
         defaults,
         error,
     }))
+}
+
+fn load_workflows(storage: &dyn Storage, root: &Path) -> Result<(Vec<Workflow>, Vec<Broken>)> {
+    let dir = root.join(WORKFLOWS_DIR);
+    if !storage.exists(&dir) {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let entries = storage.list(&dir).map_err(|source| Error::Io {
+        path: dir.clone(),
+        source,
+    })?;
+    let (mut workflows, mut broken) = (Vec::new(), Vec::new());
+    for entry in entries
+        .into_iter()
+        .filter(|e| !e.is_dir && !e.name.starts_with('.'))
+    {
+        let Some(id) = entry.name.strip_suffix(".toml") else {
+            continue;
+        };
+        let rel = Path::new(WORKFLOWS_DIR).join(&entry.name);
+        match read(storage, &root.join(&rel)).map(|t| format::parse_workflow(&t, id)) {
+            Ok(Ok(w)) => workflows.push(w),
+            Ok(Err(error)) => broken.push(Broken { path: rel, error }),
+            Err(e) => broken.push(Broken {
+                path: rel,
+                error: e.to_string(),
+            }),
+        }
+    }
+    workflows.sort_by_key(|w| (w.name.to_lowercase(), w.id.clone()));
+    Ok((workflows, broken))
 }
 
 fn load_environments(

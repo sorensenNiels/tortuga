@@ -37,6 +37,10 @@ pub(super) enum Command {
     ProjectDefaults(PathBuf),
     Settings,
     History,
+    /// Workflows (R-FLOW-2, R-FLOW-3) and runtime variables (R-TEST-5).
+    RunWorkflow(crate::state::WorkflowKey),
+    NewWorkflow(PathBuf),
+    RuntimeVars(Option<PathBuf>),
     AddProjects,
     NewProject,
 }
@@ -111,6 +115,25 @@ impl TortugaUi {
             }
         }
         for c in &self.state.collections {
+            for w in &c.workflows {
+                let key = crate::state::WorkflowKey {
+                    root: c.root.clone(),
+                    id: w.id.clone(),
+                };
+                items.push(
+                    run(
+                        &format!("Run workflow: {}", w.name),
+                        Command::RunWorkflow(key),
+                    )
+                    .detail(c.name())
+                    .keywords("test"),
+                );
+            }
+            if !c.read_only {
+                items.push(
+                    run("New workflow…", Command::NewWorkflow(c.root.clone())).detail(c.name()),
+                );
+            }
             items.push(
                 run(
                     "Environments, servers and variables…",
@@ -127,6 +150,16 @@ impl TortugaUi {
                 .keywords("headers auth"),
             );
         }
+        let root = self.selection.as_ref().map(|k| k.root.clone());
+        let place = root
+            .as_ref()
+            .and_then(|r| self.state.collection(r))
+            .map_or_else(|| "Scratch request".to_owned(), |c| c.name().to_owned());
+        items.push(
+            run("Runtime variables…", Command::RuntimeVars(root))
+                .detail(place)
+                .keywords("captured clear"),
+        );
         items.push(run("Settings…", Command::Settings).keywords("preferences options"));
         if self.state.host.keeps_history() {
             items.push(run("Show history", Command::History).keywords("sent past responses"));
@@ -185,7 +218,10 @@ impl TortugaUi {
                         None => return,
                     },
                 };
-                self.on_sidebar(crate::components::SidebarAction::NewRequest { root, parent });
+                self.on_sidebar(
+                    crate::components::SidebarAction::NewRequest { root, parent },
+                    ctx,
+                );
             }
             Command::Environment(name) => self.state.set_workspace_environment(&name),
             Command::Workspace(i) => self.on_workspace(WorkspaceAction::Switch(i)),
@@ -202,6 +238,9 @@ impl TortugaUi {
                 self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
             }
             Command::History => self.sidebar_view = super::SidebarView::History,
+            Command::RunWorkflow(key) => self.run_workflow(&key, ctx),
+            Command::NewWorkflow(root) => self.new_workflow_dialog(root),
+            Command::RuntimeVars(root) => self.show_runtime_vars(root),
             Command::AddProjects => self.add_projects(),
             Command::NewProject => self.new_project(),
         }

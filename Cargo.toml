@@ -6,7 +6,7 @@ default-members = ["crates/tortuga-core"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.91"
 license = "MIT OR Apache-2.0"
 authors = ["Niels P. Sørensen <niels.p.sorensen@softdesign.dk>"]
 
@@ -43,6 +43,8 @@ open = "5"
 # The local UTC offset, to show history times (R-HIST-2).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 wasm-bindgen-futures = "0.4"
+# JavaScript for pre-request and test scripts (R-TEST-3, D24): pure Rust, sandboxed.
+boa_engine = { version = "0.22", default-features = false }
 # Windows icon and version information in tortuga.exe (build script).
 winresource = { version = "0.1", default-features = false }
 

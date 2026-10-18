@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
-use egui::{ComboBox, Context, Id, Modal, TextEdit, Ui};
+use egui::{ComboBox, Context, Id, Modal, RichText, TextEdit, Ui};
 use tortuga_core::ClientSettings;
 
 use super::request_editor::parse_timeout;
@@ -584,6 +584,69 @@ impl SettingsDialog {
             }
             let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Save"), true);
             finish(cancel, confirm.then(|| self.draft.clone()))
+        })
+    }
+}
+
+/// The runtime variables of a project, with "Clear all" (R-TEST-5).
+#[derive(Debug, Clone)]
+pub struct RuntimeVarsDialog {
+    /// The project (`None`: the scratch request).
+    pub root: Option<PathBuf>,
+    title: String,
+}
+
+impl RuntimeVarsDialog {
+    pub fn new(root: Option<PathBuf>, place: &str) -> Self {
+        Self {
+            root,
+            title: format!("Runtime variables — {place}"),
+        }
+    }
+
+    /// `Done` means "clear them all".
+    pub fn show(
+        &self,
+        ctx: &Context,
+        vars: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> DialogResult<()> {
+        dialog(ctx, "runtime-vars", &self.title, 520.0, true, |ui| {
+            theme::hint(
+                ui,
+                "Values captured from responses or set by scripts. They win over environment and \
+                 project values, and are forgotten when Tortuga closes.",
+            );
+            ui.add_space(8.0);
+            match vars {
+                None => theme::hint(ui, "None yet."),
+                Some(vars) => {
+                    let p = theme::palette(ui);
+                    egui::ScrollArea::vertical()
+                        .max_height(320.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new("runtime-vars")
+                                .num_columns(2)
+                                .spacing([16.0, 4.0])
+                                .show(ui, |ui| {
+                                    for (name, value) in vars {
+                                        ui.label(RichText::new(name).monospace());
+                                        let shown =
+                                            crate::format::truncate(value, 200).0.to_owned();
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(shown).monospace().color(p.muted),
+                                            )
+                                            .truncate(),
+                                        )
+                                        .on_hover_text(value);
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                }
+            }
+            let (close, clear) = actions(ui, theme::danger_button(ui, "Clear all"), vars.is_some());
+            finish(close, clear.then_some(()))
         })
     }
 }

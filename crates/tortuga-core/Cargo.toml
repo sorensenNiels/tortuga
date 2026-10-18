@@ -21,10 +21,14 @@ tracing.workspace = true
 web-time.workspace = true
 # Cookie jars (R-CK-1).
 cookie_store.workspace = true
+# Pre-request and test scripts (R-TEST-3).
+boa_engine.workspace = true
 
 # `time` needs the browser clock on wasm32.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cookie_store = { workspace = true, features = ["wasm-bindgen"] }
+# Boa's clock and random numbers come from the browser on wasm32.
+boa_engine = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 tokio.workspace = true

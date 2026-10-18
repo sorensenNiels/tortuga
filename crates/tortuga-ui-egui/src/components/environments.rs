@@ -686,6 +686,8 @@ mod tests {
             items: vec![],
             environments: envs,
             broken_environments: vec![],
+            workflows: vec![],
+            broken_workflows: vec![],
         };
         let mut d = Draft::from_collection(&col, &SecretValues::default());
         d.servers[0].name = "People API".into();
@@ -740,6 +742,8 @@ mod tests {
             items: vec![],
             environments: saved.environments,
             broken_environments: vec![],
+            workflows: vec![],
+            broken_workflows: vec![],
         };
         let back = Draft::from_collection(&col, &saved.secrets);
         assert!(back.variables[0].secret);

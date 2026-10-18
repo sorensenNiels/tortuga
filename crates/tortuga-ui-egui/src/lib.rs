@@ -19,7 +19,10 @@ mod shell;
 mod state;
 mod theme;
 
-pub use host::{BoxTask, DraftConflict, Host, LocalState, SavedDraft, SavedDrafts, Workspace};
+pub use host::{
+    BoxTask, DraftConflict, Host, LocalState, SavedDraft, SavedDrafts, SavedTab, SavedTabs,
+    Workspace,
+};
 pub use shell::TortugaUi;
 
 #[cfg(test)]
@@ -192,7 +195,7 @@ mod tests {
         let mut harness = test_host::harness(|ui| {
             for symbol in [
                 "⏵", "⏷", "⏺", "⚠", "🗙", "⚙", "✏", "•", "…", "—", "“", "”", "🐢", "·", "🔒", "›",
-                "↑", "↓", "→", "☰",
+                "↑", "↓", "→", "☰", "✓", "✗",
             ] {
                 ui.label(symbol);
                 ui.monospace(symbol);

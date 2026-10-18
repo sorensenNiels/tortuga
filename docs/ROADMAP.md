@@ -53,9 +53,10 @@ Every roadmap item should make at least one of these faster or safer.
 
 ## 4. Status
 
-Milestones M1 to M8 are done: sending requests, projects on disk, environments and servers, auth and secrets,
-cookies, live git collaboration, workspaces, the v1 extras, release builds, and the Phase 2 "daily driver"
-features. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
+Milestones M1 to M9 are done: sending requests, projects on disk, environments and servers, auth and secrets,
+cookies, live git collaboration, workspaces, the v1 extras, release builds, the Phase 2 "daily driver"
+features, and Phase 3: test and pre-request scripts, captures, workflows (also data-driven) and the `tortuga-cli`
+runner. Request tabs grouped by project (R-COL-13, R-COL-14) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
 
 Open before the first release (v1):
 
@@ -67,50 +68,12 @@ Open before the first release (v1):
 | No telemetry | R-P-4 | Confirm with a network monitor. |
 | Signing | D17 | Decide whether v1 installers are signed. |
 
+Next: **Phase 4 — Reach**, picked by demand.
+
 ## 5. Phases
 
 The phases are an order, not a calendar. Each one ends with something a team can use every day. Phase 1 (v1: share
-collections safely) and Phase 2 (daily driver) are done.
-
-### Phase 3 — Workflows and tests: verify APIs (v2)
-
-The next big theme, and the one that makes the git-shared collection worth more than a set of bookmarks (S6).
-It builds in layers, so each layer is useful on its own:
-
-1. **Test scripts on a single request** (IDEA-23, D3): JavaScript that runs after the response arrives,
-   with a small `expect`-style API for status, headers, JSON values and response time. Results show next to
-   the response. The script is stored in the request file, so it is reviewed in git like code.
-2. **Capture values** from a response into variables (e.g. a token or a created id) so requests can be chained.
-3. **Workflows** (IDEA-26): an ordered list of requests with captures and checks, stored as a file in the
-   collection, run with one click, with a clear step-by-step result view.
-4. **Command-line runner** (IDEA-24, D5): a separate `tortuga-cli` binary without GUI libraries. Runs a
-   workflow or a folder from a terminal or CI with the same files, chooses the environment, exits non-zero on
-   failure, writes a JUnit/JSON report. Secrets come from environment variables in CI.
-5. **Data-driven runs** (later): run a workflow once per row of a data file.
-
-Workflows are TOML files that reference existing request files by path, with captures and checks per step (D4):
-
-```toml
-# workflows/user-lifecycle.toml
-name = "User lifecycle"
-
-[[steps]]
-request = "auth/login.toml"
-capture.token = "$.access_token"
-
-[[steps]]
-request = "users/create-user.toml"
-capture.user_id = "$.id"
-```
-
-What D3 (JavaScript) brings with it, to settle before Phase 3 starts:
-
-- **Engine choice.** It must run in `tortuga-core`, be sandboxed (no file or network access unless granted),
-  have time and memory limits, and keep the wasm build working (D6). Candidates: Boa (pure Rust, compiles to
-  wasm, slower) and QuickJS via `rquickjs` (fast and small, C code, needs checking for wasm).
-- **API surface.** A small, documented API (`res`, `expect`, `vars`) that feels familiar to anyone who has
-  written API tests elsewhere, but is designed for short, readable scripts.
-- **Pre-request scripts** (also IDEA-23) use the same engine; decide whether they ship with test scripts or later.
+collections safely), Phase 2 (daily driver) and Phase 3 (workflows and tests, v2) are done.
 
 ### Phase 4 — Reach
 
@@ -130,7 +93,7 @@ Accounts, cloud sync, real-time co-editing (IDEA-40); mock servers, documentatio
 
 ## 6. Requirements
 
-Requirements still open. They are implemented, but not yet verified everywhere ([FEATURES.md](FEATURES.md),
+Requirements still open: not built yet, or implemented but not yet verified everywhere ([FEATURES.md](FEATURES.md),
 "In progress").
 
 | ID | Requirement |
@@ -157,6 +120,8 @@ Agreed as worth doing, not scheduled yet.
 | IDEA-11 | Web version of the app. | The architecture already keeps this possible (R-P-3). |
 | IDEA-14 | Signed installers: Apple Developer ID signing and notarization for the `.dmg`, Authenticode for the `.msi`. | Removes the "unidentified developer" and SmartScreen warnings. Needs paid certificates; see D17. |
 | IDEA-15 | Automatic update check and in-app updates. | Would contact a server, so it must be opt-in (R-P-4). |
+| IDEA-42 | Keep unsaved workflow edits when Tortuga closes, like request edits (R-COL-8). | Today an unsaved workflow draft is lost on exit. |
+| IDEA-43 | Publish `tortuga-cli` with each release (an archive per OS, maybe a container image) for CI. | Today it is built from source (`make cli`); the Release workflow packages only the desktop app. |
 
 ### Under consideration
 
@@ -167,12 +132,8 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-20 | Client certificates (mTLS). | |
 | IDEA-21 | In-app commit, pull, push, and branch switching. | Large scope: needs git credential handling on three OSes. |
 | IDEA-22 | Code snippets for other languages (Python, JavaScript, …). | |
-| IDEA-23 | Pre-request scripts and response assertions/tests. | Written in JavaScript (decision D3). |
-| IDEA-24 | Command-line runner that executes a collection, e.g. in CI. | The engine crate is already UI-independent. |
 | IDEA-25 | Other protocols: GraphQL tooling, WebSockets, SSE, gRPC. | |
-| IDEA-26 | Test workflows: an ordered list of requests with captured values (e.g. token, created id) and checks, stored as a file in the collection, runnable in the app and from the CLI runner. | Builds on IDEA-23 and IDEA-24. See Phase 3, decisions D3/D4. |
 | IDEA-29 | Import an OpenAPI description as a collection (servers, folders per tag, example bodies). | Phase 4. |
-| IDEA-31 | Several requests open at once in tabs. | Deferred by decision D2 (single editor + quick open + history first). |
 | IDEA-38 | Workspace variables, local only: values used across projects, e.g. log in with the Auth project and use `{{token}}` in the others. | Requests that use them depend on the workspace, so teammates without it see them as undefined (R-VAR-5). Precedence to be decided. |
 
 ### Not planned
@@ -187,7 +148,7 @@ Not decided. Needs a real user need before it moves up.
 | ID | Question | Decision (2026-10-17) | Other options considered |
 |---|---|---|---|
 | D1 | Does v1 include any Phase 2 items? | **Yes**: keep unsaved edits across restarts (IDEA-12) and copy as `curl` (IDEA-4). | Only one of them; nothing extra. |
-| D2 | One request at a time, or tabs? | **Single editor + quick open (Ctrl+P) + history.** Revisit tabs (IDEA-31) only if people keep switching back and forth. | Browser-style tabs; both. |
+| D2 | One request at a time, or tabs? | **Single editor + quick open (Ctrl+P) + history.** Revisit tabs (IDEA-31) only if people keep switching back and forth. *Revisited by D31: tabs (2026-10-18).* | Browser-style tabs; both. |
 | D3 | How are checks written? | **JavaScript test scripts** run by an embedded, sandboxed engine. | Declarative TOML checks (first, or only); Rhai/Lua. |
 | D4 | How are workflows stored? | **One TOML file per workflow that references request files**, with captures and checks per step. | Steps embedded in request files; self-contained workflow files. |
 | D5 | What does the CLI ship as? | **A separate `tortuga-cli` binary** without GUI libraries. | Sub-command of the app; both. |
@@ -214,6 +175,15 @@ Not decided. Needs a real user need before it moves up.
 
 | D22 | Where are custom CA certificates configured (R-HTTP-16)? | **In the app's Settings**, as local data: file paths differ per machine (2026-10-18). | Per project, shared through git; both. |
 | D23 | Can variables be reordered (IDEA-13)? | **No: they stay sorted by name**, which keeps `tortuga.toml` and environment files stable in diffs (R-GIT-3); environments and servers can be reordered (2026-10-18). | Store variables as an ordered list (a file format change). |
+| D24 | Which JavaScript engine runs scripts (D3)? | **Boa**: pure Rust, works in the web build (D6), sandboxed (2026-10-18). | QuickJS via `rquickjs` (faster, C code, no web build). |
+| D25 | Do pre-request scripts come with test scripts? | **Yes, in Phase 3**, same engine and API (2026-10-18). | Tests only, pre-request later. |
+| D26 | How long do captured and script-set values live? | **Until the app closes**, per project, never on disk; workflow runs start clean (2026-10-18). | Kept locally across restarts; written to the environment file. |
+| D27 | Are data-driven runs part of Phase 3? | **Yes** (2026-10-18). | Later. |
+| D28 | What does the test API look like? | **Jest-like**: `test(name, fn)` and `expect(x).toBe(y)` with `.not` (2026-10-18). | Chai-style `pm.expect(x).to.equal(y)` (Postman); declarative checks only. |
+| D29 | Where are workflow files? | **`workflows/` in the project**, like `environments/`; not shown as a folder of requests (2026-10-18). | Anywhere in the tree with a `.workflow.toml` suffix. |
+| D30 | How does CI pass secrets to `tortuga-cli`? | **Environment variables `TORTUGA_VAR_<name>`**, plus `--var name=value` (2026-10-18). | A secrets file; only `--var`. |
+| D31 | Tabs after all (revisits D2)? How do they not pile up? | **Tabs with a preview tab** (R-COL-13): single click previews, double click or an edit keeps the tab; sending does not keep it, since history has the response. Only requests open in tabs. No automatic closing of tabs; bulk close, a list of all tabs and Ctrl+Tab instead (2026-10-18). | Tab limit that closes the least recently used saved tab; tabs per project; an "open requests" list in the sidebar. |
+| D32 | How are tabs of several projects told apart? | **Automatic groups per project** (R-COL-14): a coloured chip per project, collapsible, shown only with two or more projects; colours worked out from the project name (2026-10-18). | Colour stripe only; a project switcher above the tabs; groups only in the tab list; colours chosen by the user. |
 
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
@@ -226,4 +196,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-5` · `R-COL-13` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-42` · `D24`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-5` · `R-COL-15` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-44` · `D33` · `R-TEST-6` · `R-FLOW-5` · `R-CLI-4`.

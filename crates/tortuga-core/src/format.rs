@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody};
+use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts};
 
 /// Format version written by this build (R-GIT-7).
 pub const FORMAT_VERSION: u32 = 1;
@@ -154,6 +154,12 @@ struct RequestFile {
     auth: Option<Auth>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     body: Option<BodyFile>,
+    /// Variable name → where to take it from in the response (R-TEST-4).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    capture: BTreeMap<String, String>,
+    /// Pre-request and test scripts (R-TEST-1, R-TEST-2).
+    #[serde(default, skip_serializing_if = "Scripts::is_empty")]
+    scripts: Scripts,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -193,6 +199,8 @@ pub fn parse_request(text: &str, stem: &str) -> Result<(Request, Option<i64>), S
     // Values saved for the URL's path variables; stale ones are dropped (R-HTTP-10).
     request.path_vars = file.path_vars;
     request.sync_path_variables();
+    request.capture = file.capture;
+    request.scripts = file.scripts;
     request.body = match file.body {
         None => RequestBody::None,
         Some(BodyFile {
@@ -266,6 +274,8 @@ pub fn write_request(request: &Request, seq: Option<i64>) -> String {
         headers: request.headers.clone(),
         auth: request.auth.clone(),
         body,
+        capture: request.capture.clone(),
+        scripts: request.scripts.clone(),
     })
 }
 
@@ -283,6 +293,20 @@ pub fn parse_folder(text: &str) -> Result<FolderMeta, String> {
 
 pub fn write_folder(meta: &FolderMeta) -> String {
     to_toml(meta)
+}
+
+/// Reads a workflow file (R-FLOW-1); `id` is its file stem.
+pub fn parse_workflow(text: &str, id: &str) -> Result<crate::workflow::Workflow, String> {
+    let mut workflow: crate::workflow::Workflow = from_toml(text)?;
+    id.clone_into(&mut workflow.id);
+    if workflow.name.trim().is_empty() {
+        id.clone_into(&mut workflow.name);
+    }
+    Ok(workflow)
+}
+
+pub fn write_workflow(workflow: &crate::workflow::Workflow) -> String {
+    to_toml(workflow)
 }
 
 pub fn parse_environment(text: &str, id: &str) -> Result<Environment, String> {
@@ -410,6 +434,40 @@ tenant = "acme"
             "name = \"Plain\"\n",
             "no defaults: nothing extra written"
         );
+    }
+
+    /// R-TEST-1, R-TEST-2, R-TEST-4: scripts and captures in the request file.
+    #[test]
+    fn scripts_and_captures_in_the_request_file() {
+        let mut r = Request::new(HttpMethod::Post, "/login");
+        r.name = "Log in".into();
+        r.capture.insert("token".into(), "$.access_token".into());
+        r.capture.insert("trace".into(), "header:X-Trace".into());
+        r.scripts.pre_request = "vars.set(\"now\", Date.now());\n".into();
+        r.scripts.tests = "test(\"ok\", () => expect(res.status).toBe(200));\n".into();
+        let text = write_request(&r, Some(1));
+        assert_eq!(
+            text,
+            r#"name = "Log in"
+seq = 1
+method = "POST"
+url = "/login"
+
+[capture]
+token = "$.access_token"
+trace = "header:X-Trace"
+
+[scripts]
+pre_request = """
+vars.set("now", Date.now());
+"""
+tests = """
+test("ok", () => expect(res.status).toBe(200));
+"""
+"#
+        );
+        let (back, _) = parse_request(&text, "x").expect("parse");
+        assert_eq!(back, r);
     }
 
     /// R-HTTP-15, R-GIT-3: multipart bodies are readable, stable and round-trip.

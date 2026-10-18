@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn workspace_state_round_trips_and_old_files_load() {
         use tortuga_core::workspace::ProjectRef;
-        use tortuga_ui_egui::Workspace;
+        use tortuga_ui_egui::{SavedTab, SavedTabs, Workspace};
 
         let state = LocalState {
             workspaces: vec![
@@ -304,6 +304,23 @@ mod tests {
                     projects: vec![ProjectRef::new("/repo/api")],
                     project_environments: BTreeMap::from([("/repo/api".into(), "dev".into())]),
                     selection: Some(("/repo/api".into(), "users/list.toml".into())),
+                    // R-COL-13, R-COL-14: the scratch tab, a kept tab and the preview tab.
+                    tabs: SavedTabs {
+                        open: vec![
+                            SavedTab::default(),
+                            SavedTab {
+                                root: Some("/repo/api".into()),
+                                path: Some("users/list.toml".into()),
+                                preview: false,
+                            },
+                            SavedTab {
+                                root: Some("/repo/api".into()),
+                                path: Some("users/get.toml".into()),
+                                preview: true,
+                            },
+                        ],
+                        collapsed: vec!["/repo/api".into()],
+                    },
                     ..Workspace::default()
                 },
                 Workspace {
