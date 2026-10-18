@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use egui::text::{CCursor, CCursorRange};
-use egui::{Atom, Button, Key, RichText, ScrollArea, Sides, TextEdit, Ui};
+use egui::{Atom, AtomExt as _, Button, Key, RichText, ScrollArea, Sides, TextEdit, Ui};
 use tortuga_core::collection::Direction;
 use tortuga_core::git::{FileStatus, GitStatus};
 use tortuga_core::workspace::ProjectRef;
@@ -40,6 +40,8 @@ pub enum SidebarAction {
     EditEnvironments(PathBuf),
     /// Default headers and auth of a collection (R-COL-4).
     EditDefaults(PathBuf),
+    /// Default headers, auth and variables of a folder (R-COL-11).
+    EditFolderDefaults(ItemKey),
     /// Empty the collection's cookie jar (R-CK-3).
     ClearCookies(PathBuf),
     /// Open the collection folder outside the app (R-GIT-13).
@@ -248,7 +250,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
     } else {
         let mut atoms = vec![
             Atom::from(twisty(collapsed)),
-            Atom::from(theme::semibold(c.name())),
+            Atom::from(theme::semibold(c.name())).atom_shrink(true),
         ];
         if read_only {
             atoms.push(Atom::from(RichText::new("read-only").small().weak()));
@@ -550,7 +552,8 @@ fn tree_item(
             }
             _ => Atom::from(twisty(collapsed)),
         }];
-        atoms.push(Atom::from(name.clone()));
+        // A long name gives way, not the method or the twisty.
+        atoms.push(Atom::from(name.clone()).atom_shrink(true));
         atoms.push(Atom::grow());
         let folder_error = match item {
             Item::Folder(f) => f.error.as_ref(),
@@ -772,6 +775,13 @@ fn item_menu(ui: &mut Ui, key: &ItemKey, is_folder: bool) -> Option<MenuChoice> 
                 root: key.root.clone(),
                 parent: key.path.clone(),
             });
+        }
+        if ui
+            .button("Folder defaults…")
+            .on_hover_text("Headers, auth and variables every request in this folder inherits")
+            .clicked()
+        {
+            choice = act(SidebarAction::EditFolderDefaults(key.clone()));
         }
     }
     if ui.button("Rename").clicked() {

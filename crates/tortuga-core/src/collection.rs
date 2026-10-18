@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::format::{self, Environment, FORMAT_VERSION, FolderMeta, Manifest};
+use crate::format::{self, Environment, FORMAT_VERSION, FolderDefaults, FolderMeta, Manifest};
 use crate::model::Request;
 use crate::slug;
 use crate::storage::Storage;
@@ -50,6 +50,8 @@ pub struct Folder {
     pub name: String,
     pub seq: Option<i64>,
     pub items: Vec<Item>,
+    /// Headers, auth and variables its requests inherit (R-COL-11).
+    pub defaults: FolderDefaults,
     /// Set when `_folder.toml` could not be read.
     pub error: Option<String>,
 }
@@ -201,10 +203,11 @@ impl Collection {
     pub fn new_folder(&self, storage: &dyn Storage, parent: &Path, name: &str) -> Result<PathBuf> {
         self.ensure_writable()?;
         let path = self.free_dir_path(storage, parent, name, None);
-        let meta = FolderMeta {
-            name: Some(name.trim().to_owned()),
-            seq: Some(self.next_seq(parent)),
-        };
+        let meta = FolderMeta::new(
+            name.trim().to_owned(),
+            Some(self.next_seq(parent)),
+            &FolderDefaults::default(),
+        );
         write(
             storage,
             &self.root.join(&path).join(FOLDER_FILE),
@@ -254,16 +257,59 @@ impl Collection {
             rename(storage, &self.root.join(path), &self.root.join(&new_path))?;
             new_path
         };
-        let meta = FolderMeta {
-            name: Some(name.trim().to_owned()),
-            seq: folder.seq,
-        };
+        let meta = FolderMeta::new(name.trim().to_owned(), folder.seq, &folder.defaults);
         write_if_changed(
             storage,
             &self.root.join(&new_path).join(FOLDER_FILE),
             &format::write_folder(&meta),
         )?;
         Ok(new_path)
+    }
+
+    /// Saves the headers, auth and variables a folder's requests inherit (R-COL-11).
+    pub fn save_folder_defaults(
+        &self,
+        storage: &dyn Storage,
+        path: &Path,
+        defaults: &FolderDefaults,
+    ) -> Result<()> {
+        self.ensure_writable()?;
+        let Some(Item::Folder(folder)) = self.find(path) else {
+            return Err(Error::NotFound(path.to_owned()));
+        };
+        let meta = FolderMeta::new(folder.name.clone(), folder.seq, defaults);
+        write_if_changed(
+            storage,
+            &self.root.join(path).join(FOLDER_FILE),
+            &format::write_folder(&meta),
+        )
+    }
+
+    /// The folders `path` is in, outermost first (R-COL-11).
+    pub fn folders_of(&self, path: &Path) -> Vec<&Folder> {
+        let mut out = Vec::new();
+        let mut items = &self.items;
+        for dir in path
+            .parent()
+            .into_iter()
+            .flat_map(Path::ancestors)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            let Some(folder) = items.iter().find_map(|i| match i {
+                Item::Folder(f) if f.path == dir => Some(f),
+                _ => None,
+            }) else {
+                break;
+            };
+            out.push(folder);
+            items = &folder.items;
+        }
+        out
     }
 
     /// Copies a request or folder (with everything in it) right after the original.
@@ -289,13 +335,10 @@ impl Collection {
                 )?;
                 Ok(new_path)
             }
-            Item::Folder(_) => {
+            Item::Folder(folder) => {
                 let new_path = self.free_dir_path(storage, &parent, &name, None);
                 copy_dir(storage, &self.root.join(path), &self.root.join(&new_path))?;
-                let meta = FolderMeta {
-                    name: Some(name),
-                    seq,
-                };
+                let meta = FolderMeta::new(name, seq, &folder.defaults);
                 write(
                     storage,
                     &self.root.join(&new_path).join(FOLDER_FILE),
@@ -481,10 +524,7 @@ impl Collection {
                 &format::write_request(&r.request, Some(seq)),
             ),
             Item::Folder(f) => {
-                let meta = FolderMeta {
-                    name: Some(f.name.clone()),
-                    seq: Some(seq),
-                };
+                let meta = FolderMeta::new(f.name.clone(), Some(seq), &f.defaults);
                 write_if_changed(
                     storage,
                     &self.root.join(path).join(FOLDER_FILE),
@@ -565,7 +605,7 @@ fn load_dir(storage: &dyn Storage, root: &Path, rel: &Path) -> Result<Vec<Item>>
         }
         let path = rel.join(name);
         if entry.is_dir {
-            items.push(Item::Folder(load_folder(storage, root, path)?));
+            items.extend(load_folder(storage, root, path)?.map(Item::Folder));
         } else if let Some(stem) = name.strip_suffix(".toml") {
             let item = match read(storage, &root.join(&path)).and_then(|text| {
                 format::parse_request(&text, stem).map_err(|message| Error::InvalidFile {
@@ -590,9 +630,12 @@ fn load_dir(storage: &dyn Storage, root: &Path, rel: &Path) -> Result<Vec<Item>>
     Ok(items)
 }
 
-fn load_folder(storage: &dyn Storage, root: &Path, path: PathBuf) -> Result<Folder> {
+/// A directory as a folder. `None` for a directory with neither `_folder.toml` nor
+/// requests (at any depth), e.g. files to upload kept in the project (R-HTTP-15).
+fn load_folder(storage: &dyn Storage, root: &Path, path: PathBuf) -> Result<Option<Folder>> {
     let meta_path = root.join(&path).join(FOLDER_FILE);
-    let (meta, error) = if storage.exists(&meta_path) {
+    let has_meta = storage.exists(&meta_path);
+    let (meta, error) = if has_meta {
         match read(storage, &meta_path).map(|t| format::parse_folder(&t)) {
             Ok(Ok(meta)) => (meta, None),
             Ok(Err(message)) => (
@@ -605,17 +648,22 @@ fn load_folder(storage: &dyn Storage, root: &Path, path: PathBuf) -> Result<Fold
         (FolderMeta::default(), None)
     };
     let items = load_dir(storage, root, &path)?;
+    if !has_meta && items.is_empty() {
+        return Ok(None);
+    }
+    let defaults = meta.defaults();
     let name = meta
         .name
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| file_stem(&path));
-    Ok(Folder {
+    Ok(Some(Folder {
         path,
         name,
         seq: meta.seq,
         items,
+        defaults,
         error,
-    })
+    }))
 }
 
 fn load_environments(

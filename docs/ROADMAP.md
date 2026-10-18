@@ -64,6 +64,7 @@ A requirement moves to [FEATURES.md](FEATURES.md) once it is implemented and ver
 | **M6.5: Workspaces & projects** | Group projects (today's collections) into workspaces, also when several share a repo. Built before M7 (D15). | R-WS-1 to 7 | Done (see FEATURES.md) |
 | **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | Built; verified on Linux. Installers for Windows and macOS are built by the release workflow and still need a check on those OSes (see FEATURES.md, [RELEASING.md](RELEASING.md)) |
 | **UI: egui** | Move the UI from Dioxus to egui (`tortuga-ui-egui`) with a modern look. | — | Done (2026-10-17) |
+| **M8: Daily driver** | Phase 2, first seven items: paste curl, quick open and command palette, search and filter responses, history, preview, folder defaults, multipart bodies. | R-HTTP-11 to 15 · R-COL-9 to 11 · R-HIST-1 to 3 | Done (see FEATURES.md) |
 | **v1 extras** | Decided in D1, plus path variables (requested 2026-10-17). | R-COL-8 · R-HTTP-9 · R-HTTP-10 | Done (see FEATURES.md) |
 
 Since M4, credentials belong in secret variables (R-VAR-3). The app warns where a credential is typed as plain text,
@@ -92,13 +93,13 @@ Small features with a big effect on S1–S4. Proposed order (cheapest high-value
 
 | Item | Idea | Scenario |
 |---|---|---|
-| Paste a `curl` command into the URL bar to fill the request (first import, D7) | IDEA-28 | S1 |
-| Quick open and command palette (Ctrl+P / Ctrl+K): the way to move between requests (D2) | IDEA-27 | S1, S2 |
-| Search and filter in responses (text search; JSON path filter) | IDEA-30 | S3 |
-| Request history per collection (local only) | IDEA-5 | S3 |
-| Preview the resolved request, secrets masked | IDEA-7 | S3 |
-| Folder-level defaults | IDEA-1 | S2 |
-| `multipart/form-data` bodies and file upload | IDEA-2 | S1 |
+| Paste a `curl` command into the URL bar to fill the request (first import, D7) | IDEA-28 → R-HTTP-11 | S1 |
+| Quick open and command palette (Ctrl+P / Ctrl+K): the way to move between requests (D2) | IDEA-27 → R-COL-9, 10 | S1, S2 |
+| Search and filter in responses (text search; JSON path filter) | IDEA-30 → R-HTTP-12, 13 | S3 |
+| Request history per collection (local only) | IDEA-5 → R-HIST-1 to 3 | S3 |
+| Preview the resolved request, secrets masked | IDEA-7 → R-HTTP-14 | S3 |
+| Folder-level defaults | IDEA-1 → R-COL-11 | S2 |
+| `multipart/form-data` bodies and file upload | IDEA-2 → R-HTTP-15 | S1 |
 | Custom CA certificates | IDEA-3 | S2 |
 | Drag and drop in the tree; reorder environments | IDEA-9, IDEA-13 | — |
 
@@ -186,6 +187,19 @@ added.
 | R-HTTP-8 | Settings: follow redirects (on/off), verify TLS certificates (on/off, with a visible warning when off), proxy from system settings. |
 | R-HTTP-9 | Copy a request as a `curl` command with variables resolved. Secret values are masked unless the user confirms including them. *(D1; was IDEA-4)* |
 | R-HTTP-10 | Path variables: a URL path segment starting with `:` (e.g. `/users/:id`) is a path variable. Its value is edited in a table that follows the URL, may contain `{{variables}}`, is URL-encoded when sent, and is saved in the request file. Sending stops with a message naming any path variable without a value. Only the path counts, so `host:8080` is not a variable. |
+| R-HTTP-11 | **Paste a `curl` command** into the URL field to fill the current request: method, URL and query params, headers, body (JSON, form or text), Basic auth (`-u`) and timeout (`-m`). It becomes unsaved edits (Revert undoes it, D19). If the URL starts with a server's base URL in the active environment, that server is chosen and the URL keeps only the path. Options Tortuga can't use (e.g. `-F`, `-k`) are listed in a notice. Bash/zsh quoting and line continuations are understood (what browsers' "Copy as cURL (bash)" produces). *(IDEA-28, D7)* |
+| R-HTTP-12 | **Search in the response body** (Ctrl+F while the response is shown, or the search field above it): matches are highlighted, "n of m" is shown, Enter / Shift+Enter go to the next / previous match and scroll to it. Case-insensitive. Searches the shown text (the first 2 MB of big bodies). *(IDEA-30)* |
+| R-HTTP-13 | **Filter JSON responses** with a JSONPath expression (D18): `$`, `.name`, `['name']`, `[n]` (negative counts from the end), `[a:b]`, `[*]`, `..name`, `[a,b]`, and filters `[?(@.field)]` / `[?(@.field <op> value)]` with `== != < <= > >=`. The matches are shown pretty-printed; an invalid expression is explained. The filter is kept per request while the app runs, so a new response is filtered the same way. Works on bodies of any size: it runs off the UI thread. *(IDEA-30)* |
+| R-HTTP-14 | **Preview** tab in the request editor: the request exactly as it will be sent (method, full URL, every header including inherited ones, Content-Type and Authorization, body), with variables, server and path variables resolved and secret values masked as `<secret:name>`. Undefined variables are named instead. Updates while typing. *(IDEA-7)* |
+| R-HTTP-15 | **`multipart/form-data` bodies**: a list of parts, each with a name and either a text value or a file to upload; parts can be switched off; names, values and file paths may use `{{variables}}`. A file inside the project folder is saved relative to it, so teammates can send the request too; a file elsewhere keeps its full path and is marked as working only on this computer (D21). The file is read when sending; a missing file stops the send with a message naming it. A part can set its own content type. A directory with files to upload but no requests (and no `_folder.toml`) is not shown as a folder. "Copy as curl" writes `-F`/`--form-string`; pasting curl reads them (R-HTTP-9, R-HTTP-11). *(IDEA-2)* |
+
+#### 6.2.1 History
+
+| ID | Requirement |
+|---|---|
+| R-HIST-1 | Every sent request is kept in a **local history** (§6.7) per project, and one for the scratch request: when it was sent, the environment, the request as it was in the editor, and the response (status, time, size, headers, body). The last 200 entries per project are kept; bodies over 1 MB are cut to 1 MB. Like unsaved edits, history may hold credentials typed into a request, so it is readable only by the user. *(IDEA-5)* |
+| R-HIST-2 | The sidebar has a **History** view next to Projects (D20): the workspace's entries, newest first, grouped by day, each with method, name or URL, status and time; a filter field searches them. Choosing an entry opens it: its request is selected (or the scratch request, if it is gone) and the response panel shows that past response, marked with its time. "Restore request" puts that version of the request into the editor as unsaved edits. *(IDEA-5)* |
+| R-HIST-3 | History can be cleared per project, or all at once. *(IDEA-5)* |
 
 ### 6.3 Cookies
 
@@ -208,6 +222,9 @@ added.
 | R-COL-6 | Unsaved request edits are clearly marked. Saving writes to disk; sending a request does not save it. |
 | R-COL-7 | Requests can be sent ad hoc without being saved to a collection. |
 | R-COL-8 | Unsaved request edits survive closing and reopening the app (kept as local data, §6.7), or the app warns before closing. *(D1; was IDEA-12)* |
+| R-COL-9 | **Quick open** (Ctrl+P): a search box over every request in the workspace (name, folder path, project, method, URL). Words match in any order and fuzzily; recently opened requests come first. Arrow keys move, Enter opens, Escape closes. *(IDEA-27, D2)* |
+| R-COL-10 | **Command palette** (Ctrl+K, or Ctrl+Shift+P): every frequent action by name, with its shortcut: send, save, revert, copy as curl, new request in the current folder, switch environment, switch workspace, open environments, project defaults, settings, history, add project. Typing filters like quick open. *(IDEA-27)* |
+| R-COL-11 | **Folder defaults**: a folder can define headers, auth and variables (in its `_folder.toml`), edited from the folder's menu. A request inherits from its folders, nearest first, then from the project: its own header replaces an inherited one with the same name; its auth is its own, else the nearest folder's, else the project's. Variables: local secret, then the active environment, then folder variables (nearest first), then project variables. The editor shows where an inherited header or auth comes from. *(IDEA-1; extends R-COL-4, R-VAR-4)* |
 
 #### 6.4.1 Workspaces & projects
 
@@ -362,13 +379,13 @@ These were discussed and agreed as worth doing, but are not needed for v1.
 
 | ID | Idea | Notes |
 |---|---|---|
-| IDEA-1 | Folder-level defaults (headers, auth, variables) inherited by the requests in that folder. | Extends R-COL-4. Would use an optional `_folder.toml` per directory. |
-| IDEA-2 | `multipart/form-data` bodies, with text fields and file uploads. | Extends R-HTTP-4. |
+| IDEA-1 | Folder-level defaults (headers, auth, variables) inherited by the requests in that folder. | **Moved to M8 as R-COL-11.** |
+| IDEA-2 | `multipart/form-data` bodies, with text fields and file uploads. | **Moved to M8 as R-HTTP-15.** |
 | IDEA-3 | Custom CA certificates (e.g. internal APIs signed by a company CA). | |
 | IDEA-4 | Copy a request as a `curl` command. Variables resolved; warn before copying if it contains a secret. | **Moved to v1 as R-HTTP-9** (D1). |
-| IDEA-5 | Local request history per collection: last 200 requests and responses, with response bodies over 1 MB truncated. Browse, re-open, clear. | Local data only. |
+| IDEA-5 | Local request history per collection: last 200 requests and responses, with response bodies over 1 MB truncated. Browse, re-open, clear. | **Moved to M8 as R-HIST-1 to 3.** |
 | IDEA-6 | Cookie viewer: list cookies in the jar and delete individual ones. | Extends R-CK-3. |
-| IDEA-7 | Preview the fully resolved request, with secret values masked. | |
+| IDEA-7 | Preview the fully resolved request, with secret values masked. | **Moved to M8 as R-HTTP-14.** |
 | IDEA-8 | "Compare" option when a file changed on disk while it had unsaved edits. | Extends R-GIT-11. |
 | IDEA-9 | Move requests and folders by drag and drop. | R-COL-2 covers moving through menus. |
 | IDEA-10 | Import Postman collections (v2.1 JSON). | Once our own format is stable. |
@@ -391,10 +408,10 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-24 | Command-line runner that executes a collection, e.g. in CI. | The engine crate is already UI-independent. |
 | IDEA-25 | Other protocols: GraphQL tooling, WebSockets, SSE, gRPC. | |
 | IDEA-26 | Test workflows: an ordered list of requests with captured values (e.g. token, created id) and checks, stored as a file in the collection, runnable in the app and from the CLI runner. | Builds on IDEA-23 and IDEA-24. See Phase 3, decisions D3/D4. |
-| IDEA-27 | Quick open and command palette (Ctrl+P / Ctrl+K): jump to any request, environment or action by typing. | Phase 2. |
-| IDEA-28 | Paste a `curl` command into the URL bar to fill method, URL, headers and body. | Counterpart of IDEA-4. Phase 2. |
+| IDEA-27 | Quick open and command palette (Ctrl+P / Ctrl+K): jump to any request, environment or action by typing. | **Moved to M8 as R-COL-9, R-COL-10.** |
+| IDEA-28 | Paste a `curl` command into the URL bar to fill method, URL, headers and body. | **Moved to M8 as R-HTTP-11.** |
 | IDEA-29 | Import an OpenAPI description as a collection (servers, folders per tag, example bodies). | Phase 4. |
-| IDEA-30 | Search in responses, and filter JSON responses with a path expression. | Phase 2. |
+| IDEA-30 | Search in responses, and filter JSON responses with a path expression. | **Moved to M8 as R-HTTP-12, R-HTTP-13.** |
 | IDEA-31 | Several requests open at once in tabs. | Deferred by decision D2 (single editor + quick open + history first). |
 | IDEA-32 | **Workspaces**: a named set of projects that are open together. Switch workspace from the title bar; each one remembers its open projects, active environments and selection. A default workspace always exists, so there is still no start screen (P1). Quick open (IDEA-27) searches every project in the workspace. | **Moved to M6.5 as R-WS-1** (D15). Replaces the flat list of open collections (R-COL-5). Naming D12, storage D13. Proposed 2026-10-17. |
 | IDEA-33 | **Projects**: what is called a collection today. A directory with `tortuga.toml`, anywhere: in its own git repo, in a repo shared with other projects, or outside git. | **Moved to M6.5 as R-WS-2** (D15). No file format change. Naming D12. |
@@ -436,7 +453,13 @@ Not decided. Needs a real user need before it moves up.
 | D16 | How are the installers built (R-NF-4)? | **cargo-packager**: one tool and one config for `.msi`, `.dmg`, `.deb` and `.AppImage`, run by a release workflow on each OS (2026-10-17). | cargo-dist (no `.dmg`, `.deb` or `.AppImage`); one tool per format (cargo-wix, cargo-bundle, cargo-deb, appimagetool). |
 | D17 | Are the v1 installers signed? | **Open.** Recommended: release v1 unsigned with instructions to open it anyway, and sign later (IDEA-14). | Sign from the first release (Apple Developer Program, about USD 99 a year, plus a Windows code-signing certificate); sign only the macOS build. |
 
-New questions go here as `D18`, `D19`, … with options, until they are decided.
+| D18 | Which syntax does the JSON response filter use (R-HTTP-13)? | **A JSONPath subset**, implemented in `tortuga-core` (2026-10-17). | jq-style (`.items[].name`); text search only. |
+| D19 | What does pasting a `curl` command into a saved request do (R-HTTP-11)? | **It fills the current request** as unsaved edits; Revert undoes it (2026-10-17). | Always fill the scratch request. |
+| D20 | Where is history shown (R-HIST-2)? | **A History view in the sidebar**, next to Projects; an entry opens its request with that past response (2026-10-17). | Past responses per request in the response panel only; a separate history dialog. |
+
+| D21 | How does a request file refer to a file to upload (R-HTTP-15)? | **Relative to the project folder when the file is inside it**, otherwise the full path, marked as working only on this computer (2026-10-17). | Always the full path; copy the file into the project. |
+
+New questions go here as `D22`, `D23`, … with options, until they are decided.
 
 ## 9. How to change this roadmap
 

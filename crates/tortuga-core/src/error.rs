@@ -74,6 +74,10 @@ pub enum Error {
     #[error("could not access secret values: {0}")]
     SecretStore(String),
 
+    /// R-HTTP-15
+    #[error("could not upload the file {}: {reason}", .path.display())]
+    UploadFile { path: PathBuf, reason: String },
+
     /// R-SRV-4
     #[error("server \"{server}\" has no URL in {environment}")]
     ServerUrlMissing { server: String, environment: String },

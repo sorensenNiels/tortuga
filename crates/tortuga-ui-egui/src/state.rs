@@ -89,6 +89,14 @@ impl fmt::Debug for AppState {
     }
 }
 
+/// Lets the client upload files where the host can read them (R-HTTP-15).
+fn with_files(client: Client, host: &dyn Host) -> Client {
+    match host.file_reader() {
+        Some(files) => client.with_file_reader(files),
+        None => client,
+    }
+}
+
 impl AppState {
     /// Loads saved settings and reopens the collections that were open last time.
     pub fn new(host: Box<dyn Host>) -> Self {
@@ -101,6 +109,7 @@ impl AppState {
             problems.push(e.to_string());
             Client::default()
         });
+        let client = with_files(client, host.as_ref());
         let mut local = host.load_local().unwrap_or_else(|e| {
             problems.push(e);
             LocalState::default()
@@ -134,7 +143,8 @@ impl AppState {
 
     /// Applies new settings: rebuilds the client and saves them.
     pub fn apply_settings(&mut self, settings: &ClientSettings) -> Result<(), String> {
-        self.client = Client::new(settings.clone()).map_err(|e| e.to_string())?;
+        let client = Client::new(settings.clone()).map_err(|e| e.to_string())?;
+        self.client = with_files(client, self.host.as_ref());
         self.settings = settings.clone();
         self.host.save_settings(settings)
     }
@@ -508,9 +518,22 @@ impl AppState {
 
     /// Servers and variables for requests of the collection at `root`; empty for scratch requests.
     pub fn context(&self, root: Option<&Path>) -> vars::Context {
-        let Some(root) = root else {
-            return vars::Context::default();
-        };
+        match root {
+            Some(root) => self.context_at(root, None),
+            None => vars::Context::default(),
+        }
+    }
+
+    /// The context of a request: the project's, with what its folders define (R-COL-11).
+    /// `None` is the scratch request.
+    pub fn request_context(&self, key: Option<&ItemKey>) -> vars::Context {
+        match key {
+            Some(key) => self.context_at(&key.root, Some(&key.path)),
+            None => vars::Context::default(),
+        }
+    }
+
+    fn context_at(&self, root: &Path, path: Option<&Path>) -> vars::Context {
         let env = self.active_environment(root);
         let secrets = self
             .secrets
@@ -518,7 +541,7 @@ impl AppState {
             .map(|s| s.for_environment(env.as_deref()))
             .unwrap_or_default();
         self.collection(root)
-            .map(|c| vars::Context::for_collection(c, env.as_deref()).with_secrets(secrets))
+            .map(|c| vars::Context::for_request(c, env.as_deref(), path).with_secrets(secrets))
             .unwrap_or_default()
     }
 

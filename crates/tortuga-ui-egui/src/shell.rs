@@ -1,8 +1,12 @@
 //! Top-level layout and the request workflow: selection, unsaved drafts,
 //! sending, saving, and the dialogs.
 
+mod commands;
+mod history;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{
@@ -13,18 +17,25 @@ use futures_util::future::{AbortHandle, abortable};
 use tortuga_core::{Item, Request, vars};
 
 use crate::components::{
-    AddProjects, AddProjectsDialog, ConfirmDialog, CopyCurlDialog, CreateProjectDialog,
-    DefaultsDialog, DialogResult, EditorAction, EditorContext, EditorState, EnvironmentsDialog,
-    MoveDialog, NameDialog, Outcome, ResponseAction, ResponseState, SaveToCollectionDialog,
-    SettingsDialog, SidebarAction, SidebarState, request_editor, response_panel, sidebar,
+    AddProjects, AddProjectsDialog, ClearHistory, ConfirmDialog, CopyCurlDialog,
+    CreateProjectDialog, DefaultsDialog, DialogResult, EditorAction, EditorContext, EditorState,
+    EnvironmentsDialog, Filtered, MoveDialog, NameDialog, Outcome, Palette, PanelContext,
+    ResponseAction, ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog,
+    SidebarAction, SidebarState, TextBody, request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
 use crate::host::{DraftConflict, Host, SavedDraft, SavedDrafts};
 use crate::state::{AppState, ItemKey};
 use crate::theme;
+use history::{HistoryState, SidebarView};
 
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SEND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
+const FIND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::F);
+const QUICK_OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
+const COMMANDS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::K);
+const COMMANDS_TOO: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::P);
 
 #[derive(Debug)]
 enum Modal {
@@ -40,6 +51,9 @@ enum Modal {
     RenameWorkspace(NameDialog),
     RemoveWorkspace(ConfirmDialog),
     CopyCurl(CopyCurlDialog),
+    /// Quick open and the command palette (R-COL-9, R-COL-10).
+    Palette(Palette),
+    ClearHistory(ClearHistory, ConfirmDialog),
 }
 
 /// What the user picked in the workspace menu (R-WS-1, R-WS-5).
@@ -68,6 +82,25 @@ struct InFlight {
 struct Finished {
     id: u64,
     outcome: Outcome,
+    /// What to keep in the history (R-HIST-1); `None` if it was never sent.
+    entry: Option<tortuga_core::history::Entry>,
+}
+
+/// The JSON filter being applied to the shown response (R-HTTP-13).
+#[derive(Debug)]
+struct FilterJob {
+    view: Arc<ResponseView>,
+    expr: String,
+    id: u64,
+    /// `None` while it is being worked out.
+    result: Option<Result<TextBody, String>>,
+    abort: AbortHandle,
+}
+
+#[derive(Debug)]
+struct FilterDone {
+    id: u64,
+    result: Result<TextBody, String>,
 }
 
 /// The whole Tortuga user interface. Create it once, then call [`TortugaUi::ui`] every frame.
@@ -102,6 +135,15 @@ pub struct TortugaUi {
     /// Saved versions that restored edits started from, for projects not open yet:
     /// checked against the disk once their project opens (R-COL-8, R-GIT-11).
     unchecked_bases: HashMap<ItemKey, Option<Request>>,
+    /// Recently opened requests, newest first, for quick open (R-COL-9).
+    recent: Vec<ItemKey>,
+    /// The JSON filter typed for each request, kept while the app runs (R-HTTP-13).
+    filters: HashMap<Selection, String>,
+    filter_job: Option<FilterJob>,
+    filter_tx: Sender<FilterDone>,
+    filter_rx: Receiver<FilterDone>,
+    sidebar_view: SidebarView,
+    history: HistoryState,
 }
 
 /// How often unsaved edits are written to local data, at most (R-COL-8).
@@ -126,6 +168,7 @@ impl TortugaUi {
     pub fn new(host: Box<dyn Host>) -> Self {
         let current = Request::default();
         let (finished_tx, finished_rx) = channel();
+        let (filter_tx, filter_rx) = channel();
         let mut ui = Self {
             state: AppState::new(host),
             modal: None,
@@ -147,6 +190,13 @@ impl TortugaUi {
             drafts_saved: SavedDrafts::default(),
             drafts_checked_at: 0.0,
             unchecked_bases: HashMap::new(),
+            recent: Vec::new(),
+            filters: HashMap::new(),
+            filter_job: None,
+            filter_tx,
+            filter_rx,
+            sidebar_view: SidebarView::default(),
+            history: HistoryState::default(),
         };
         ui.restore_drafts();
         // Back where the user left off (R-WS-1).
@@ -168,14 +218,7 @@ impl TortugaUi {
             self.on_disk_change(&root);
         }
         if self.modal.is_none() {
-            let (save, send) =
-                ui.input_mut(|i| (i.consume_shortcut(&SAVE), i.consume_shortcut(&SEND)));
-            if save {
-                self.save();
-            }
-            if send && self.sending().is_none() {
-                self.send(ui.ctx());
-            }
+            self.shortcuts(ui);
         }
 
         let p = theme::palette(ui);
@@ -223,6 +266,22 @@ impl TortugaUi {
             });
         }
 
+        self.left_panel(ui);
+
+        CentralPanel::default()
+            .frame(
+                Frame::new()
+                    .fill(p.bg)
+                    .inner_margin(Margin::symmetric(20, 16)),
+            )
+            .show(ui, |ui| self.workspace(ui));
+
+        self.show_modal(ui.ctx());
+    }
+
+    /// The sidebar: projects, or the history (R-HIST-2).
+    fn left_panel(&mut self, ui: &mut Ui) {
+        let p = theme::palette(ui);
         let dirty = self.dirty_keys();
         let conflicts: HashSet<ItemKey> = self.conflicts.keys().cloned().collect();
         let actions = Panel::left("sidebar")
@@ -235,29 +294,62 @@ impl TortugaUi {
                     .inner_margin(Margin::symmetric(10, 12)),
             )
             .show(ui, |ui| {
-                sidebar(
-                    ui,
-                    &self.state,
-                    &mut self.sidebar,
-                    self.selection.as_ref(),
-                    &dirty,
-                    &conflicts,
-                )
+                if self.state.host.keeps_history() {
+                    theme::tabs(
+                        ui,
+                        &mut self.sidebar_view,
+                        &[
+                            (SidebarView::Projects, "Projects", None),
+                            (SidebarView::History, "History", None),
+                        ],
+                    );
+                    ui.add_space(8.0);
+                }
+                match self.sidebar_view {
+                    SidebarView::Projects => sidebar(
+                        ui,
+                        &self.state,
+                        &mut self.sidebar,
+                        self.selection.as_ref(),
+                        &dirty,
+                        &conflicts,
+                    ),
+                    SidebarView::History => {
+                        self.history_panel(ui);
+                        Vec::new()
+                    }
+                }
             })
             .inner;
         for action in actions {
             self.on_sidebar(action);
         }
+    }
 
-        CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(p.bg)
-                    .inner_margin(Margin::symmetric(20, 16)),
+    /// Keyboard shortcuts that work anywhere outside dialogs.
+    fn shortcuts(&mut self, ui: &mut Ui) {
+        let (save, send) = ui.input_mut(|i| (i.consume_shortcut(&SAVE), i.consume_shortcut(&SEND)));
+        if save {
+            self.save();
+        }
+        if send && self.sending().is_none() {
+            self.send(ui.ctx());
+        }
+        // Ctrl+Shift+P first: Ctrl+P would match it too.
+        let (commands, quick_open) = ui.input_mut(|i| {
+            (
+                i.consume_shortcut(&COMMANDS_TOO) || i.consume_shortcut(&COMMANDS),
+                i.consume_shortcut(&QUICK_OPEN),
             )
-            .show(ui, |ui| self.workspace(ui));
-
-        self.show_modal(ui.ctx());
+        });
+        if commands {
+            self.modal = Some(Modal::Palette(Palette::commands()));
+        } else if quick_open {
+            self.modal = Some(Modal::Palette(Palette::requests()));
+        }
+        if ui.input_mut(|i| i.consume_shortcut(&FIND)) {
+            self.response.focus_search = true;
+        }
     }
 
     /// Call when the app closes: keeps unsaved edits for next time (R-COL-8).
@@ -417,6 +509,17 @@ impl TortugaUi {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(theme::ghost_button("⚙  Settings")).clicked() {
                     self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
+                }
+                let go_to = (
+                    "Go to request…",
+                    RichText::new("  Ctrl+P").small().color(p.muted),
+                );
+                if ui
+                    .add(egui::Button::new(go_to))
+                    .on_hover_text("Quick open (Ctrl+P). Ctrl+K lists every command.")
+                    .clicked()
+                {
+                    self.modal = Some(Modal::Palette(Palette::requests()));
                 }
             });
         });
@@ -613,7 +716,7 @@ impl TortugaUi {
     fn workspace(&mut self, ui: &mut Ui) {
         let key = self.selection.clone();
         let root = key.as_ref().map(|k| k.root.clone());
-        let ctx = self.state.context(root.as_deref());
+        let ctx = self.state.request_context(key.as_ref());
         let undefined = vars::undefined_in(&self.current, &ctx);
         let current_dirty = key
             .as_ref()
@@ -643,11 +746,17 @@ impl TortugaUi {
         ui.add_space(4.0);
 
         let collection_auth = root.as_ref().map(|_| ctx.auth.clone());
-        let inherited_headers: Vec<tortuga_core::KeyValue> =
-            ctx.inherited_headers(&self.current).cloned().collect();
+        let inherited_headers: Vec<(tortuga_core::KeyValue, String)> = ctx
+            .inherited_headers_with_origins(&self.current)
+            .map(|(h, origin)| (h.clone(), origin.to_owned()))
+            .collect();
         let cookie_count = self.state.cookie_jar(root.as_deref()).len();
         let sending = self.sending() == Some(&key);
         let default_timeout_ms = self.state.settings.default_timeout_ms;
+        let preview = self
+            .editor
+            .shows_preview()
+            .then(|| vars::preview(&self.current, &ctx).map_err(|e| sentence(&e.to_string())));
         let action = Panel::top("request")
             .frame(Frame::new().inner_margin(Margin {
                 bottom: 12,
@@ -672,8 +781,11 @@ impl TortugaUi {
                         default_timeout_ms,
                         collection_auth: collection_auth.as_ref(),
                         inherited_headers: &inherited_headers,
+                        auth_origin: &ctx.auth_origin,
                         cookie_count,
                         in_collection: root.is_some(),
+                        preview: preview.as_ref(),
+                        can_pick_files: self.state.host.can_pick_folders(),
                     },
                 )
             })
@@ -681,6 +793,8 @@ impl TortugaUi {
         match action {
             Some(EditorAction::Send) => self.send(ui.ctx()),
             Some(EditorAction::Cancel) => self.cancel(),
+            Some(EditorAction::PasteCurl(text)) => self.paste_curl(&text),
+            Some(EditorAction::ChooseFile(index)) => self.choose_upload(root.as_deref(), index),
             Some(EditorAction::EditCollectionDefaults) => {
                 if let Some(root) = root {
                     self.modal = Some(Modal::Defaults(
@@ -692,10 +806,39 @@ impl TortugaUi {
         }
 
         ui.add_space(14.0);
+        self.response_area(ui, &key, sending);
+    }
+
+    /// The response of the selected request, with its JSON filter and "Save to file…".
+    fn response_area(&mut self, ui: &mut Ui, key: &Selection, sending: bool) {
+        if !sending {
+            self.past_banner(ui, key);
+        }
         let can_save = self.state.host.can_save_files();
-        let outcome = self.outcomes.get(&key);
-        if let Some(ResponseAction::SaveBody) =
-            response_panel(ui, outcome, sending, &mut self.response, can_save)
+        let view = match self.outcomes.get(key) {
+            Some(Outcome::Response(view)) => Some(view.clone()),
+            _ => None,
+        };
+        let expr = self
+            .filters
+            .get(key)
+            .map(|f| f.trim().to_owned())
+            .unwrap_or_default();
+        self.update_filter(view.as_ref(), &expr, ui.ctx());
+        let filtered = match self.filter_job.as_ref().map(|j| &j.result) {
+            None => Filtered::Off,
+            Some(None) => Filtered::Pending,
+            Some(Some(Ok(body))) => Filtered::Done(body),
+            Some(Some(Err(message))) => Filtered::Failed(message),
+        };
+        let outcome = self.outcomes.get(key);
+        let cx = PanelContext {
+            sending,
+            can_save,
+            filter: self.filters.entry(key.clone()).or_default(),
+            filtered,
+        };
+        if let Some(ResponseAction::SaveBody) = response_panel(ui, outcome, &mut self.response, cx)
             && let Some(Outcome::Response(view)) = outcome
         {
             let r = &view.response;
@@ -800,8 +943,7 @@ impl TortugaUi {
 
     /// Copies the request as curl; asks first if it contains secret values (R-HTTP-9).
     fn copy_as_curl(&mut self, egui_ctx: &egui::Context) {
-        let root = self.selection.as_ref().map(|k| k.root.clone());
-        let ctx = self.state.context(root.as_deref());
+        let ctx = self.state.request_context(self.selection.as_ref());
         match tortuga_core::curl::command(&self.current, &ctx, &self.state.settings) {
             Err(e) => {
                 self.copied_at = None;
@@ -813,6 +955,47 @@ impl TortugaUi {
             }
             Ok(command) => self.modal = Some(Modal::CopyCurl(CopyCurlDialog::new(command))),
         }
+    }
+
+    /// Fills the current request from a pasted `curl` command, as unsaved edits
+    /// (R-HTTP-11, D19). Its name and cookie setting stay.
+    fn paste_curl(&mut self, text: &str) {
+        use tortuga_core::curl::import;
+
+        let pasted = match import::parse(text) {
+            Ok(pasted) => pasted,
+            Err(e) => {
+                self.state
+                    .notify(format!("Could not read the curl command: {e}"));
+                return;
+            }
+        };
+        let mut request = pasted.request;
+        import::use_server(
+            &mut request,
+            &self.state.request_context(self.selection.as_ref()),
+        );
+        request.name.clone_from(&self.current.name);
+        request.cookies = self.current.cookies;
+        let response = std::mem::take(&mut self.response);
+        self.load(request);
+        self.response = response;
+        if !pasted.ignored.is_empty() {
+            self.state.notify(format!(
+                "Filled in from the curl command. Not used: {}.",
+                pasted.ignored.join("; ")
+            ));
+        }
+    }
+
+    /// "Choose…" for a multipart file: inside the project the path is kept relative to
+    /// it, so it works for teammates too (R-HTTP-15, D21).
+    fn choose_upload(&mut self, root: Option<&Path>, index: usize) {
+        let Some(path) = self.state.host.pick_any_file("Choose a file to upload") else {
+            return;
+        };
+        let value = upload_path(&path, root);
+        self.editor.set_file(&mut self.current, index, value);
     }
 
     // ---------------------------------------------------------------- requests
@@ -846,6 +1029,9 @@ impl TortugaUi {
     fn select_and_remember(&mut self, new: Selection, remember: bool) {
         if remember {
             self.state.remember_selection(new.as_ref());
+        }
+        if let Some(k) = &new {
+            self.remember_recent(k);
         }
         if self.selection == new {
             return;
@@ -938,8 +1124,9 @@ impl TortugaUi {
             f.abort.abort();
         }
         let key = self.selection.clone();
-        let ctx = self.state.context(key.as_ref().map(|k| k.root.as_path()));
+        let ctx = self.state.request_context(key.as_ref());
         self.response = ResponseState::default();
+        self.forget_past(&key);
         let prepared = match vars::prepare(&self.current, &ctx) {
             Ok(prepared) => prepared,
             Err(e) => {
@@ -956,12 +1143,31 @@ impl TortugaUi {
             .cookie_jar(key.as_ref().map(|k| k.root.as_path()));
         let tx = self.finished_tx.clone();
         let repaint = egui_ctx.clone();
+        // For the history (R-HIST-1): the request as in the editor, not as resolved.
+        let sent_at = tortuga_core::history::now_ms();
+        let entry_id = tortuga_core::history::new_id(sent_at, id);
+        let path = key.as_ref().map(|k| k.path.clone());
+        let request = self.current.clone();
+        let environment = ctx.environment.clone();
         let (task, abort) = abortable(async move {
             let result = client.execute_with_cookies(&prepared, Some(&jar)).await;
+            // Off the UI thread: copying up to 1 MB of body for the history.
+            let entry = tortuga_core::history::Entry::new(
+                entry_id,
+                sent_at,
+                path,
+                &request,
+                environment,
+                result.as_ref().map_err(|e| sentence(&e.to_string())),
+            );
             // Prepared here, off the UI thread: pretty-printing big bodies takes a while (R-NF-2).
             let outcome = Outcome::from_result(result);
             // The receiver only goes away with the app.
-            let _ = tx.send(Finished { id, outcome });
+            let _ = tx.send(Finished {
+                id,
+                outcome,
+                entry: Some(entry),
+            });
             repaint.request_repaint();
         });
         self.state.host.spawn(Box::pin(async move {
@@ -981,6 +1187,53 @@ impl TortugaUi {
         }
     }
 
+    /// Filters the shown JSON response in the background whenever the response or the
+    /// filter changes (R-HTTP-13). A result that arrives for an older filter is dropped.
+    fn update_filter(&mut self, view: Option<&Arc<ResponseView>>, expr: &str, ctx: &egui::Context) {
+        while let Ok(done) = self.filter_rx.try_recv() {
+            if let Some(job) = self.filter_job.as_mut().filter(|j| j.id == done.id) {
+                job.result = Some(done.result);
+            }
+        }
+        let Some(view) = view.filter(|_| !expr.is_empty()) else {
+            if let Some(job) = self.filter_job.take() {
+                job.abort.abort();
+            }
+            return;
+        };
+        if self
+            .filter_job
+            .as_ref()
+            .is_some_and(|j| Arc::ptr_eq(&j.view, view) && j.expr == expr)
+        {
+            return;
+        }
+        if let Some(job) = self.filter_job.take() {
+            job.abort.abort();
+        }
+        self.next_send_id += 1;
+        let id = self.next_send_id;
+        let (task_view, task_expr) = (view.clone(), expr.to_owned());
+        let tx = self.filter_tx.clone();
+        let repaint = ctx.clone();
+        let (task, abort) = abortable(async move {
+            let result = crate::components::filter_body(&task_view, &task_expr);
+            // The receiver only goes away with the app.
+            let _ = tx.send(FilterDone { id, result });
+            repaint.request_repaint();
+        });
+        self.state.host.spawn(Box::pin(async move {
+            let _ = task.await;
+        }));
+        self.filter_job = Some(FilterJob {
+            view: view.clone(),
+            expr: expr.to_owned(),
+            id,
+            result: None,
+            abort,
+        });
+    }
+
     fn collect_finished(&mut self) {
         while let Ok(done) = self.finished_rx.try_recv() {
             if let Some(f) = self.in_flight.take_if(|f| f.id == done.id) {
@@ -989,6 +1242,9 @@ impl TortugaUi {
                 }
                 self.state
                     .save_cookies(f.key.as_ref().map(|k| k.root.as_path()));
+                if let Some(entry) = done.entry {
+                    self.record_history(f.key.as_ref().map(|k| k.root.as_path()), entry);
+                }
                 self.outcomes.insert(f.key, done.outcome);
             }
         }
@@ -1215,6 +1471,13 @@ impl TortugaUi {
             SidebarAction::EditDefaults(root) => {
                 self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
             }
+            SidebarAction::EditFolderDefaults(key) => {
+                self.modal = Some(Modal::Defaults(DefaultsDialog::for_folder(
+                    &self.state,
+                    key.root,
+                    key.path,
+                )));
+            }
             SidebarAction::Reload(root) => self.on_disk_change(&root),
             SidebarAction::OpenInFileManager(root) => {
                 if let Err(e) = self.state.host.open_in_file_manager(&root) {
@@ -1388,17 +1651,9 @@ impl TortugaUi {
                 result => result == DialogResult::Open,
             },
             Modal::Defaults(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done((headers, auth)) => self
-                    .state
-                    .run(&d.root, |c, s| {
-                        let manifest = tortuga_core::Manifest {
-                            headers: headers.clone(),
-                            auth: auth.clone(),
-                            ..c.manifest.clone()
-                        };
-                        c.save_config(s, &manifest, &c.environments)
-                    })
-                    .is_none(),
+                DialogResult::Done(defaults) => {
+                    !self.save_defaults(&d.root.clone(), d.folder.clone().as_deref(), &defaults)
+                }
                 result => result == DialogResult::Open,
             },
             Modal::ConfirmDelete(key, d) => match d.show(ctx) {
@@ -1448,6 +1703,14 @@ impl TortugaUi {
                 DialogResult::Done(text) => {
                     ctx.copy_text(text);
                     self.copied_at = Some(ctx.input(|i| i.time));
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::Palette(palette) => self.show_palette(ctx, palette),
+            Modal::ClearHistory(target, d) => match d.show(ctx) {
+                DialogResult::Done(()) => {
+                    self.clear_history(target);
                     false
                 }
                 result => result == DialogResult::Open,
@@ -1523,6 +1786,28 @@ impl TortugaUi {
 
     /// Saves the environments dialog. Secrets first: if the credential store fails,
     /// nothing changes on disk and the dialog stays open with the error. Returns success.
+    /// Saves project defaults (R-COL-4) or folder defaults (R-COL-11). Returns whether it worked.
+    fn save_defaults(
+        &mut self,
+        root: &Path,
+        folder: Option<&Path>,
+        defaults: &tortuga_core::format::FolderDefaults,
+    ) -> bool {
+        self.state
+            .run(root, |c, s| {
+                if let Some(folder) = folder {
+                    return c.save_folder_defaults(s, folder, defaults);
+                }
+                let manifest = tortuga_core::Manifest {
+                    headers: defaults.headers.clone(),
+                    auth: defaults.auth.clone(),
+                    ..c.manifest.clone()
+                };
+                c.save_config(s, &manifest, &c.environments)
+            })
+            .is_some()
+    }
+
     fn save_environments(
         &mut self,
         d: &mut EnvironmentsDialog,
@@ -1553,6 +1838,19 @@ fn copy_curl_button(ui: &mut Ui, copied_at: Option<f64>) -> bool {
     ui.add(theme::ghost_button(label))
         .on_hover_text("Copy this request as a curl command, with variables filled in")
         .clicked()
+}
+
+/// How a chosen file is saved in the request (D21): relative to the project folder
+/// (with `/`, the same on every OS) when inside it, else the full path.
+fn upload_path(path: &Path, root: Option<&Path>) -> String {
+    match root.and_then(|r| path.strip_prefix(r).ok()) {
+        Some(relative) => relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/"),
+        None => path.to_string_lossy().into_owned(),
+    }
 }
 
 fn breadcrumb(state: &AppState, key: &ItemKey) -> String {
@@ -1807,6 +2105,218 @@ mod tests {
             "rows out of view are not built"
         );
         std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-HTTP-11, D19: pasting a curl command into the URL field fills the request as unsaved edits.
+    #[test]
+    fn pasting_curl_fills_the_request() {
+        let (ui, root, key) = setup("paste-curl");
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
+        let shared = ui.clone();
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+        // The URL field has focus when a request is opened.
+        harness.event(egui::Event::Paste(
+            "curl -X POST https://api.test/users -H 'X-Trace: 1' --json '{\"a\":1}' -k".into(),
+        ));
+        harness.run();
+        drop(harness);
+        let ui = ui.borrow();
+        assert_eq!(ui.current.method, tortuga_core::HttpMethod::Post);
+        assert_eq!(ui.current.url, "https://api.test/users");
+        assert_eq!(ui.current.name, "Get user", "the name stays");
+        assert!(ui.is_dirty(&key, &ui.current), "unsaved edits");
+        assert!(
+            ui.state
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("--insecure")),
+            "{:?}",
+            ui.state.notice
+        );
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-9, R-COL-10: Ctrl+P finds a request by name; Ctrl+K runs a command.
+    #[test]
+    fn quick_open_and_commands() {
+        use egui_kittest::kittest::Queryable;
+
+        let (mut ui, root, key) = setup("quick-open");
+        ui.select(None);
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
+        let shared = ui.clone();
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::P);
+        harness.run();
+        // The palette's field has focus.
+        harness.event(egui::Event::Text("get usr".into()));
+        harness.run();
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert_eq!(ui.borrow().selection, Some(key.clone()));
+        assert!(ui.borrow().modal.is_none(), "closed after opening");
+
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::K);
+        harness.run();
+        harness.get_by_label_contains("Quick open: go to a request");
+        // The palette's field has focus.
+        harness.event(egui::Event::Text("settings".into()));
+        harness.run();
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert!(matches!(ui.borrow().modal, Some(Modal::Settings(_))));
+        drop(harness);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-HIST-1..3: a finished send is kept; opening it shows that response and can
+    /// restore that version of the request; history can be cleared.
+    #[test]
+    fn history_records_opens_restores_and_clears() {
+        use egui_kittest::kittest::Queryable;
+        use tortuga_core::history::Entry;
+
+        let (ui, root, key) = setup("history");
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
+        let shared = ui.clone();
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+
+        // Send "v1", and let it finish with a 200.
+        let sent_url = "https://a.test/v1";
+        {
+            let mut ui = ui.borrow_mut();
+            ui.current.set_display_url(sent_url);
+            let ctx = harness.ctx.clone();
+            ui.send(&ctx);
+            let id = ui.in_flight.as_ref().expect("in flight").id;
+            let response = tortuga_core::Response {
+                status: 201,
+                status_text: "Created".into(),
+                headers: Vec::new(),
+                body: b"first".to_vec(),
+                elapsed: std::time::Duration::from_millis(3),
+            };
+            let entry = Entry::new(
+                tortuga_core::history::new_id(1_000, 1),
+                1_000,
+                Some(key.path.clone()),
+                &ui.current,
+                None,
+                Ok(&response),
+            );
+            ui.finished_tx
+                .send(Finished {
+                    id,
+                    outcome: Outcome::from_result(Ok(response)),
+                    entry: Some(entry),
+                })
+                .expect("send");
+            // Then edit the request further.
+            ui.current.set_display_url("https://a.test/v2");
+            ui.sidebar_view = SidebarView::History;
+        }
+        harness.run();
+        harness
+            .get(
+                egui_kittest::kittest::by()
+                    .label_contains("201")
+                    .role(egui::accesskit::Role::Button),
+            )
+            .click();
+        harness.run();
+        {
+            let ui = ui.borrow();
+            assert_eq!(ui.selection, Some(key.clone()));
+            assert!(ui.history.past.is_some(), "a past response is shown");
+        }
+        harness.get_by_label_contains("From history");
+        harness.get_by_label("Restore request").click();
+        harness.run();
+        assert_eq!(
+            ui.borrow().current.url,
+            sent_url,
+            "that version is back, unsaved"
+        );
+
+        ui.borrow_mut()
+            .clear_history(&ClearHistory::One(Some(root.clone()), "C".into()));
+        harness.run();
+        harness.get_by_label_contains("Requests you send appear here");
+        drop(harness);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-11: a request in a folder uses the folder's variables and headers.
+    #[test]
+    fn requests_inherit_folder_defaults() {
+        use egui_kittest::kittest::Queryable;
+        use tortuga_core::format::FolderDefaults;
+
+        let root =
+            std::env::temp_dir().join(format!("tortuga-folder-defaults-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let col = Collection::create(&FsStorage, &root, "C").expect("create");
+        let folder = col
+            .new_folder(&FsStorage, Path::new(""), "Admin")
+            .expect("folder");
+        let col = Collection::open(&FsStorage, &root).expect("open");
+        col.save_folder_defaults(
+            &FsStorage,
+            &folder,
+            &FolderDefaults {
+                headers: vec![tortuga_core::KeyValue::new("X-Area", "admin")],
+                variables: [("tenant".to_owned(), "acme".to_owned())].into(),
+                ..FolderDefaults::default()
+            },
+        )
+        .expect("defaults");
+        let col = Collection::open(&FsStorage, &root).expect("open");
+        let mut request = Request::new(tortuga_core::HttpMethod::Get, "https://{{tenant}}.test/");
+        request.name = "Users".into();
+        let path = col
+            .new_request(&FsStorage, &folder, &request)
+            .expect("request");
+        let mut ui = TortugaUi::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let key = ItemKey::new(&root, path);
+        ui.select(Some(key.clone()));
+        let ctx = ui.state.request_context(Some(&key));
+        assert!(
+            vars::undefined_in(&ui.current, &ctx).is_empty(),
+            "{{{{tenant}}}} comes from the folder"
+        );
+
+        let mut harness = crate::test_host::harness(move |egui_ui| ui.ui(egui_ui));
+        harness.run();
+        assert!(harness.query_by_label_contains("Undefined:").is_none());
+        harness.get_by_label_contains("Headers").click();
+        harness.run();
+        harness.get_by_label("FROM FOLDER “ADMIN”");
+        drop(harness);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// D21: files inside the project are saved relative to it.
+    #[test]
+    fn upload_paths_are_relative_inside_the_project() {
+        let root = Path::new("/repo/api");
+        assert_eq!(
+            upload_path(&root.join("fixtures").join("me.png"), Some(root)),
+            "fixtures/me.png"
+        );
+        assert_eq!(
+            upload_path(Path::new("/home/me/x.bin"), Some(root)),
+            "/home/me/x.bin"
+        );
+        assert_eq!(
+            upload_path(Path::new("/home/me/x.bin"), None),
+            "/home/me/x.bin"
+        );
     }
 
     /// R-GIT-11: a request deleted on disk while edited can be restored with the edits.

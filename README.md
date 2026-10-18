@@ -3,9 +3,10 @@
 A fast, local-first API client written in Rust. Projects are plain files that teams share through git.
 Runs on Windows, Linux and macOS (web support planned).
 
-**Status:** milestones M1–M7 and the v1 extras are implemented: sending requests, projects on disk, environments with servers and
-variables, auth and secrets, cookies, live git status, workspaces, kept unsaved edits, copy as curl, and installers for
-Windows, macOS and Linux. See [docs/FEATURES.md](docs/FEATURES.md) for what
+**Status:** milestones M1–M8 and the v1 extras are implemented: sending requests, projects on disk, environments with servers and
+variables, auth and secrets, cookies, live git status, workspaces, kept unsaved edits, copy as curl, installers for
+Windows, macOS and Linux, and the first daily-driver features: paste curl, quick open and command palette, search and
+filter responses, history, request preview, folder defaults and multipart uploads. See [docs/FEATURES.md](docs/FEATURES.md) for what
 works today and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Install
@@ -81,6 +82,26 @@ picker in the title bar switches every project in the workspace that has an envi
 that aren't defined are highlighted, and the request isn't sent until they are.
 
 The scratch request (top of the sidebar) is for quick one-off calls; **Save to project…** keeps it.
+
+**Moving around.** **Ctrl+P** (or **Go to request…**) finds any request in the workspace by typing part of its name,
+folder or URL. **Ctrl+K** lists every command (send, save, switch environment, settings, …).
+
+**From curl to request.** Paste a `curl` command (e.g. from API docs or the browser's "Copy as cURL") into the URL
+field: method, URL, headers, body and auth are filled in. In a saved request this is an unsaved change; **Revert**
+undoes it.
+
+**Responses.** **Ctrl+F** searches the body. Above a JSON body, **Filter** takes a JSONPath expression such as
+`$.items[*].id` or `$..users[?(@.active == true)].email`. The **Preview** tab of the request shows exactly what will be
+sent, with secret values masked.
+
+**History.** The **History** tab in the sidebar lists what you sent, per day. Click an entry to see that response;
+**Restore request** brings back the request as it was then. History stays on your computer; **Clear** removes it.
+
+**Uploads.** Choose the **Multipart** body type to send form fields and files. Keep files to upload inside the project
+(e.g. a `fixtures/` folder) and they are saved with a path relative to it, so the request works for teammates too.
+
+**Folder defaults.** A folder's **…** menu has **Folder defaults…**: headers, auth and variables for every request in
+that folder. They are saved in the folder's `_folder.toml`, so they are shared through git like the requests.
 Unsaved edits are kept when you close Tortuga. **Copy as curl** (next to Save) copies the request with variables
 filled in; if it uses secret values, you choose whether to mask them.
 

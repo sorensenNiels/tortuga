@@ -13,6 +13,7 @@ tortuga-core.workspace = true
 egui.workspace = true
 futures-util.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 url.workspace = true

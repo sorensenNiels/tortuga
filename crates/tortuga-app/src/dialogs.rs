@@ -25,6 +25,11 @@ pub fn pick_file(title: &str, suffix: &str) -> Option<PathBuf> {
         .pick_file()
 }
 
+/// Asks for any file. `None` if the user cancelled.
+pub fn pick_any_file(title: &str) -> Option<PathBuf> {
+    rfd::FileDialog::new().set_title(title).pick_file()
+}
+
 /// Asks for a folder. `None` if the user cancelled.
 pub fn pick_folder(title: &str) -> Option<PathBuf> {
     rfd::FileDialog::new().set_title(title).pick_folder()

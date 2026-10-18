@@ -5,8 +5,10 @@ mod auth_editor;
 mod body_editor;
 mod defaults_dialog;
 mod environments;
+mod history_list;
 mod key_value_table;
 mod modals;
+mod palette;
 mod request_editor;
 mod response_panel;
 mod sidebar;
@@ -15,12 +17,17 @@ pub use auth_editor::request_auth;
 pub use body_editor::{BodyDrafts, body_editor};
 pub use defaults_dialog::DefaultsDialog;
 pub use environments::{EnvironmentsDialog, SavedConfig};
+pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, history_list};
 pub use key_value_table::key_value_table;
 use modals::dialog;
 pub use modals::{
     AddProjects, AddProjectsDialog, ConfirmDialog, CopyCurlDialog, CreateProjectDialog,
     DialogResult, MoveDialog, NameDialog, SaveToCollectionDialog, SettingsDialog,
 };
+pub use palette::{Palette, PaletteItem};
 pub use request_editor::{EditorAction, EditorContext, EditorState, request_editor};
-pub use response_panel::{Outcome, ResponseAction, ResponseState, response_panel};
+pub use response_panel::{
+    Filtered, Outcome, PanelContext, ResponseAction, ResponseState, ResponseView, TextBody,
+    filter_body, response_panel,
+};
 pub use sidebar::{SidebarAction, SidebarState, sidebar};

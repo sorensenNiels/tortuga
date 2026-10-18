@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use tortuga_core::ClientSettings;
+use tortuga_core::history::{self, HistoryStore};
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
 use tortuga_ui_egui::{BoxTask, Host, LocalState, TortugaUi};
@@ -73,6 +74,7 @@ pub fn run() -> eframe::Result {
                 secrets,
                 secrets_warning,
                 watchers: watch::Watchers::default(),
+                history_lock: Arc::default(),
             };
             let app = App(TortugaUi::new(Box::new(host)));
             if measure_startup {
@@ -151,6 +153,8 @@ struct DesktopHost {
     secrets: Box<dyn SecretStore>,
     secrets_warning: Option<String>,
     watchers: watch::Watchers,
+    /// One history write at a time, so two sends can't both rewrite an index.
+    history_lock: Arc<std::sync::Mutex<()>>,
 }
 
 impl Host for DesktopHost {
@@ -238,6 +242,92 @@ impl Host for DesktopHost {
 
     fn spawn(&self, task: BoxTask) {
         drop(self.runtime.spawn(task));
+    }
+
+    fn file_reader(&self) -> Option<tortuga_core::FileReader> {
+        Some(tortuga_core::FileReader(Arc::new(
+            |path: &std::path::Path| std::fs::read(path),
+        )))
+    }
+
+    fn pick_any_file(&self, title: &str) -> Option<PathBuf> {
+        dialogs::pick_any_file(title)
+    }
+
+    fn keeps_history(&self) -> bool {
+        true
+    }
+
+    fn history_list(
+        &self,
+        root: Option<&std::path::Path>,
+    ) -> Result<Vec<history::Summary>, String> {
+        let Some(dir) = local_store::history_dir(root) else {
+            return Ok(Vec::new());
+        };
+        HistoryStore::new(&local_store::PrivateStorage, dir)
+            .list()
+            .map_err(|e| e.to_string())
+    }
+
+    fn history_entry(
+        &self,
+        root: Option<&std::path::Path>,
+        id: &str,
+    ) -> Result<history::Entry, String> {
+        let dir = local_store::history_dir(root).ok_or("No app-data directory available")?;
+        HistoryStore::new(&local_store::PrivateStorage, dir)
+            .load(id)
+            .map_err(|e| e.to_string())
+    }
+
+    fn add_history(&self, root: Option<&std::path::Path>, entry: history::Entry) {
+        let Some(dir) = local_store::history_dir(root) else {
+            return;
+        };
+        let lock = self.history_lock.clone();
+        // Writing up to a megabyte (and syncing it) would make the UI stutter.
+        drop(self.runtime.spawn_blocking(move || {
+            let _one_at_a_time = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Err(e) = HistoryStore::new(&local_store::PrivateStorage, dir).add(&entry) {
+                eprintln!("tortuga: could not add to the history: {e}");
+            }
+        }));
+    }
+
+    fn clear_history(&self, root: Option<&std::path::Path>) -> Result<(), String> {
+        let Some(dir) = local_store::history_dir(root) else {
+            return Ok(());
+        };
+        let _one_at_a_time = self
+            .history_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        HistoryStore::new(&local_store::PrivateStorage, dir)
+            .clear()
+            .map_err(|e| e.to_string())
+    }
+
+    fn clear_all_history(&self) -> Result<(), String> {
+        let Some(dir) = local_store::all_history_dir() else {
+            return Ok(());
+        };
+        let _one_at_a_time = self
+            .history_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match std::fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(format!("{}: {e}", dir.display()))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn utc_offset_minutes(&self) -> i32 {
+        chrono::Local::now().offset().local_minus_utc() / 60
     }
 
     fn load_settings(&self) -> Result<ClientSettings, String> {

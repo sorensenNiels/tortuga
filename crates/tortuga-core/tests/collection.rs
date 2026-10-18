@@ -339,3 +339,172 @@ fn environments_and_servers_round_trip() {
     col.save_config(&FS, &manifest, &[]).expect("remove env");
     assert_eq!(reopen(&col).environments, Vec::<Environment>::new());
 }
+
+/// A project with defaults in `tortuga.toml`, folders `admin` and `admin/users` with
+/// their own defaults, a request in `admin/users`, and a "Dev" environment.
+fn project_with_folder_defaults() -> (tempfile::TempDir, Collection, PathBuf, PathBuf) {
+    use tortuga_core::format::FolderDefaults;
+    use tortuga_core::{Auth, KeyValue};
+
+    let (dir, col) = new_collection();
+    let mut manifest = col.manifest.clone();
+    manifest.headers = vec![
+        KeyValue::new("X-Team", "core"),
+        KeyValue::new("Accept", "text/plain"),
+    ];
+    manifest.auth = Auth::Bearer {
+        token: "project".into(),
+    };
+    manifest.variables.insert("tenant".into(), "project".into());
+    manifest.variables.insert("version".into(), "v1".into());
+    let env = Environment {
+        id: "dev".into(),
+        name: "Dev".into(),
+        variables: [("version".to_owned(), "v9".to_owned())].into(),
+        ..Environment::default()
+    };
+    col.save_config(&FS, &manifest, std::slice::from_ref(&env))
+        .expect("config");
+    let outer = reopen(&col)
+        .new_folder(&FS, Path::new(""), "Admin")
+        .expect("outer");
+    let inner = reopen(&col)
+        .new_folder(&FS, &outer, "Users")
+        .expect("inner");
+    reopen(&col)
+        .save_folder_defaults(
+            &FS,
+            &outer,
+            &FolderDefaults {
+                headers: vec![KeyValue::new("Accept", "application/json")],
+                auth: Auth::Basic {
+                    username: "admin".into(),
+                    password: "{{tenant}}".into(),
+                },
+                variables: [("tenant".to_owned(), "admin".to_owned())].into(),
+            },
+        )
+        .expect("outer defaults");
+    reopen(&col)
+        .save_folder_defaults(
+            &FS,
+            &inner,
+            &FolderDefaults {
+                headers: vec![KeyValue::new("X-Area", "users")],
+                variables: [
+                    ("tenant".to_owned(), "users".to_owned()),
+                    ("version".to_owned(), "v2".to_owned()),
+                ]
+                .into(),
+                ..FolderDefaults::default()
+            },
+        )
+        .expect("inner defaults");
+    let req = reopen(&col)
+        .new_request(&FS, &inner, &request("List"))
+        .expect("request");
+    let col = reopen(&col);
+    (dir, col, outer, req)
+}
+
+/// R-COL-11: requests inherit from their folders, nearest first, then the project.
+#[test]
+fn folder_defaults_are_inherited_nearest_first() {
+    use tortuga_core::vars::{Context, prepare};
+
+    let (dir, col, outer, req) = project_with_folder_defaults();
+    let text = std::fs::read_to_string(dir.path().join(&outer).join("_folder.toml")).expect("file");
+    assert!(
+        text.contains("[[headers]]") && text.contains("[auth]"),
+        "{text}"
+    );
+
+    let ctx = Context::for_request(&col, Some("dev"), Some(&req));
+    assert_eq!(ctx.variables["tenant"], "users", "nearest folder wins");
+    assert_eq!(
+        ctx.variables["version"], "v9",
+        "the environment wins over folders"
+    );
+    let origins: Vec<(&str, &str)> = ctx
+        .headers
+        .iter()
+        .zip(&ctx.header_origins)
+        .map(|(h, o)| (h.name.as_str(), o.as_str()))
+        .collect();
+    assert_eq!(
+        origins,
+        [
+            ("X-Team", "the project"),
+            ("Accept", "folder “Admin”"),
+            ("X-Area", "folder “Users”"),
+        ]
+    );
+    assert_eq!(ctx.auth_origin, "folder “Admin”");
+    let sent = prepare(&col.request(&req).expect("saved").request, &ctx).expect("prepare");
+    assert!(
+        sent.headers
+            .iter()
+            .any(|h| h.name == "Authorization" && h.value.starts_with("Basic ")),
+        "{:?}",
+        sent.headers
+    );
+    let project_level = tortuga_core::vars::Context::for_collection(&col, Some("dev"));
+    assert_eq!(project_level.variables["tenant"], "project");
+}
+
+/// R-COL-11: renaming, reordering and duplicating a folder keep its defaults.
+#[test]
+fn folder_defaults_survive_folder_operations() {
+    let (_dir, col, outer, _req) = project_with_folder_defaults();
+    let defaults = |col: &Collection, path: &Path| match col.find(path) {
+        Some(Item::Folder(f)) => f.defaults.clone(),
+        other => panic!("not a folder: {other:?}"),
+    };
+    let original = defaults(&col, &outer);
+    let renamed = col
+        .rename_folder(&FS, &outer, "Administration")
+        .expect("rename");
+    let col = reopen(&col);
+    assert_eq!(defaults(&col, &renamed), original);
+    col.new_request(&FS, Path::new(""), &request("Top"))
+        .expect("top");
+    let col = reopen(&col);
+    col.move_by(&FS, &renamed, Direction::Down).expect("move");
+    let col = reopen(&col);
+    assert_eq!(defaults(&col, &renamed), original);
+    let copy = col.duplicate(&FS, &renamed).expect("duplicate");
+    let col = reopen(&col);
+    assert_eq!(defaults(&col, &copy), original);
+}
+
+/// R-COL-11: `_folder.toml` files written before folder defaults still load.
+#[test]
+fn old_folder_files_load() {
+    let (dir, col) = new_collection();
+    std::fs::create_dir(dir.path().join("old")).expect("dir");
+    std::fs::write(
+        dir.path().join("old/_folder.toml"),
+        "name = \"Old\"\nseq = 5\n",
+    )
+    .expect("file");
+    let col = reopen(&col);
+    let Some(Item::Folder(f)) = col.find(Path::new("old")) else {
+        panic!("folder")
+    };
+    assert_eq!((f.name.as_str(), f.seq), ("Old", Some(5)));
+    assert!(f.defaults.is_empty());
+}
+
+/// R-HTTP-15: a directory without requests or `_folder.toml` (e.g. files to upload) is
+/// not a folder; one with requests is, even without `_folder.toml`.
+#[test]
+fn directories_without_requests_are_not_folders() {
+    let (dir, col) = new_collection();
+    std::fs::create_dir_all(dir.path().join("fixtures/images")).expect("dirs");
+    std::fs::write(dir.path().join("fixtures/images/me.png"), b"png").expect("file");
+    std::fs::create_dir(dir.path().join("handmade")).expect("dir");
+    std::fs::write(dir.path().join("handmade/get.toml"), "url = \"/\"\n").expect("request");
+    col.new_folder(&FS, Path::new(""), "Empty").expect("folder");
+    let col = reopen(&col);
+    assert_eq!(names(&col.items), ["Empty", "handmade"]);
+}

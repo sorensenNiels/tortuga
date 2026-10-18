@@ -7,6 +7,8 @@
 //!
 //! The output uses POSIX shell quoting (bash, zsh, Git Bash, WSL).
 
+pub mod import;
+
 use crate::model::{HttpMethod, Request, RequestBody};
 use crate::{ClientSettings, Result, query, vars};
 
@@ -30,17 +32,13 @@ pub fn command(
     let full = write(&vars::prepare(request, ctx)?, settings);
 
     // The same request with every secret value replaced by a placeholder.
-    let mut masked_ctx = ctx.clone();
-    let mut secrets = Vec::new();
-    for name in &ctx.secrets {
-        if let Some(value) = masked_ctx.variables.get_mut(name)
-            && !value.is_empty()
-        {
-            *value = format!("<secret:{name}>");
-            secrets.push(name.clone());
-        }
-    }
-    let masked = write(&vars::prepare(request, &masked_ctx)?, settings);
+    let mut secrets: Vec<String> = ctx
+        .secrets
+        .iter()
+        .filter(|name| ctx.variables.get(*name).is_some_and(|v| !v.is_empty()))
+        .cloned()
+        .collect();
+    let masked = write(&vars::prepare(request, &ctx.masked())?, settings);
     if masked == full {
         return Ok(CurlCommand {
             full,
@@ -74,7 +72,12 @@ pub fn write(request: &Request, settings: &ClientSettings) -> String {
     if !settings.verify_tls {
         parts.push("-k".into());
     }
+    // curl sets a multipart Content-Type itself, with the boundary (like sending does).
+    let multipart = matches!(request.body, RequestBody::Multipart(_));
     for header in request.headers.iter().filter(|h| h.is_active()) {
+        if multipart && header.name.trim().eq_ignore_ascii_case("content-type") {
+            continue;
+        }
         if header.name.eq_ignore_ascii_case("authorization")
             && let Some(user) = basic_credentials(&header.value)
         {
@@ -87,7 +90,8 @@ pub fn write(request: &Request, settings: &ClientSettings) -> String {
             ));
         }
     }
-    if !request.has_header("content-type")
+    if !multipart
+        && !request.has_header("content-type")
         && let Some(content_type) = request.body.default_content_type()
     {
         parts.push(format!(
@@ -103,6 +107,11 @@ pub fn write(request: &Request, settings: &ClientSettings) -> String {
         RequestBody::Form(fields) => {
             parts.push(format!("--data-raw {}", quote(&query::encode_form(fields))));
         }
+        RequestBody::Multipart(form) => {
+            for p in form.iter().filter(|p| p.is_active()) {
+                parts.push(form_option(p));
+            }
+        }
     }
     if let Some(timeout) = request.timeout() {
         parts.push(format!("--max-time {}", timeout.as_secs_f64()));
@@ -110,8 +119,39 @@ pub fn write(request: &Request, settings: &ClientSettings) -> String {
     parts.join(" \\\n  ")
 }
 
+/// One multipart part as a curl option (R-HTTP-15): files as `-F name=@path`, text as
+/// `--form-string` (which never reads files), or `-F` when it has a content type.
+fn form_option(part: &crate::model::FormPart) -> String {
+    let name = part.name.trim();
+    let content_type = part
+        .content_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+    let typed = |value: String| match content_type {
+        Some(ct) => format!("{value};type={ct}"),
+        None => value,
+    };
+    if part.file {
+        // Paths with `;`, `,` or quotes need curl's own double quotes.
+        let path = if part.value.contains([';', ',', '"']) {
+            format!(
+                "\"{}\"",
+                part.value.replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        } else {
+            part.value.clone()
+        };
+        format!("-F {}", quote(&typed(format!("{name}=@{path}"))))
+    } else if content_type.is_some() {
+        format!("-F {}", quote(&typed(format!("{name}={}", part.value))))
+    } else {
+        format!("--form-string {}", quote(&format!("{name}={}", part.value)))
+    }
+}
+
 /// `user:password` from a `Basic …` header value, if it decodes cleanly.
-fn basic_credentials(value: &str) -> Option<String> {
+pub fn basic_credentials(value: &str) -> Option<String> {
     use base64::Engine as _;
 
     let encoded = value
@@ -222,5 +262,24 @@ mod tests {
         r.auth = Some(Auth::None);
         let plain = command(&r, &ctx, &settings()).expect("curl");
         assert_eq!(plain.masked, None);
+    }
+
+    /// R-HTTP-15: text parts as --form-string, files as -F name=@path; no Content-Type header.
+    #[test]
+    fn multipart_parts() {
+        use crate::model::FormPart;
+
+        let mut r = Request::new(HttpMethod::Post, "https://api.test/upload");
+        r.headers = vec![KeyValue::new("Content-Type", "multipart/form-data")];
+        let mut avatar = FormPart::file("avatar", "/tmp/me; 1.png");
+        avatar.content_type = Some("image/png".into());
+        let mut off = FormPart::text("off", "x");
+        off.enabled = false;
+        r.body = RequestBody::Multipart(vec![FormPart::text("note", "@not a file"), avatar, off]);
+        assert_eq!(
+            write(&r, &settings()),
+            "curl -X POST 'https://api.test/upload' \\\n  --form-string 'note=@not a file' \\\n  \
+             -F 'avatar=@\"/tmp/me; 1.png\";type=image/png'"
+        );
     }
 }

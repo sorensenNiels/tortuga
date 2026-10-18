@@ -107,6 +107,66 @@ pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Folder with the request history of the project at `root`, or of the scratch
+/// request (R-HIST-1). Named by a hash of the path, like the cookie files.
+pub fn history_dir(root: Option<&Path>) -> Option<PathBuf> {
+    let name = root.map_or_else(
+        || "scratch".to_owned(),
+        |r| format!("{:016x}", fnv1a(r.to_string_lossy().as_bytes())),
+    );
+    dirs().map(|d| d.data_dir().join("history").join(name))
+}
+
+/// Folder with all history (R-HIST-3).
+pub fn all_history_dir() -> Option<PathBuf> {
+    dirs().map(|d| d.data_dir().join("history"))
+}
+
+/// Files only the current user can read, like [`write_private`]: history may hold
+/// credentials typed into a request (R-HIST-1).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct PrivateStorage;
+
+impl tortuga_core::storage::Storage for PrivateStorage {
+    fn read_to_string(&self, path: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+
+    fn write(&self, path: &Path, contents: &str) -> std::io::Result<()> {
+        write_private(path, contents)
+    }
+
+    fn list(&self, dir: &Path) -> std::io::Result<Vec<tortuga_core::storage::Entry>> {
+        tortuga_core::storage::FsStorage.list(dir)
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
+    fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::rename(from, to)
+    }
+
+    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_file(path)
+    }
+
+    fn remove_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_dir_all(path)
+    }
+}
+
 /// Unsaved request edits (R-COL-8). They may hold credentials typed into a request,
 /// so the file is private to the user like cookies and secrets.
 fn drafts_path() -> Option<PathBuf> {
@@ -158,6 +218,30 @@ mod tests {
         // Known FNV-1a test vector: the empty input.
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
         assert_ne!(fnv1a(b"/repo/a"), fnv1a(b"/repo/b"));
+    }
+
+    /// R-HIST-1: history can hold credentials, so only the user can read it.
+    #[cfg(unix)]
+    #[test]
+    fn history_files_are_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use tortuga_core::history::{Entry, HistoryStore, new_id};
+        use tortuga_core::{HttpMethod, Request};
+
+        let dir = std::env::temp_dir().join(format!("tortuga-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = HistoryStore::new(&PrivateStorage, dir.join("p"));
+        let request = Request::new(HttpMethod::Get, "https://a.test/");
+        let entry = Entry::new(new_id(1, 1), 1, None, &request, None, Err("down".into()));
+        store.add(&entry).expect("add");
+        let mode = |p: &Path| std::fs::metadata(p).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.join("p")), 0o700);
+        assert_eq!(mode(&dir.join("p/index.json")), 0o600);
+        assert_eq!(
+            mode(&dir.join(format!("p/{}.json", entry.summary.id))),
+            0o600
+        );
+        std::fs::remove_dir_all(dir).expect("clean up");
     }
 
     /// R-COL-8: unsaved edits round-trip through the drafts file.

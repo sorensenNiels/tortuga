@@ -13,6 +13,7 @@
 
 mod components;
 mod format;
+mod fuzzy;
 mod host;
 mod shell;
 mod state;
@@ -55,6 +56,12 @@ pub(crate) mod test_host {
         pub local: std::rc::Rc<std::cell::RefCell<Option<LocalState>>>,
         /// The last saved unsaved edits (R-COL-8).
         pub drafts: std::rc::Rc<std::cell::RefCell<crate::host::SavedDrafts>>,
+        /// History entries by project (`None`: scratch), newest first (R-HIST-1).
+        pub history: std::rc::Rc<
+            std::cell::RefCell<
+                std::collections::BTreeMap<Option<PathBuf>, Vec<tortuga_core::history::Entry>>,
+            >,
+        >,
     }
 
     impl Host for TestHost {
@@ -99,6 +106,47 @@ pub(crate) mod test_host {
             *self.drafts.borrow_mut() = drafts.clone();
             Ok(())
         }
+        fn keeps_history(&self) -> bool {
+            true
+        }
+        fn history_list(
+            &self,
+            root: Option<&std::path::Path>,
+        ) -> Result<Vec<tortuga_core::history::Summary>, String> {
+            let history = self.history.borrow();
+            let entries = history.get(&root.map(std::path::Path::to_path_buf));
+            Ok(entries
+                .map(|e| e.iter().map(|e| e.summary.clone()).collect())
+                .unwrap_or_default())
+        }
+        fn history_entry(
+            &self,
+            root: Option<&std::path::Path>,
+            id: &str,
+        ) -> Result<tortuga_core::history::Entry, String> {
+            self.history
+                .borrow()
+                .get(&root.map(std::path::Path::to_path_buf))
+                .and_then(|e| e.iter().find(|e| e.summary.id == id).cloned())
+                .ok_or_else(|| "no such entry".to_owned())
+        }
+        fn add_history(&self, root: Option<&std::path::Path>, entry: tortuga_core::history::Entry) {
+            self.history
+                .borrow_mut()
+                .entry(root.map(std::path::Path::to_path_buf))
+                .or_default()
+                .insert(0, entry);
+        }
+        fn clear_all_history(&self) -> Result<(), String> {
+            self.history.borrow_mut().clear();
+            Ok(())
+        }
+        fn clear_history(&self, root: Option<&std::path::Path>) -> Result<(), String> {
+            self.history
+                .borrow_mut()
+                .remove(&root.map(std::path::Path::to_path_buf));
+            Ok(())
+        }
     }
 }
 
@@ -138,7 +186,8 @@ mod tests {
     fn bundled_fonts_have_every_symbol_the_ui_uses() {
         let mut harness = test_host::harness(|ui| {
             for symbol in [
-                "⏵", "⏷", "⏺", "⚠", "🗙", "⚙", "✏", "•", "…", "—", "“", "”", "🐢", "·", "🔒",
+                "⏵", "⏷", "⏺", "⚠", "🗙", "⚙", "✏", "•", "…", "—", "“", "”", "🐢", "·", "🔒", "›",
+                "↑", "↓", "→",
             ] {
                 ui.label(symbol);
                 ui.monospace(symbol);

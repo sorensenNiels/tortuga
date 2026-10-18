@@ -11,6 +11,7 @@ use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
 use tortuga_core::git::GitStatus;
+use tortuga_core::history;
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
 use tortuga_core::workspace::ProjectRef;
@@ -202,6 +203,50 @@ pub trait Host {
 
     fn open_in_terminal(&self, _path: &Path) -> Result<(), String> {
         Err("Not available here.".into())
+    }
+
+    /// The local history of a project (`None`: the scratch request), newest first (R-HIST-1).
+    fn history_list(&self, _root: Option<&Path>) -> Result<Vec<history::Summary>, String> {
+        Ok(Vec::new())
+    }
+
+    /// One history entry, in full.
+    fn history_entry(&self, _root: Option<&Path>, _id: &str) -> Result<history::Entry, String> {
+        Err("History is not kept here.".into())
+    }
+
+    /// Adds an entry to the history. Writing can take a moment, so it may happen in the
+    /// background.
+    fn add_history(&self, _root: Option<&Path>, _entry: history::Entry) {}
+
+    /// Removes the history of a project (`None`: the scratch request) (R-HIST-3).
+    fn clear_history(&self, _root: Option<&Path>) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Reads files to upload in multipart bodies (R-HTTP-15); `None` where files can't be read.
+    fn file_reader(&self) -> Option<tortuga_core::FileReader> {
+        None
+    }
+
+    /// Asks for any file (to upload). `None` if cancelled or not possible here.
+    fn pick_any_file(&self, _title: &str) -> Option<PathBuf> {
+        None
+    }
+
+    /// Removes all history, of every project (R-HIST-3).
+    fn clear_all_history(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Whether history is kept at all (not in the web version yet).
+    fn keeps_history(&self) -> bool {
+        false
+    }
+
+    /// Minutes the local time is ahead of UTC, to show times in history.
+    fn utc_offset_minutes(&self) -> i32 {
+        0
     }
 
     /// Runs `task` in the background. The UI cancels it by dropping it (it is abortable).

@@ -1,4 +1,4 @@
-use egui::{Color32, ComboBox, Key, RichText, Stroke, TextEdit, Ui};
+use egui::{Color32, ComboBox, Key, Label, RichText, Stroke, TextEdit, Ui};
 use tortuga_core::{Auth, HttpMethod, KeyValue, Request, RequestBody};
 
 use super::{BodyDrafts, body_editor, key_value_table, request_auth};
@@ -11,6 +11,8 @@ enum Tab {
     Auth,
     Body,
     Options,
+    /// The request as it will be sent (R-HTTP-14).
+    Preview,
 }
 
 /// Editor state that is not part of the request. Recreated (with [`EditorState::new`])
@@ -26,6 +28,16 @@ pub struct EditorState {
 }
 
 impl EditorState {
+    /// Sets the file of multipart part `index` after "Choose…" (R-HTTP-15).
+    pub fn set_file(&mut self, request: &mut Request, index: usize, path: String) {
+        self.body.set_file(request, index, path);
+    }
+
+    /// Whether the Preview tab is open (so the shell works out the preview).
+    pub fn shows_preview(&self) -> bool {
+        self.tab == Tab::Preview
+    }
+
     pub fn new(request: &Request) -> Self {
         Self {
             url_text: request.display_url(),
@@ -53,20 +65,31 @@ pub struct EditorContext<'a> {
     pub default_timeout_ms: u64,
     /// The collection's default auth; `None` for the scratch request (R-HTTP-5).
     pub collection_auth: Option<&'a Auth>,
-    /// Collection headers this request inherits (R-COL-4), shown read-only.
-    pub inherited_headers: &'a [KeyValue],
+    /// Headers this request inherits, with where each comes from (R-COL-4, R-COL-11),
+    /// shown read-only.
+    pub inherited_headers: &'a [(KeyValue, String)],
+    /// Where the inherited auth comes from, e.g. "the project" or "folder “Admin”".
+    pub auth_origin: &'a str,
     /// Cookies in the jar this request uses (R-CK-1).
     pub cookie_count: usize,
     /// The request belongs to a collection (its jar is saved); `false` for the scratch request.
     pub in_collection: bool,
+    /// The request as it will be sent, while the Preview tab is open (R-HTTP-14).
+    pub preview: Option<&'a Result<Request, String>>,
+    /// Files to upload can be picked with a dialog (R-HTTP-15).
+    pub can_pick_files: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorAction {
     Send,
     Cancel,
     /// Open the collection's default headers and auth.
     EditCollectionDefaults,
+    /// A `curl` command was pasted into the URL field (R-HTTP-11).
+    PasteCurl(String),
+    /// "Choose…" for the file of multipart part `n` (R-HTTP-15).
+    ChooseFile(usize),
 }
 
 /// Method + server + URL bar and the request detail tabs (R-HTTP-1..4, R-HTTP-7, R-SRV-3).
@@ -127,46 +150,70 @@ pub fn request_editor(
             (Tab::Auth, "Auth", has_auth.then(|| "⏺".to_owned())),
             (Tab::Body, "Body", has_body.then(|| "⏺".to_owned())),
             (Tab::Options, "Options", None),
+            (Tab::Preview, "Preview", None),
         ],
     );
 
-    let mut action = action;
-    egui::ScrollArea::vertical()
+    let in_tab = egui::ScrollArea::vertical()
         .id_salt("request-tab")
         .auto_shrink([false, true])
-        .show(ui, |ui| match st.tab {
-            Tab::Params => {
-                if !request.path_vars.is_empty() {
-                    path_variables(ui, &mut request.path_vars, cx.undefined);
-                    ui.add_space(12.0);
-                }
-                if key_value_table(ui, "params", &mut request.params, "Parameter", cx.undefined) {
-                    st.url_text = request.display_url();
-                }
+        .show(ui, |ui| tab_content(ui, request, st, cx))
+        .inner;
+    action.or(in_tab)
+}
+
+/// What the open tab shows.
+fn tab_content(
+    ui: &mut Ui,
+    request: &mut Request,
+    st: &mut EditorState,
+    cx: EditorContext<'_>,
+) -> Option<EditorAction> {
+    let mut action = None;
+    match st.tab {
+        Tab::Params => {
+            if !request.path_vars.is_empty() {
+                path_variables(ui, &mut request.path_vars, cx.undefined);
+                ui.add_space(12.0);
             }
-            Tab::Headers => {
-                key_value_table(ui, "headers", &mut request.headers, "Header", cx.undefined);
-                if !cx.inherited_headers.is_empty() {
-                    ui.add_space(8.0);
-                    inherited_headers(ui, cx.inherited_headers);
-                    if ui.small_button("Edit project defaults…").clicked() {
-                        action = Some(EditorAction::EditCollectionDefaults);
-                    }
-                }
-                theme::hint(
-                    ui,
-                    "Content-Type is set automatically from the body type unless you add it here.",
-                );
+            if key_value_table(ui, "params", &mut request.params, "Parameter", cx.undefined) {
+                st.url_text = request.display_url();
             }
-            Tab::Auth => {
-                if request_auth(ui, &mut request.auth, cx.collection_auth, cx.undefined) {
+        }
+        Tab::Headers => {
+            key_value_table(ui, "headers", &mut request.headers, "Header", cx.undefined);
+            if !cx.inherited_headers.is_empty() {
+                ui.add_space(8.0);
+                inherited_headers(ui, cx.inherited_headers);
+                if ui.small_button("Edit project defaults…").clicked() {
                     action = Some(EditorAction::EditCollectionDefaults);
                 }
             }
-            Tab::Body => body_editor(ui, request, &mut st.body, cx.undefined),
-            Tab::Options => request_options(ui, request, st, cx),
-        });
-
+            theme::hint(
+                ui,
+                "Content-Type is set automatically from the body type unless you add it here.",
+            );
+        }
+        Tab::Auth => {
+            if request_auth(
+                ui,
+                &mut request.auth,
+                cx.collection_auth,
+                cx.auth_origin,
+                cx.undefined,
+            ) {
+                action = Some(EditorAction::EditCollectionDefaults);
+            }
+        }
+        Tab::Body => {
+            if let Some(i) = body_editor(ui, request, &mut st.body, cx.undefined, cx.can_pick_files)
+            {
+                action = Some(EditorAction::ChooseFile(i));
+            }
+        }
+        Tab::Options => request_options(ui, request, st, cx),
+        Tab::Preview => request_preview(ui, cx.preview),
+    }
     action
 }
 
@@ -277,20 +324,27 @@ fn path_variables(ui: &mut Ui, vars: &mut [KeyValue], undefined: &[String]) {
     );
 }
 
-/// Collection headers this request inherits (R-COL-4), read-only.
-fn inherited_headers(ui: &mut Ui, headers: &[KeyValue]) {
+/// Headers this request inherits, grouped by where they come from (R-COL-4, R-COL-11), read-only.
+fn inherited_headers(ui: &mut Ui, headers: &[(KeyValue, String)]) {
     let p = theme::palette(ui);
-    theme::section_label(ui, "From the project");
-    egui::Grid::new("inherited-headers")
-        .num_columns(2)
-        .spacing([24.0, 4.0])
-        .show(ui, |ui| {
-            for h in headers {
-                ui.label(RichText::new(&h.name).monospace().color(p.muted));
-                ui.label(RichText::new(&h.value).monospace().color(p.muted));
-                ui.end_row();
-            }
-        });
+    let mut origins: Vec<&str> = headers.iter().map(|(_, o)| o.as_str()).collect();
+    origins.dedup();
+    for (i, origin) in origins.into_iter().enumerate() {
+        if i > 0 {
+            ui.add_space(6.0);
+        }
+        theme::section_label(ui, &format!("From {origin}"));
+        egui::Grid::new(("inherited-headers", i))
+            .num_columns(2)
+            .spacing([24.0, 4.0])
+            .show(ui, |ui| {
+                for (h, _) in headers.iter().filter(|(_, o)| o == origin) {
+                    ui.label(RichText::new(&h.name).monospace().color(p.muted));
+                    ui.label(RichText::new(&h.value).monospace().color(p.muted));
+                    ui.end_row();
+                }
+            });
+    }
     theme::hint(
         ui,
         "Add a header with the same name above to replace one, or add it switched off to leave it out.",
@@ -368,7 +422,15 @@ fn url_field(
     if flagged {
         url = url.background_color(theme::undefined_bg(ui));
     }
+    // A pasted curl command fills the whole request instead of the URL (R-HTTP-11).
+    let pasted_curl = ui
+        .memory(|m| m.has_focus(id))
+        .then(|| ui.input_mut(take_pasted_curl))
+        .flatten();
     let url = ui.add(url);
+    if let Some(text) = pasted_curl {
+        return Some(EditorAction::PasteCurl(text));
+    }
     if st.focus_url {
         url.request_focus();
         st.focus_url = false;
@@ -379,6 +441,102 @@ fn url_field(
     (url.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !cx.sending)
         .then_some(EditorAction::Send)
 }
+
+/// Removes a paste of a `curl` command from this frame's input and returns its text.
+fn take_pasted_curl(input: &mut egui::InputState) -> Option<String> {
+    let at = input.events.iter().position(
+        |e| matches!(e, egui::Event::Paste(text) if tortuga_core::curl::import::is_command(text)),
+    )?;
+    match input.events.remove(at) {
+        egui::Event::Paste(text) => Some(text),
+        _ => None,
+    }
+}
+
+/// The request exactly as it will be sent, secrets masked (R-HTTP-14).
+fn request_preview(ui: &mut Ui, preview: Option<&Result<Request, String>>) {
+    let p = theme::palette(ui);
+    let request = match preview {
+        None => return,
+        Some(Err(message)) => return theme::warning(ui, message),
+        Some(Ok(request)) => request,
+    };
+    let mono = |text: &str| {
+        Label::new(RichText::new(text).monospace())
+            .selectable(true)
+            .wrap()
+    };
+    let url = tortuga_core::query::join_url(&request.url, &request.params);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(theme::method_text(ui, request.method));
+        ui.add(mono(&url));
+    });
+    ui.add_space(8.0);
+    theme::section_label(ui, "Headers");
+    let active: Vec<&KeyValue> = request.headers.iter().filter(|h| h.is_active()).collect();
+    if active.is_empty() {
+        theme::hint(ui, "No headers.");
+    }
+    for h in active {
+        // Basic credentials are readable here (and secrets stay masked); they are base64 when sent.
+        let value = h
+            .name
+            .eq_ignore_ascii_case("authorization")
+            .then(|| tortuga_core::curl::basic_credentials(&h.value))
+            .flatten()
+            .map_or_else(|| h.value.clone(), |user| format!("Basic {user}"));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!("{}:", h.name))
+                    .monospace()
+                    .color(p.muted),
+            );
+            ui.add(mono(&value));
+        });
+    }
+    let body = match &request.body {
+        RequestBody::None => None,
+        RequestBody::Text(t) | RequestBody::Json(t) => Some(t.clone()),
+        RequestBody::Form(fields) => Some(tortuga_core::query::encode_form(fields)),
+        RequestBody::Multipart(parts) => Some(
+            parts
+                .iter()
+                .filter(|p| p.is_active())
+                .map(|p| {
+                    let ct = p
+                        .content_type
+                        .as_deref()
+                        .map(|c| format!(" ({c})"))
+                        .unwrap_or_default();
+                    if p.file {
+                        format!("{}: file {}{ct}", p.name, p.value)
+                    } else {
+                        format!("{}: {}{ct}", p.name, p.value)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+    };
+    if let Some(body) = body {
+        ui.add_space(8.0);
+        theme::section_label(ui, "Body");
+        let (shown, cut) = crate::format::truncate(&body, PREVIEW_BODY_BYTES);
+        ui.add(mono(shown));
+        if cut {
+            theme::hint(ui, "The body is longer; only the start is shown.");
+        }
+    }
+    ui.add_space(8.0);
+    theme::hint(
+        ui,
+        "Variables, server and path variables filled in; secret values shown as <secret:name>. \
+         Basic credentials are base64-encoded when sent. Cookies from the jar are added when sending.",
+    );
+}
+
+/// Longest body shown in the preview.
+const PREVIEW_BODY_BYTES: usize = 64 * 1024;
 
 /// Per-request options: timeout (R-HTTP-7).
 fn request_options(
@@ -451,8 +609,11 @@ mod tests {
                         default_timeout_ms: 1000,
                         collection_auth: None,
                         inherited_headers: &[],
+                        auth_origin: "the project",
                         cookie_count: 0,
                         in_collection: false,
+                        preview: None,
+                        can_pick_files: false,
                     },
                 );
             });
@@ -470,6 +631,49 @@ mod tests {
             h.run();
         }
         assert_eq!(request.path_vars, [KeyValue::new("id", "42")]);
+    }
+
+    /// R-HTTP-14: the Preview tab shows the resolved request with Basic credentials readable.
+    #[test]
+    fn preview_tab_shows_the_request_as_sent() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/");
+        let mut st = EditorState::new(&request);
+        st.focus_url = false;
+        let mut sent = Request::new(HttpMethod::Post, "https://api.test/users?page=2");
+        // `alice:<secret:pw>` in base64
+        sent.headers = vec![KeyValue::new(
+            "Authorization",
+            "Basic YWxpY2U6PHNlY3JldDpwdz4=",
+        )];
+        sent.body = RequestBody::Json("{\"a\": 1}".into());
+        let preview = Ok(sent);
+        let mut h = crate::test_host::harness(|ui| {
+            request_editor(
+                ui,
+                &mut request,
+                &mut st,
+                EditorContext {
+                    servers: &[],
+                    server_base: None,
+                    undefined: &[],
+                    sending: false,
+                    default_timeout_ms: 1000,
+                    collection_auth: None,
+                    inherited_headers: &[],
+                    auth_origin: "the project",
+                    cookie_count: 0,
+                    in_collection: false,
+                    preview: Some(&preview),
+                    can_pick_files: false,
+                },
+            );
+        });
+        h.run();
+        h.get_by_label("Preview").click();
+        h.run();
+        h.get_by_label("https://api.test/users?page=2");
+        h.get_by_label("Basic alice:<secret:pw>");
+        h.get_by_label("{\"a\": 1}");
     }
 
     #[test]

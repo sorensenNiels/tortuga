@@ -53,8 +53,10 @@ pub fn request_auth(
     ui: &mut Ui,
     auth: &mut Option<Auth>,
     inherited: Option<&Auth>,
+    origin: &str,
     undefined: &[String],
 ) -> bool {
+    let from_project = origin == "the project";
     let current = match auth {
         None if inherited.is_some() => Kind::Inherit,
         None => Kind::None,
@@ -63,7 +65,12 @@ pub fn request_auth(
     let mut chosen = current;
     ui.horizontal(|ui| {
         if inherited.is_some() {
-            ui.radio_value(&mut chosen, Kind::Inherit, "Inherit from project");
+            let label = if from_project {
+                "Inherit from project".to_owned()
+            } else {
+                format!("Inherit from {origin}")
+            };
+            ui.radio_value(&mut chosen, Kind::Inherit, label);
         }
         ui.radio_value(&mut chosen, Kind::None, "No auth");
         ui.radio_value(&mut chosen, Kind::Basic, "Basic");
@@ -80,11 +87,18 @@ pub fn request_auth(
             theme::hint(
                 ui,
                 format!(
-                    "This request uses the project's auth: {}.",
+                    "This request uses the auth of {origin}: {}.",
                     describe(inherited)
                 ),
             );
-            edit_defaults = ui.button("Edit project defaults…").clicked();
+            if from_project {
+                edit_defaults = ui.button("Edit project defaults…").clicked();
+            } else {
+                theme::hint(
+                    ui,
+                    "Change it with “Folder defaults…” in that folder's menu.",
+                );
+            }
         }
         (None, None) => theme::hint(ui, "This request sends no authentication."),
         (Some(a), _) => {
@@ -95,11 +109,12 @@ pub fn request_auth(
 }
 
 /// Kind picker for a concrete auth (collection defaults: no "inherit").
-pub fn kind_picker(ui: &mut Ui, auth: &mut Auth) {
+/// Picks the kind of auth. `none_label` names "no auth here", e.g. "Inherit" for a folder.
+pub fn kind_picker(ui: &mut Ui, auth: &mut Auth, none_label: &str) {
     let current = Kind::of(auth);
     let mut chosen = current;
     ui.horizontal(|ui| {
-        ui.radio_value(&mut chosen, Kind::None, "No auth");
+        ui.radio_value(&mut chosen, Kind::None, none_label);
         ui.radio_value(&mut chosen, Kind::Basic, "Basic");
         ui.radio_value(&mut chosen, Kind::Bearer, "Bearer token");
     });

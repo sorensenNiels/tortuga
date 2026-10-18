@@ -21,20 +21,49 @@ pub struct Context {
     pub variables: BTreeMap<String, String>,
     /// Names of the collection's secret variables (R-VAR-3).
     pub secrets: BTreeSet<String>,
-    /// Headers every request inherits (R-COL-4).
+    /// Headers every request inherits (R-COL-4), from the project and the request's
+    /// folders (R-COL-11).
     pub headers: Vec<KeyValue>,
+    /// Where each of `headers` comes from, e.g. "the project" or "folder “Users”".
+    pub header_origins: Vec<String>,
     /// Auth for requests that don't set their own (R-HTTP-5).
     pub auth: Auth,
+    /// Where `auth` comes from.
+    pub auth_origin: String,
+    /// The project folder, which relative paths of files to upload start from (R-HTTP-15, D21).
+    pub base_dir: Option<std::path::PathBuf>,
 }
 
 impl Context {
     /// The context of `collection` with environment `environment_id` active.
     pub fn for_collection(collection: &Collection, environment_id: Option<&str>) -> Self {
+        Self::for_request(collection, environment_id, None)
+    }
+
+    /// The context of the request at `path` in `collection` (R-COL-11): what its folders
+    /// define comes between the project and the request.
+    pub fn for_request(
+        collection: &Collection,
+        environment_id: Option<&str>,
+        path: Option<&std::path::Path>,
+    ) -> Self {
         let env = environment_id.and_then(|id| collection.environment(id));
+        let folders = path.map(|p| collection.folders_of(p)).unwrap_or_default();
         let mut variables = collection.manifest.variables.clone();
+        // Nearest folder last, so it wins; an empty value means "inherit".
+        for folder in &folders {
+            variables.extend(
+                folder
+                    .defaults
+                    .variables
+                    .iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
+        }
         let mut server_urls = BTreeMap::new();
         if let Some(env) = env {
-            // An empty value in the environment means "use the collection default" (R-VAR-7).
+            // An empty value in the environment means "use the default" (R-VAR-7).
             variables.extend(
                 env.variables
                     .iter()
@@ -48,14 +77,51 @@ impl Context {
                     .map(|(k, v)| (k.clone(), v.clone())),
             );
         }
+
+        // Each level's headers, unless a deeper level names the same header.
+        let levels: Vec<(String, &[KeyValue])> = std::iter::once((
+            "the project".to_owned(),
+            collection.manifest.headers.as_slice(),
+        ))
+        .chain(folders.iter().map(|f| {
+            (
+                format!("folder “{}”", f.name),
+                f.defaults.headers.as_slice(),
+            )
+        }))
+        .collect();
+        let mut headers = Vec::new();
+        let mut header_origins = Vec::new();
+        for (i, (origin, level)) in levels.iter().enumerate() {
+            for h in *level {
+                let replaced = levels[i + 1..]
+                    .iter()
+                    .any(|(_, deeper)| deeper.iter().any(|d| same_name(d, h)));
+                if !replaced {
+                    headers.push(h.clone());
+                    header_origins.push(origin.clone());
+                }
+            }
+        }
+        let (auth, auth_origin) = folders
+            .iter()
+            .rev()
+            .find(|f| !f.defaults.auth.is_none())
+            .map_or_else(
+                || (collection.manifest.auth.clone(), "the project".to_owned()),
+                |f| (f.defaults.auth.clone(), format!("folder “{}”", f.name)),
+            );
         Self {
             environment: env.map(|e| e.name.clone()),
             server_names: crate::collection::server_names(&collection.manifest),
             server_urls,
             variables,
             secrets: collection.manifest.secrets.iter().cloned().collect(),
-            headers: collection.manifest.headers.clone(),
-            auth: collection.manifest.auth.clone(),
+            headers,
+            header_origins,
+            auth,
+            auth_origin,
+            base_dir: Some(collection.root.clone()),
         }
     }
 
@@ -76,18 +142,99 @@ impl Context {
         &'a self,
         request: &'a Request,
     ) -> impl Iterator<Item = &'a KeyValue> {
-        self.headers.iter().filter(|h| {
-            h.is_active()
-                && !request
-                    .headers
-                    .iter()
-                    .any(|own| own.name.trim().eq_ignore_ascii_case(h.name.trim()))
-        })
+        self.inherited_headers_with_origins(request).map(|(h, _)| h)
+    }
+
+    /// Like [`Self::inherited_headers`], with where each one comes from.
+    pub fn inherited_headers_with_origins<'a>(
+        &'a self,
+        request: &'a Request,
+    ) -> impl Iterator<Item = (&'a KeyValue, &'a str)> {
+        self.headers
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.is_active() && !request.headers.iter().any(|own| same_name(own, h)))
+            .map(|(i, h)| {
+                (
+                    h,
+                    self.header_origins
+                        .get(i)
+                        .map_or("the project", String::as_str),
+                )
+            })
     }
 
     pub fn is_defined(&self, name: &str) -> bool {
         self.variables.contains_key(name)
     }
+
+    /// This context with every secret value replaced by `<secret:name>` (P6).
+    #[must_use]
+    pub fn masked(&self) -> Self {
+        let mut out = self.clone();
+        for name in &self.secrets {
+            if let Some(value) = out.variables.get_mut(name)
+                && !value.is_empty()
+            {
+                *value = format!("<secret:{name}>");
+            }
+        }
+        out
+    }
+}
+
+/// The request as it will be sent, to show it (R-HTTP-14): like [`prepare`], with the
+/// Content-Type that sending adds, secret values shown as `<secret:name>`, and
+/// undefined variables left as `{{name}}`. Cookies from the jar are not included.
+pub fn preview(request: &Request, ctx: &Context) -> Result<Request> {
+    let mut ctx = ctx.masked();
+    for name in undefined_in(request, &ctx) {
+        let placeholder = format!("{{{{{name}}}}}");
+        ctx.variables.insert(name, placeholder);
+    }
+    let mut out = prepare(request, &ctx)?;
+    if matches!(out.body, RequestBody::Multipart(_)) {
+        // Always set when sending, with the boundary (R-HTTP-15).
+        out.headers
+            .retain(|h| !h.name.trim().eq_ignore_ascii_case("content-type"));
+        out.headers.push(KeyValue::new(
+            "Content-Type",
+            "multipart/form-data; boundary=… (set when sending)",
+        ));
+    } else if !out.has_header("content-type")
+        && let Some(content_type) = out.body.default_content_type()
+    {
+        out.headers
+            .push(KeyValue::new("Content-Type", content_type));
+    }
+    Ok(out)
+}
+
+/// The full path of a file to upload: relative paths start at the project folder (D21).
+fn file_path(path: &str, ctx: &Context) -> Result<String> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(Error::UploadFile {
+            path: std::path::PathBuf::new(),
+            reason: "no file chosen".into(),
+        });
+    }
+    let as_path = std::path::Path::new(path);
+    if as_path.is_absolute() {
+        return Ok(path.to_owned());
+    }
+    match &ctx.base_dir {
+        Some(dir) => Ok(dir.join(as_path).to_string_lossy().into_owned()),
+        None => Err(Error::UploadFile {
+            path: as_path.to_owned(),
+            reason: "a relative path needs a project; the scratch request needs the full path"
+                .into(),
+        }),
+    }
+}
+
+fn same_name(a: &KeyValue, b: &KeyValue) -> bool {
+    a.name.trim().eq_ignore_ascii_case(b.name.trim())
 }
 
 /// Resolves the server and all variables, giving a request with an absolute
@@ -151,6 +298,18 @@ pub fn prepare(request: &Request, ctx: &Context) -> Result<Request> {
             *t = substitute(t, &ctx.variables, &mut undefined);
         }
         RequestBody::Form(fields) => substitute_all(fields, ctx, &mut undefined),
+        RequestBody::Multipart(parts) => {
+            for part in parts.iter_mut() {
+                part.name = substitute(&part.name, &ctx.variables, &mut undefined);
+                part.value = substitute(&part.value, &ctx.variables, &mut undefined);
+                if let Some(ct) = &mut part.content_type {
+                    *ct = substitute(ct, &ctx.variables, &mut undefined);
+                }
+                if part.file {
+                    part.value = file_path(&part.value, ctx)?;
+                }
+            }
+        }
     }
     for field in auth.fields_mut() {
         *field = substitute(field, &ctx.variables, &mut undefined);
@@ -188,6 +347,12 @@ pub fn undefined_in(request: &Request, ctx: &Context) -> Vec<String> {
         RequestBody::Form(fields) => {
             for kv in fields.iter().filter(|kv| kv.enabled) {
                 texts.extend([kv.name.as_str(), kv.value.as_str()]);
+            }
+        }
+        RequestBody::Multipart(parts) => {
+            for part in parts.iter().filter(|p| p.enabled) {
+                texts.extend([part.name.as_str(), part.value.as_str()]);
+                texts.extend(part.content_type.as_deref());
             }
         }
     }
@@ -469,5 +634,67 @@ mod tests {
         assert_eq!(join_base("http://a.test", "users"), "http://a.test/users");
         assert_eq!(join_base("http://a.test/", ""), "http://a.test");
         assert_eq!(join_base("http://a.test", "?q=1"), "http://a.test?q=1");
+    }
+
+    /// R-HTTP-14: resolved, secrets masked, undefined left as typed, Content-Type added.
+    #[test]
+    fn preview_masks_secrets_and_keeps_undefined_names() {
+        let ctx = Context {
+            variables: BTreeMap::from([
+                ("host".into(), "api.test".into()),
+                ("token".into(), "s3cret".into()),
+            ]),
+            secrets: ["token".into()].into(),
+            auth: Auth::Bearer {
+                token: "{{token}}".into(),
+            },
+            ..Context::default()
+        };
+        let mut r = Request::new(crate::HttpMethod::Post, "https://{{host}}/u/{{missing}}");
+        r.body = RequestBody::Json("{}".into());
+        let shown = preview(&r, &ctx).expect("preview");
+        assert_eq!(shown.url, "https://api.test/u/{{missing}}");
+        assert_eq!(
+            shown.headers,
+            [
+                KeyValue::new("Authorization", "Bearer <secret:token>"),
+                KeyValue::new("Content-Type", "application/json"),
+            ]
+        );
+        assert!(
+            prepare(&r, &ctx).is_err(),
+            "sending still stops on undefined variables"
+        );
+    }
+
+    /// R-HTTP-15, D21: relative upload paths start at the project folder.
+    #[test]
+    fn upload_paths_are_resolved() {
+        use crate::model::FormPart;
+
+        let ctx = Context {
+            base_dir: Some("/repo/api".into()),
+            variables: BTreeMap::from([("dir".into(), "fixtures".into())]),
+            ..Context::default()
+        };
+        let mut r = Request::new(HttpMethod::Post, "https://a.test/");
+        r.body = RequestBody::Multipart(vec![
+            FormPart::file("a", "{{dir}}/me.png"),
+            FormPart::file("b", "/abs/x.bin"),
+            FormPart::text("c", "{{dir}}"),
+        ]);
+        let RequestBody::Multipart(parts) = prepare(&r, &ctx).expect("prepare").body else {
+            panic!("multipart")
+        };
+        let values: Vec<&str> = parts.iter().map(|p| p.value.as_str()).collect();
+        let expected = std::path::Path::new("/repo/api").join("fixtures/me.png");
+        assert_eq!(
+            values,
+            [expected.to_str().expect("utf-8"), "/abs/x.bin", "fixtures"]
+        );
+
+        let scratch = Context::default();
+        let err = prepare(&r, &scratch).expect_err("relative path without a project");
+        assert!(err.to_string().contains("full path"), "{err}");
     }
 }

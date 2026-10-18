@@ -108,17 +108,61 @@ pub enum RequestBody {
     Text(String),
     Json(String),
     Form(Vec<KeyValue>),
+    /// `multipart/form-data` (R-HTTP-15).
+    Multipart(Vec<FormPart>),
 }
 
 impl RequestBody {
-    /// The Content-Type sent when the user has not set one (R-HTTP-4).
+    /// The Content-Type sent when the user has not set one (R-HTTP-4). A multipart
+    /// body always gets its own, with the boundary.
     pub fn default_content_type(&self) -> Option<&'static str> {
         match self {
             Self::None => None,
             Self::Text(_) => Some("text/plain; charset=utf-8"),
             Self::Json(_) => Some("application/json"),
             Self::Form(_) => Some("application/x-www-form-urlencoded"),
+            Self::Multipart(_) => Some("multipart/form-data"),
         }
+    }
+}
+
+/// One part of a `multipart/form-data` body (R-HTTP-15): a text value, or a file.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FormPart {
+    pub name: String,
+    /// The text, or the path of the file (relative to the project folder, D21).
+    #[serde(default)]
+    pub value: String,
+    /// `value` is a file to upload.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub file: bool,
+    /// Overrides the part's content type (for files, otherwise guessed by the server).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default = "enabled_by_default", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+}
+
+impl FormPart {
+    pub fn text(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            enabled: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn file(name: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            file: true,
+            ..Self::text(name, path)
+        }
+    }
+
+    /// Enabled and named.
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.name.trim().is_empty()
     }
 }
 

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use web_time::Instant;
 
 use crate::cookies::CookieJar;
-use crate::model::{HttpMethod, KeyValue, Request, RequestBody, Response};
+use crate::model::{FormPart, HttpMethod, KeyValue, Request, RequestBody, Response};
 use crate::{Error, Result, query};
 
 /// Global HTTP settings (R-HTTP-7, R-HTTP-8). Proxies come from the system settings.
@@ -42,12 +42,28 @@ impl ClientSettings {
     }
 }
 
+/// Reads the files of multipart uploads when a request is sent (R-HTTP-15). The app
+/// supplies it (the file system on desktop), so the engine never reads files itself.
+#[derive(Clone)]
+pub struct FileReader(pub std::sync::Arc<ReadFile>);
+
+/// Reads a whole file.
+pub type ReadFile = dyn Fn(&std::path::Path) -> std::io::Result<Vec<u8>> + Send + Sync;
+
+impl std::fmt::Debug for FileReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FileReader")
+    }
+}
+
 /// Reusable HTTP client. Cheap to clone; keeps a shared connection pool.
 /// Create a new one when [`ClientSettings`] change.
 #[derive(Debug, Clone)]
 pub struct Client {
     inner: reqwest::Client,
     settings: ClientSettings,
+    /// Reads files to upload; `None`: uploading files is not possible here.
+    files: Option<FileReader>,
     /// One client per cookie jar, created on first use (R-CK-1). Each keeps its
     /// jar alive, so the key (the jar's address) cannot be reused by another jar.
     #[cfg(not(target_arch = "wasm32"))]
@@ -69,9 +85,17 @@ impl Client {
         Ok(Self {
             inner,
             settings,
+            files: None,
             #[cfg(not(target_arch = "wasm32"))]
             jar_clients: std::sync::Arc::default(),
         })
+    }
+
+    /// Lets the client upload files in multipart bodies (R-HTTP-15).
+    #[must_use]
+    pub fn with_file_reader(mut self, files: FileReader) -> Self {
+        self.files = Some(files);
+        self
     }
 
     /// The client that sends `request`: with `jar` unless the request has cookies
@@ -133,11 +157,22 @@ impl Client {
             .request(to_reqwest_method(request.method), url)
             .timeout(timeout);
 
+        // A multipart body sets its own Content-Type, with the boundary.
+        let multipart = matches!(request.body, RequestBody::Multipart(_));
         for header in request.headers.iter().filter(|h| h.is_active()) {
+            if multipart
+                && header
+                    .name
+                    .trim()
+                    .eq_ignore_ascii_case(CONTENT_TYPE.as_str())
+            {
+                continue;
+            }
             builder = builder.header(header_name(header)?, header_value(header)?);
         }
 
-        if !request.has_header(CONTENT_TYPE.as_str())
+        if !multipart
+            && !request.has_header(CONTENT_TYPE.as_str())
             && let Some(content_type) = request.body.default_content_type()
         {
             builder = builder.header(CONTENT_TYPE, content_type);
@@ -147,6 +182,7 @@ impl Client {
             RequestBody::None => builder,
             RequestBody::Text(text) | RequestBody::Json(text) => builder.body(text.clone()),
             RequestBody::Form(fields) => builder.body(query::encode_form(fields)),
+            RequestBody::Multipart(parts) => builder.multipart(self.multipart_form(parts)?),
         };
 
         let started = Instant::now();
@@ -180,6 +216,47 @@ impl Client {
             body,
             elapsed,
         })
+    }
+}
+
+impl Client {
+    /// The form for a multipart body, with the files read now (R-HTTP-15).
+    fn multipart_form(&self, parts: &[FormPart]) -> Result<reqwest::multipart::Form> {
+        let mut form = reqwest::multipart::Form::new();
+        for p in parts.iter().filter(|p| p.is_active()) {
+            let name = p.name.trim().to_owned();
+            let mut part = if p.file {
+                let path = std::path::Path::new(&p.value);
+                let upload_error = |reason: String| Error::UploadFile {
+                    path: path.to_owned(),
+                    reason,
+                };
+                let files = self
+                    .files
+                    .as_ref()
+                    .ok_or_else(|| upload_error("files can't be read here".into()))?;
+                let data = (files.0)(path).map_err(|e| upload_error(e.to_string()))?;
+                let file_name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                reqwest::multipart::Part::bytes(data).file_name(file_name)
+            } else {
+                reqwest::multipart::Part::text(p.value.clone())
+            };
+            if let Some(ct) = p
+                .content_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+            {
+                part = part.mime_str(ct).map_err(|_| {
+                    Error::InvalidOperation(format!("“{ct}” is not a content type (part “{name}”)"))
+                })?;
+            }
+            form = form.part(name, part);
+        }
+        Ok(form)
     }
 }
 

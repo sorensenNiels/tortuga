@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Auth, HttpMethod, KeyValue, Request, RequestBody};
+use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody};
 
 /// Format version written by this build (R-GIT-7).
 pub const FORMAT_VERSION: u32 = 1;
@@ -71,13 +71,59 @@ pub struct Environment {
     pub variables: BTreeMap<String, String>,
 }
 
-/// `_folder.toml`: display name and position of a folder.
+/// `_folder.toml`: display name and position of a folder, and the defaults its
+/// requests inherit (R-COL-11).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FolderMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<i64>,
+    /// Headers the folder's requests inherit; a header with the same name in a
+    /// subfolder or the request, enabled or not, replaces it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<KeyValue>,
+    /// Auth for the folder's requests that don't set their own; none = inherit.
+    #[serde(default, skip_serializing_if = "Auth::is_none")]
+    pub auth: Auth,
+    /// Variable defaults for the folder's requests.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub variables: BTreeMap<String, String>,
+}
+
+/// What a folder's requests inherit from it (R-COL-11).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FolderDefaults {
+    pub headers: Vec<KeyValue>,
+    pub auth: Auth,
+    pub variables: BTreeMap<String, String>,
+}
+
+impl FolderDefaults {
+    pub fn is_empty(&self) -> bool {
+        self.headers.is_empty() && self.auth.is_none() && self.variables.is_empty()
+    }
+}
+
+impl FolderMeta {
+    /// A folder file with this name, position and defaults.
+    pub fn new(name: String, seq: Option<i64>, defaults: &FolderDefaults) -> Self {
+        Self {
+            name: Some(name),
+            seq,
+            headers: defaults.headers.clone(),
+            auth: defaults.auth.clone(),
+            variables: defaults.variables.clone(),
+        }
+    }
+
+    pub fn defaults(&self) -> FolderDefaults {
+        FolderDefaults {
+            headers: self.headers.clone(),
+            auth: self.auth.clone(),
+            variables: self.variables.clone(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -117,6 +163,9 @@ struct BodyFile {
     content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     fields: Vec<KeyValue>,
+    /// Parts of a multipart body (R-HTTP-15).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    parts: Vec<FormPart>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -125,6 +174,7 @@ enum BodyKind {
     Text,
     Json,
     Form,
+    Multipart,
 }
 
 /// Reads a request file. `stem` names the request when the file has no `name`.
@@ -160,6 +210,11 @@ pub fn parse_request(text: &str, stem: &str) -> Result<(Request, Option<i64>), S
             fields,
             ..
         }) => RequestBody::Form(fields),
+        Some(BodyFile {
+            kind: BodyKind::Multipart,
+            parts,
+            ..
+        }) => RequestBody::Multipart(parts),
     };
     Ok((request, file.seq))
 }
@@ -171,16 +226,25 @@ pub fn write_request(request: &Request, seq: Option<i64>) -> String {
             kind: BodyKind::Text,
             content: Some(t.clone()),
             fields: vec![],
+            parts: vec![],
         }),
         RequestBody::Json(t) => Some(BodyFile {
             kind: BodyKind::Json,
             content: Some(t.clone()),
             fields: vec![],
+            parts: vec![],
         }),
         RequestBody::Form(f) => Some(BodyFile {
             kind: BodyKind::Form,
             content: None,
             fields: f.clone(),
+            parts: vec![],
+        }),
+        RequestBody::Multipart(p) => Some(BodyFile {
+            kind: BodyKind::Multipart,
+            content: None,
+            fields: vec![],
+            parts: p.clone(),
         }),
     };
     to_toml(&RequestFile {
@@ -302,6 +366,83 @@ content = """
 """
 "#
         );
+    }
+
+    /// R-COL-11, R-GIT-3: folder files with defaults are readable, stable and round-trip.
+    #[test]
+    fn folder_file_with_defaults() {
+        let meta = FolderMeta::new(
+            "Admin".into(),
+            Some(3),
+            &FolderDefaults {
+                headers: vec![KeyValue::new("X-Area", "admin")],
+                auth: Auth::Bearer {
+                    token: "{{admin_token}}".into(),
+                },
+                variables: [("tenant".to_owned(), "acme".to_owned())].into(),
+            },
+        );
+        let text = write_folder(&meta);
+        assert_eq!(
+            text,
+            r#"name = "Admin"
+seq = 3
+
+[[headers]]
+name = "X-Area"
+value = "admin"
+
+[auth]
+kind = "bearer"
+token = "{{admin_token}}"
+
+[variables]
+tenant = "acme"
+"#
+        );
+        assert_eq!(parse_folder(&text).expect("parse"), meta);
+        assert_eq!(
+            write_folder(&FolderMeta::new(
+                "Plain".into(),
+                None,
+                &FolderDefaults::default()
+            )),
+            "name = \"Plain\"\n",
+            "no defaults: nothing extra written"
+        );
+    }
+
+    /// R-HTTP-15, R-GIT-3: multipart bodies are readable, stable and round-trip.
+    #[test]
+    fn multipart_body_file() {
+        let mut r = Request::new(HttpMethod::Post, "/upload");
+        r.name = "Upload".into();
+        let mut avatar = FormPart::file("avatar", "fixtures/me.png");
+        avatar.content_type = Some("image/png".into());
+        r.body = RequestBody::Multipart(vec![FormPart::text("title", "{{name}}"), avatar]);
+        let text = write_request(&r, None);
+        assert_eq!(
+            text,
+            r#"name = "Upload"
+method = "POST"
+url = "/upload"
+
+[body]
+kind = "multipart"
+
+[[body.parts]]
+name = "title"
+value = "{{name}}"
+
+[[body.parts]]
+name = "avatar"
+value = "fixtures/me.png"
+file = true
+content_type = "image/png"
+"#
+        );
+        let (back, _) = parse_request(&text, "x").expect("parse");
+        assert_eq!(back, r);
     }
 
     #[test]

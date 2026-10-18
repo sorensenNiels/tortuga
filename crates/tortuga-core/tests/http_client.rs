@@ -524,3 +524,67 @@ async fn receives_a_50_mb_body() {
     assert_eq!(res.body.len(), SIZE);
     assert!(res.body == body, "body arrives unchanged");
 }
+
+/// R-HTTP-15: text parts and files are sent as multipart/form-data; files are read
+/// through the app's reader when sending.
+#[tokio::test]
+async fn sends_multipart_with_files() {
+    use std::sync::Arc;
+    use tortuga_core::{FileReader, FormPart};
+
+    let server = server_replying(200).await;
+    let reader = FileReader(Arc::new(|path: &std::path::Path| {
+        if path.ends_with("me.png") {
+            Ok(b"PNGDATA".to_vec())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no such file",
+            ))
+        }
+    }));
+    let client = Client::default().with_file_reader(reader);
+    let mut req = Request::new(HttpMethod::Post, server.uri());
+    // A Content-Type set by hand would lose the boundary: it is replaced.
+    req.headers
+        .push(KeyValue::new("Content-Type", "multipart/form-data"));
+    let mut avatar = FormPart::file("avatar", "/fixtures/me.png");
+    avatar.content_type = Some("image/png".into());
+    let mut off = FormPart::text("off", "x");
+    off.enabled = false;
+    req.body = RequestBody::Multipart(vec![FormPart::text("title", "Hello"), avatar, off]);
+    client.execute(&req).await.expect("sent");
+
+    let received = only_received(&server).await;
+    let content_type = header_values(&received, "content-type");
+    assert_eq!(content_type.len(), 1, "{content_type:?}");
+    assert!(
+        content_type[0].starts_with("multipart/form-data; boundary="),
+        "{content_type:?}"
+    );
+    let body = String::from_utf8_lossy(&received.body);
+    assert!(body.contains("name=\"title\"\r\n\r\nHello"), "{body}");
+    assert!(
+        body.contains("name=\"avatar\"; filename=\"me.png\""),
+        "{body}"
+    );
+    assert!(
+        body.contains("Content-Type: image/png\r\n\r\nPNGDATA"),
+        "{body}"
+    );
+    assert!(
+        !body.contains("name=\"off\""),
+        "switched-off parts are left out"
+    );
+
+    // A missing file, or no way to read files, stops the send and names the file.
+    req.body = RequestBody::Multipart(vec![FormPart::file("doc", "/fixtures/gone.pdf")]);
+    let err = client.execute(&req).await.expect_err("missing file");
+    assert!(matches!(err, Error::UploadFile { .. }), "{err}");
+    assert!(err.to_string().contains("gone.pdf"), "{err}");
+    let err = Client::default()
+        .execute(&req)
+        .await
+        .expect_err("no reader");
+    assert!(err.to_string().contains("can't be read here"), "{err}");
+}

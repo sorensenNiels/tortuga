@@ -555,9 +555,10 @@ impl SettingsDialog {
                 );
             }
             ui.horizontal(|ui| {
-                ui.label("Default timeout (ms)");
+                let label = ui.label("Default timeout (ms)");
                 if ui
                     .add(TextEdit::singleline(&mut self.timeout_text).desired_width(120.0))
+                    .labelled_by(label.id)
                     .changed()
                     && let Some(ms) = parse_timeout(&self.timeout_text)
                 {
