@@ -109,6 +109,11 @@ pub(crate) mod test_host {
         fn keeps_history(&self) -> bool {
             true
         }
+        fn file_reader(&self) -> Option<tortuga_core::FileReader> {
+            Some(tortuga_core::FileReader(std::sync::Arc::new(
+                |path: &std::path::Path| std::fs::read(path),
+            )))
+        }
         fn history_list(
             &self,
             root: Option<&std::path::Path>,
@@ -187,7 +192,7 @@ mod tests {
         let mut harness = test_host::harness(|ui| {
             for symbol in [
                 "⏵", "⏷", "⏺", "⚠", "🗙", "⚙", "✏", "•", "…", "—", "“", "”", "🐢", "·", "🔒", "›",
-                "↑", "↓", "→",
+                "↑", "↓", "→", "☰",
             ] {
                 ui.label(symbol);
                 ui.monospace(symbol);

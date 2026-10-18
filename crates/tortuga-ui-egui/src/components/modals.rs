@@ -531,6 +531,8 @@ pub struct SettingsDialog {
     timeout_text: String,
     /// Shown when saving failed.
     pub error: Option<String>,
+    /// "Add…" was clicked for a CA certificate; the shell asks for the file (R-HTTP-16).
+    pub add_ca_requested: bool,
 }
 
 impl SettingsDialog {
@@ -539,12 +541,20 @@ impl SettingsDialog {
             draft: settings.clone(),
             timeout_text: settings.default_timeout_ms.to_string(),
             error: None,
+            add_ca_requested: false,
         }
     }
 
-    /// Done with the settings to apply.
-    pub fn show(&mut self, ctx: &Context) -> DialogResult<ClientSettings> {
-        dialog(ctx, "settings", "Settings", 420.0, true, |ui| {
+    /// Adds a CA certificate file chosen after "Add…" (R-HTTP-16).
+    pub fn add_ca(&mut self, path: PathBuf) {
+        if !self.draft.ca_certificates.contains(&path) {
+            self.draft.ca_certificates.push(path);
+        }
+    }
+
+    /// Done with the settings to apply. `can_pick_files`: offer "Add…" for CA certificates.
+    pub fn show(&mut self, ctx: &Context, can_pick_files: bool) -> DialogResult<ClientSettings> {
+        dialog(ctx, "settings", "Settings", 460.0, true, |ui| {
             let d = &mut self.draft;
             ui.checkbox(&mut d.follow_redirects, "Follow redirects");
             ui.checkbox(&mut d.verify_tls, "Verify TLS certificates");
@@ -566,6 +576,9 @@ impl SettingsDialog {
                 }
             });
             theme::hint(ui, "Proxy settings are taken from the operating system.");
+            ui.add_space(10.0);
+            self.add_ca_requested |=
+                ca_certificates(ui, &mut self.draft.ca_certificates, can_pick_files);
             if let Some(err) = &self.error {
                 theme::error(ui, err);
             }
@@ -575,12 +588,78 @@ impl SettingsDialog {
     }
 }
 
+/// CA certificate files trusted besides the system's (R-HTTP-16). Returns whether "Add…"
+/// was clicked.
+fn ca_certificates(ui: &mut Ui, files: &mut Vec<PathBuf>, can_pick_files: bool) -> bool {
+    theme::section_label(ui, "CA certificates");
+    let mut remove = None;
+    for (i, path) in files.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if ui
+                .add(theme::icon_button(ui, "🗙"))
+                .on_hover_text("Stop trusting it")
+                .clicked()
+            {
+                remove = Some(i);
+            }
+            ui.add(egui::Label::new(path.display().to_string()).truncate())
+                .on_hover_text(path.display().to_string());
+        });
+    }
+    if let Some(i) = remove {
+        files.remove(i);
+    }
+    let add = can_pick_files && ui.button("Add…").clicked();
+    theme::hint(
+        ui,
+        "PEM files whose certificates are trusted besides the system's, e.g. your company's CA \
+         for internal APIs. Kept on this computer only.",
+    );
+    add
+}
+
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::test_host::TestHost;
+
+    /// R-HTTP-16: CA certificates are listed, added and removed in the settings.
+    #[test]
+    fn ca_certificates_in_settings() {
+        let mut dialog = SettingsDialog::new(&ClientSettings {
+            ca_certificates: vec![PathBuf::from("/etc/old-ca.pem")],
+            ..ClientSettings::default()
+        });
+        let mut result = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
+                    result = Some(r);
+                }
+            });
+            h.run();
+            h.get_by_label("/etc/old-ca.pem");
+            h.get_by_label("Add…").click();
+            h.run();
+            h.get_by_label("🗙").click();
+            h.run();
+            h.get_by_label("Save").click();
+            h.run();
+        }
+        assert!(dialog.add_ca_requested);
+        assert_eq!(
+            result.expect("saved").ca_certificates,
+            Vec::<PathBuf>::new()
+        );
+        dialog.add_ca(PathBuf::from("/etc/company-ca.pem"));
+        dialog.add_ca(PathBuf::from("/etc/company-ca.pem"));
+        assert_eq!(
+            dialog.draft.ca_certificates,
+            [PathBuf::from("/etc/company-ca.pem")]
+        );
+    }
 
     /// R-WS-3: found projects are a checklist; projects already open can't be added twice.
     #[test]

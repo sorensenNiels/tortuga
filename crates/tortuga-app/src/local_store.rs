@@ -244,6 +244,25 @@ mod tests {
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 
+    /// R-HTTP-16: CA certificate paths are kept in the settings; older files still load.
+    #[test]
+    fn settings_round_trip_with_ca_certificates() {
+        let settings = ClientSettings {
+            ca_certificates: vec![PathBuf::from("/etc/ssl/company-ca.pem")],
+            ..ClientSettings::default()
+        };
+        let text = toml::to_string(&settings).expect("serialize");
+        assert_eq!(
+            toml::from_str::<ClientSettings>(&text).expect("parse"),
+            settings
+        );
+        let old: ClientSettings = toml::from_str(
+            "follow_redirects = true\nverify_tls = true\ndefault_timeout_ms = 500\n",
+        )
+        .expect("old file");
+        assert_eq!(old.ca_certificates, Vec::<PathBuf>::new());
+    }
+
     /// R-COL-8: unsaved edits round-trip through the drafts file.
     #[test]
     fn drafts_round_trip() {

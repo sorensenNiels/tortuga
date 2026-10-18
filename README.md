@@ -6,7 +6,7 @@ Runs on Windows, Linux and macOS (web support planned).
 **Status:** milestones M1–M8 and the v1 extras are implemented: sending requests, projects on disk, environments with servers and
 variables, auth and secrets, cookies, live git status, workspaces, kept unsaved edits, copy as curl, installers for
 Windows, macOS and Linux, and the first daily-driver features: paste curl, quick open and command palette, search and
-filter responses, history, request preview, folder defaults and multipart uploads. See [docs/FEATURES.md](docs/FEATURES.md) for what
+filter responses, history, request preview, folder defaults, multipart uploads, custom CA certificates and drag and drop. See [docs/FEATURES.md](docs/FEATURES.md) for what
 works today and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Install
@@ -99,6 +99,12 @@ sent, with secret values masked.
 
 **Uploads.** Choose the **Multipart** body type to send form fields and files. Keep files to upload inside the project
 (e.g. a `fixtures/` folder) and they are saved with a path relative to it, so the request works for teammates too.
+
+**Company certificates.** If your internal APIs use certificates from your company's own CA, add its PEM file under
+**Settings → CA certificates**.
+
+**Reordering.** Drag requests and folders in the sidebar to reorder them or move them into a folder. In the
+environments dialog, drag the ☰ handle of an environment or server to change their order.
 
 **Folder defaults.** A folder's **…** menu has **Folder defaults…**: headers, auth and variables for every request in
 that folder. They are saved in the folder's `_folder.toml`, so they are shared through git like the requests.

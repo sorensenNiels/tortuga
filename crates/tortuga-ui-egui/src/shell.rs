@@ -1471,6 +1471,11 @@ impl TortugaUi {
             SidebarAction::EditDefaults(root) => {
                 self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
             }
+            SidebarAction::Place {
+                key,
+                parent,
+                before,
+            } => self.place(&key, &parent, before.as_deref()),
             SidebarAction::EditFolderDefaults(key) => {
                 self.modal = Some(Modal::Defaults(DefaultsDialog::for_folder(
                     &self.state,
@@ -1501,6 +1506,16 @@ impl TortugaUi {
             SidebarAction::AddProjects => self.add_projects(),
             SidebarAction::LocateMissing(path) => self.locate_missing(&path),
             SidebarAction::RemoveMissing(path) => self.state.remove_missing(&path),
+        }
+    }
+
+    /// A dropped tree row (R-COL-12): edits and selection follow it if it moved folder.
+    fn place(&mut self, key: &ItemKey, parent: &Path, before: Option<&Path>) {
+        if let Some(new_path) = self
+            .state
+            .run(&key.root, |c, s| c.place(s, &key.path, parent, before))
+        {
+            self.remap(&key.root, &key.path, &new_path);
         }
     }
 
@@ -1636,16 +1651,7 @@ impl TortugaUi {
             return;
         };
         let keep = match &mut modal {
-            Modal::Settings(d) => match d.show(ctx) {
-                DialogResult::Done(settings) => match self.state.apply_settings(&settings) {
-                    Ok(()) => false,
-                    Err(e) => {
-                        d.error = Some(e);
-                        true
-                    }
-                },
-                result => result == DialogResult::Open,
-            },
+            Modal::Settings(d) => self.show_settings(ctx, d),
             Modal::Environments(d) => match d.show(ctx, &self.state) {
                 DialogResult::Done(saved) => !self.save_environments(d, saved),
                 result => result == DialogResult::Open,
@@ -1786,6 +1792,30 @@ impl TortugaUi {
 
     /// Saves the environments dialog. Secrets first: if the credential store fails,
     /// nothing changes on disk and the dialog stays open with the error. Returns success.
+    /// The settings dialog, with "Add…" for CA certificates (R-HTTP-16). Returns whether
+    /// it stays open.
+    fn show_settings(&mut self, ctx: &egui::Context, d: &mut SettingsDialog) -> bool {
+        let result = d.show(ctx, self.state.host.can_pick_folders());
+        if std::mem::take(&mut d.add_ca_requested)
+            && let Some(path) = self
+                .state
+                .host
+                .pick_any_file("Choose a CA certificate (PEM)")
+        {
+            d.add_ca(path);
+        }
+        match result {
+            DialogResult::Done(settings) => match self.state.apply_settings(&settings) {
+                Ok(()) => false,
+                Err(e) => {
+                    d.error = Some(e);
+                    true
+                }
+            },
+            result => result == DialogResult::Open,
+        }
+    }
+
     /// Saves project defaults (R-COL-4) or folder defaults (R-COL-11). Returns whether it worked.
     fn save_defaults(
         &mut self,
@@ -2317,6 +2347,85 @@ mod tests {
             upload_path(Path::new("/home/me/x.bin"), None),
             "/home/me/x.bin"
         );
+    }
+
+    /// R-COL-12: dragging a row onto the top of another puts it before that one;
+    /// dropping it on a folder moves it into the folder.
+    #[test]
+    fn drag_and_drop_in_the_tree() {
+        use egui_kittest::kittest::Queryable;
+
+        let root = std::env::temp_dir().join(format!("tortuga-dnd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let col = Collection::create(&FsStorage, &root, "Shop").expect("create");
+        for name in ["Alpha", "Beta"] {
+            let mut r = Request::new(tortuga_core::HttpMethod::Get, "https://a.test/");
+            r.name = name.into();
+            Collection::open(&FsStorage, &root)
+                .expect("open")
+                .new_request(&FsStorage, Path::new(""), &r)
+                .expect("request");
+        }
+        drop(col);
+        Collection::open(&FsStorage, &root)
+            .expect("open")
+            .new_folder(&FsStorage, Path::new(""), "Orders")
+            .expect("folder");
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(TortugaUi::new(Box::new(
+            TestHost {
+                open: vec![root.clone()],
+                ..TestHost::default()
+            },
+        ))));
+        let shared = ui.clone();
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+
+        let drag = |harness: &mut egui_kittest::Harness<'_>, from: &str, to: &str, frac: f32| {
+            let start = harness.get_by_label_contains(from).rect().center();
+            let target = harness.get_by_label_contains(to).rect();
+            let end = egui::pos2(target.center().x, target.top() + target.height() * frac);
+            harness.event(egui::Event::PointerMoved(start));
+            harness.event(egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            });
+            harness.step();
+            for i in 1..=5 {
+                #[expect(clippy::cast_precision_loss, reason = "a few steps")]
+                let t = i as f32 / 5.0;
+                harness.event(egui::Event::PointerMoved(start + (end - start) * t));
+                harness.step();
+            }
+            harness.event(egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            });
+            harness.run();
+        };
+        let order = || {
+            let c = Collection::open(&FsStorage, &root).expect("open");
+            c.items.iter().map(Item::name).collect::<Vec<_>>()
+        };
+        assert_eq!(order(), ["Alpha", "Beta", "Orders"]);
+        drag(&mut harness, "Beta", "Alpha", 0.2);
+        assert_eq!(order(), ["Beta", "Alpha", "Orders"]);
+        drag(&mut harness, "Alpha", "Orders", 0.7);
+        assert_eq!(order(), ["Beta", "Orders"]);
+        let c = Collection::open(&FsStorage, &root).expect("open");
+        assert_eq!(
+            c.children(Path::new("orders"))
+                .iter()
+                .map(Item::name)
+                .collect::<Vec<_>>(),
+            ["Alpha"]
+        );
+        drop(harness);
+        std::fs::remove_dir_all(root).expect("clean up");
     }
 
     /// R-GIT-11: a request deleted on disk while edited can be restored with the edits.

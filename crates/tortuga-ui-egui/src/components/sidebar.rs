@@ -42,6 +42,12 @@ pub enum SidebarAction {
     EditDefaults(PathBuf),
     /// Default headers, auth and variables of a folder (R-COL-11).
     EditFolderDefaults(ItemKey),
+    /// Drag and drop: put the item in `parent` before `before` (`None`: at the end) (R-COL-12).
+    Place {
+        key: ItemKey,
+        parent: PathBuf,
+        before: Option<PathBuf>,
+    },
     /// Empty the collection's cookie jar (R-CK-3).
     ClearCookies(PathBuf),
     /// Open the collection folder outside the app (R-GIT-13).
@@ -218,6 +224,7 @@ pub fn sidebar(
             for (project, reason) in &state.missing {
                 ui.push_id(&project.path, |ui| missing_row(ui, project, reason, &mut tree));
             }
+            drag_label(ui);
             if state.collections.is_empty() && state.missing.is_empty() {
                 ui.add_space(4.0);
                 theme::hint(
@@ -277,6 +284,9 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
             ));
         }
         let (row, from_button) = tree_row(ui, depth, false, atoms, |ui| menu_button(ui, menu));
+        if !read_only {
+            drop_on_project(ui, &row, &root, tree);
+        }
         let mut hover = root.display().to_string();
         if let Some(branch) = branch {
             hover = format!("{hover}\nGit branch: {branch}");
@@ -452,9 +462,10 @@ fn items(
     read_only: bool,
     tree: &mut Tree<'_>,
 ) {
-    for item in list {
+    for (i, item) in list.iter().enumerate() {
+        let next = list.get(i + 1).map(Item::path);
         ui.push_id(item.path(), |ui| {
-            tree_item(ui, root, item, depth, read_only, tree);
+            tree_item(ui, root, item, depth, read_only, next, tree);
         });
     }
     // Requests deleted in git are still shown where they were (R-GIT-12, D10).
@@ -502,6 +513,28 @@ fn git_marker(ui: &Ui, status: FileStatus) -> Atom<'static> {
     Atom::from(theme::semibold(letter).size(11.0).color(color))
 }
 
+/// What hovering a request or folder row explains, if anything.
+fn row_hover(
+    folder_error: Option<&String>,
+    conflict: bool,
+    dirty: bool,
+    git_status: Option<FileStatus>,
+) -> Option<String> {
+    let mut hover: Vec<&str> = Vec::new();
+    if let Some(err) = folder_error {
+        hover.push(err);
+    }
+    if conflict {
+        hover.push("Changed on disk while you had unsaved edits: open it to choose");
+    } else if dirty {
+        hover.push("Unsaved changes");
+    }
+    if let Some(status) = git_status {
+        hover.push(git_description(status));
+    }
+    (!hover.is_empty()).then(|| hover.join("\n"))
+}
+
 fn git_description(status: FileStatus) -> &'static str {
     match status {
         FileStatus::Modified => "Git: modified since the last commit",
@@ -517,6 +550,8 @@ fn tree_item(
     item: &Item,
     depth: usize,
     read_only: bool,
+    // The item after this one in its folder, for dropping below it (R-COL-12).
+    next: Option<&Path>,
     tree: &mut Tree<'_>,
 ) {
     let key = ItemKey::new(root, item.path());
@@ -589,20 +624,11 @@ fn tree_item(
                 menu_button(ui, menu)
             }
         });
-        let mut hover: Vec<&str> = Vec::new();
-        if let Some(err) = folder_error {
-            hover.push(err);
+        if !read_only {
+            drag_and_drop(ui, &row, &key, &name, is_folder, next, tree);
         }
-        if conflict {
-            hover.push("Changed on disk while you had unsaved edits: open it to choose");
-        } else if dirty {
-            hover.push("Unsaved changes");
-        }
-        if let Some(status) = git_status {
-            hover.push(git_description(status));
-        }
-        if !hover.is_empty() {
-            row = row.on_hover_text(hover.join("\n"));
+        if let Some(text) = row_hover(folder_error, conflict, dirty, git_status) {
+            row = row.on_hover_text(text);
         }
         if row.clicked() {
             if is_folder {
@@ -861,7 +887,9 @@ fn tree_row<'a, T>(
                 Button::selectable(selected, atoms)
                     .frame_when_inactive(selected)
                     .truncate()
-                    .min_size(egui::vec2(ui.available_width(), ROW_HEIGHT)),
+                    .min_size(egui::vec2(ui.available_width(), ROW_HEIGHT))
+                    // Rows can be dragged to move them (R-COL-12); a click is still a click.
+                    .sense(egui::Sense::click_and_drag()),
             )
         },
         |ui| {
@@ -882,6 +910,124 @@ fn skip_hidden_row(ui: &mut Ui) -> bool {
     }
     ui.allocate_space(size);
     true
+}
+
+/// What is being dragged in the tree (R-COL-12).
+#[derive(Debug, Clone)]
+struct TreeDrag {
+    key: ItemKey,
+    name: String,
+}
+
+/// Makes a row draggable, and a place to drop rows of the same project: on the upper
+/// part before it, on the lower part after it, and on most of a folder into it.
+fn drag_and_drop(
+    ui: &Ui,
+    row: &egui::Response,
+    key: &ItemKey,
+    name: &str,
+    is_folder: bool,
+    next: Option<&Path>,
+    tree: &mut Tree<'_>,
+) {
+    row.dnd_set_drag_payload(TreeDrag {
+        key: key.clone(),
+        name: name.to_owned(),
+    });
+    let Some(drag) = row.dnd_hover_payload::<TreeDrag>() else {
+        return;
+    };
+    let Some(pointer) = ui.ctx().pointer_latest_pos() else {
+        return;
+    };
+    if drag.key.root != key.root || drag.key == *key {
+        return;
+    }
+    let rect = row.rect;
+    let parent = key.path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let top = pointer.y < rect.top() + rect.height() * if is_folder { 0.3 } else { 0.5 };
+    let (into, before, mark) = if top {
+        (parent, Some(key.path.clone()), Mark::Line(rect.top()))
+    } else if is_folder {
+        (key.path.clone(), None, Mark::Box)
+    } else {
+        (
+            parent,
+            next.map(Path::to_path_buf),
+            Mark::Line(rect.bottom()),
+        )
+    };
+    if into.starts_with(&drag.key.path) {
+        return; // a folder into itself
+    }
+    mark.paint(ui, rect);
+    if row.dnd_release_payload::<TreeDrag>().is_some() {
+        tree.actions.push(SidebarAction::Place {
+            key: drag.key.clone(),
+            parent: into,
+            before,
+        });
+    }
+}
+
+/// Dropping a row on its project's row puts it at the end of the top level.
+fn drop_on_project(ui: &Ui, row: &egui::Response, root: &Path, tree: &mut Tree<'_>) {
+    let Some(drag) = row.dnd_hover_payload::<TreeDrag>() else {
+        return;
+    };
+    if drag.key.root != root {
+        return;
+    }
+    Mark::Box.paint(ui, row.rect);
+    if row.dnd_release_payload::<TreeDrag>().is_some() {
+        tree.actions.push(SidebarAction::Place {
+            key: drag.key.clone(),
+            parent: PathBuf::new(),
+            before: None,
+        });
+    }
+}
+
+/// Where a dragged row will land.
+#[derive(Debug, Clone, Copy)]
+enum Mark {
+    /// Between rows, at this height.
+    Line(f32),
+    /// Into the folder or project of this row.
+    Box,
+}
+
+impl Mark {
+    fn paint(self, ui: &Ui, rect: egui::Rect) {
+        let stroke = egui::Stroke::new(2.0, theme::palette(ui).accent);
+        match self {
+            Self::Line(y) => {
+                ui.painter().hline(rect.x_range(), y, stroke);
+            }
+            Self::Box => {
+                ui.painter()
+                    .rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
+            }
+        }
+    }
+}
+
+/// The name of what is being dragged, next to the pointer.
+fn drag_label(ui: &Ui) {
+    let Some(drag) = egui::DragAndDrop::payload::<TreeDrag>(ui.ctx()) else {
+        return;
+    };
+    let Some(pos) = ui.ctx().pointer_latest_pos() else {
+        return;
+    };
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    egui::Area::new(egui::Id::unique("tree-drag"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(pos + egui::vec2(14.0, 6.0))
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(&drag.name));
+        });
 }
 
 fn toggle(set: &mut HashSet<ItemKey>, key: &ItemKey) {

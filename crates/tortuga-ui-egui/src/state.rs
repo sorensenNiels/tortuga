@@ -89,6 +89,31 @@ impl fmt::Debug for AppState {
     }
 }
 
+/// The client for `settings`, trusting its CA certificate files (R-HTTP-16), which are
+/// read through the host. Problems with those files come back as messages; the other
+/// certificates still apply.
+fn make_client(
+    host: &dyn Host,
+    settings: &ClientSettings,
+) -> Result<(Client, Vec<String>), String> {
+    let mut problems = Vec::new();
+    let mut files = Vec::new();
+    for path in &settings.ca_certificates {
+        let read = match host.file_reader() {
+            Some(reader) => (reader.0)(path).map_err(|e| e.to_string()),
+            None => Err("files can't be read here".to_owned()),
+        };
+        match read {
+            Ok(pem) => files.push((path.clone(), pem)),
+            Err(e) => problems.push(format!("CA certificate {}: {e}", path.display())),
+        }
+    }
+    let (client, bad) =
+        Client::with_ca_certificates(settings.clone(), &files).map_err(|e| e.to_string())?;
+    problems.extend(bad.iter().map(ToString::to_string));
+    Ok((with_files(client, host), problems))
+}
+
 /// Lets the client upload files where the host can read them (R-HTTP-15).
 fn with_files(client: Client, host: &dyn Host) -> Client {
     match host.file_reader() {
@@ -105,11 +130,16 @@ impl AppState {
             problems.push(e);
             ClientSettings::default()
         });
-        let client = Client::new(settings.clone()).unwrap_or_else(|e| {
-            problems.push(e.to_string());
-            Client::default()
-        });
-        let client = with_files(client, host.as_ref());
+        let client = match make_client(host.as_ref(), &settings) {
+            Ok((client, ca_problems)) => {
+                problems.extend(ca_problems);
+                client
+            }
+            Err(e) => {
+                problems.push(e);
+                with_files(Client::default(), host.as_ref())
+            }
+        };
         let mut local = host.load_local().unwrap_or_else(|e| {
             problems.push(e);
             LocalState::default()
@@ -143,8 +173,11 @@ impl AppState {
 
     /// Applies new settings: rebuilds the client and saves them.
     pub fn apply_settings(&mut self, settings: &ClientSettings) -> Result<(), String> {
-        let client = Client::new(settings.clone()).map_err(|e| e.to_string())?;
-        self.client = with_files(client, self.host.as_ref());
+        let (client, problems) = make_client(self.host.as_ref(), settings)?;
+        if !problems.is_empty() {
+            return Err(problems.join("\n"));
+        }
+        self.client = client;
         self.settings = settings.clone();
         self.host.save_settings(settings)
     }
@@ -999,5 +1032,40 @@ mod tests {
             key.moved(Path::new("/d"), Path::new("users"), Path::new("x")),
             None
         );
+    }
+
+    /// R-HTTP-16: CA certificate files are read through the host; a bad one is refused
+    /// with its name, a good one is applied.
+    #[test]
+    fn ca_certificates_are_applied_or_reported() {
+        let dir = std::env::temp_dir().join(format!("tortuga-ca-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let good = dir.join("company-ca.pem");
+        std::fs::write(
+            &good,
+            include_str!("../../tortuga-core/tests/fixtures/test-ca.pem"),
+        )
+        .expect("write");
+        let bad = dir.join("notes.txt");
+        std::fs::write(&bad, "not a certificate").expect("write");
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost::default()));
+
+        let with = |files: Vec<PathBuf>| ClientSettings {
+            ca_certificates: files,
+            ..ClientSettings::default()
+        };
+        let err = state
+            .apply_settings(&with(vec![good.clone(), bad.clone()]))
+            .expect_err("bad file");
+        assert!(err.contains("notes.txt"), "{err}");
+        let err = state
+            .apply_settings(&with(vec![dir.join("gone.pem")]))
+            .expect_err("missing file");
+        assert!(err.contains("gone.pem"), "{err}");
+        state
+            .apply_settings(&with(vec![good.clone()]))
+            .expect("good file");
+        assert_eq!(state.settings.ca_certificates, [good]);
+        std::fs::remove_dir_all(dir).expect("clean up");
     }
 }

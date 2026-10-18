@@ -403,6 +403,80 @@ impl Collection {
         Ok(new_path)
     }
 
+    /// Puts an item in `parent` just before `before` (`None`: at the end), moving it
+    /// there first if it is in another folder: what a drag and drop does (R-COL-12).
+    /// Usually writes one file; renumbers the folder's items only when there is no room
+    /// between the neighbours (R-GIT-6). Returns the item's new path.
+    pub fn place(
+        &self,
+        storage: &dyn Storage,
+        path: &Path,
+        parent: &Path,
+        before: Option<&Path>,
+    ) -> Result<PathBuf> {
+        self.ensure_writable()?;
+        let item = self
+            .find(path)
+            .ok_or_else(|| Error::NotFound(path.to_owned()))?;
+        if parent.starts_with(path) {
+            return Err(Error::InvalidOperation(
+                "A folder cannot be moved into itself.".into(),
+            ));
+        }
+        if !parent.as_os_str().is_empty() && !matches!(self.find(parent), Some(Item::Folder(_))) {
+            return Err(Error::NotFound(parent.to_owned()));
+        }
+        if before == Some(path) {
+            return Ok(path.to_owned());
+        }
+        let siblings: Vec<&Item> = self
+            .children(parent)
+            .iter()
+            .filter(|i| !matches!(i, Item::Broken(_)) && i.path() != path)
+            .collect();
+        let index = match before {
+            None => siblings.len(),
+            Some(b) => siblings
+                .iter()
+                .position(|i| i.path() == b)
+                .ok_or_else(|| Error::NotFound(b.to_owned()))?,
+        };
+
+        let new_path = if parent_of(path) == parent {
+            path.to_owned()
+        } else {
+            let new_path = match item {
+                Item::Folder(_) => self.free_dir_path(storage, parent, &file_stem(path), None),
+                _ => self.free_file_path(storage, parent, &file_stem(path), None),
+            };
+            rename(storage, &self.root.join(path), &self.root.join(&new_path))?;
+            new_path
+        };
+
+        let seqs: Vec<Option<i64>> = siblings.iter().map(|i| i.seq()).collect();
+        let ordered = seqs.iter().all(Option::is_some) && seqs.windows(2).all(|w| w[0] < w[1]);
+        let prev = index.checked_sub(1).and_then(|i| seqs[i]);
+        let next = seqs.get(index).copied().flatten();
+        let free = match (prev, next) {
+            _ if !ordered => None,
+            (None, None) => Some(SEQ_STEP),
+            (Some(p), None) => Some(p + SEQ_STEP),
+            (None, Some(n)) => Some(n - SEQ_STEP),
+            (Some(p), Some(n)) if n - p > 1 => Some(p + (n - p) / 2),
+            _ => None,
+        };
+        if let Some(seq) = free {
+            self.write_seq(storage, &new_path, item, seq)?;
+        } else {
+            let mut order: Vec<(&Path, &Item)> = siblings.iter().map(|i| (i.path(), *i)).collect();
+            order.insert(index, (&new_path, item));
+            for (n, (at, it)) in (1..).zip(order) {
+                self.write_seq(storage, at, it, n * SEQ_STEP)?;
+            }
+        }
+        Ok(new_path)
+    }
+
     /// Moves an item one place up or down among its siblings (R-COL-3).
     /// Usually rewrites two files; renumbers the siblings only if positions are missing or equal.
     pub fn move_by(&self, storage: &dyn Storage, path: &Path, direction: Direction) -> Result<()> {

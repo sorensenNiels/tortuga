@@ -22,6 +22,10 @@ pub struct ClientSettings {
     pub verify_tls: bool,
     /// Used when a request has no timeout of its own.
     pub default_timeout_ms: u64,
+    /// PEM files whose certificates are trusted besides the system's (R-HTTP-16).
+    /// Local to this machine (D22); read by the app, see [`Client::with_ca_certificates`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ca_certificates: Vec<std::path::PathBuf>,
 }
 
 impl Default for ClientSettings {
@@ -30,6 +34,7 @@ impl Default for ClientSettings {
             follow_redirects: true,
             verify_tls: true,
             default_timeout_ms: 30_000,
+            ca_certificates: Vec::new(),
         }
     }
 }
@@ -62,6 +67,9 @@ impl std::fmt::Debug for FileReader {
 pub struct Client {
     inner: reqwest::Client,
     settings: ClientSettings,
+    /// Extra trusted CA certificates (R-HTTP-16), also for the clients with cookie jars.
+    #[cfg(not(target_arch = "wasm32"))]
+    roots: Vec<reqwest::Certificate>,
     /// Reads files to upload; `None`: uploading files is not possible here.
     files: Option<FileReader>,
     /// One client per cookie jar, created on first use (R-CK-1). Each keeps its
@@ -79,16 +87,43 @@ impl Default for Client {
 
 impl Client {
     pub fn new(settings: ClientSettings) -> Result<Self> {
-        let inner = builder(&settings)
-            .build()
-            .map_err(|e| Error::ClientSetup(e.to_string()))?;
-        Ok(Self {
+        Self::with_ca_certificates(settings, &[]).map(|(client, _)| client)
+    }
+
+    /// A client that also trusts the certificates in `files`, given as (path, PEM
+    /// contents) (R-HTTP-16). A file without certificates is returned as a problem; the
+    /// others still apply.
+    pub fn with_ca_certificates(
+        settings: ClientSettings,
+        files: &[(std::path::PathBuf, Vec<u8>)],
+    ) -> Result<(Self, Vec<Error>)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let (roots, problems) = ca_roots(files);
+        #[cfg(target_arch = "wasm32")]
+        let problems = files
+            .iter()
+            .map(|(path, _)| Error::CaCertificate {
+                path: path.clone(),
+                reason: "not supported in the browser".into(),
+            })
+            .collect();
+        let inner = builder(
+            &settings,
+            #[cfg(not(target_arch = "wasm32"))]
+            &roots,
+        )
+        .build()
+        .map_err(|e| Error::ClientSetup(e.to_string()))?;
+        let client = Self {
             inner,
             settings,
+            #[cfg(not(target_arch = "wasm32"))]
+            roots,
             files: None,
             #[cfg(not(target_arch = "wasm32"))]
             jar_clients: std::sync::Arc::default(),
-        })
+        };
+        Ok((client, problems))
     }
 
     /// Lets the client upload files in multipart bodies (R-HTTP-15).
@@ -112,7 +147,7 @@ impl Client {
         if let Some(client) = clients.get(&jar.id()) {
             return Ok(client.clone());
         }
-        let client = builder(&self.settings)
+        let client = builder(&self.settings, &self.roots)
             .cookie_provider(std::sync::Arc::new(jar.clone()))
             .build()
             .map_err(|e| Error::ClientSetup(e.to_string()))?;
@@ -260,19 +295,43 @@ impl Client {
     }
 }
 
-fn builder(settings: &ClientSettings) -> reqwest::ClientBuilder {
-    let builder = reqwest::Client::builder();
-    #[cfg(not(target_arch = "wasm32"))]
-    let builder = builder
+#[cfg(not(target_arch = "wasm32"))]
+fn builder(settings: &ClientSettings, roots: &[reqwest::Certificate]) -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
         .redirect(if settings.follow_redirects {
             reqwest::redirect::Policy::limited(ClientSettings::MAX_REDIRECTS)
         } else {
             reqwest::redirect::Policy::none()
         })
-        .tls_danger_accept_invalid_certs(!settings.verify_tls);
-    #[cfg(target_arch = "wasm32")]
-    let _ = settings;
-    builder
+        .tls_danger_accept_invalid_certs(!settings.verify_tls)
+        // Besides the system's certificates, not instead of them.
+        .tls_certs_merge(roots.iter().cloned())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn builder(_settings: &ClientSettings) -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+}
+
+/// The certificates in each PEM file; a file without any is a problem (R-HTTP-16).
+#[cfg(not(target_arch = "wasm32"))]
+fn ca_roots(files: &[(std::path::PathBuf, Vec<u8>)]) -> (Vec<reqwest::Certificate>, Vec<Error>) {
+    let mut roots = Vec::new();
+    let mut problems = Vec::new();
+    for (path, pem) in files {
+        match reqwest::Certificate::from_pem_bundle(pem) {
+            Ok(certs) if !certs.is_empty() => roots.extend(certs),
+            Ok(_) => problems.push(Error::CaCertificate {
+                path: path.clone(),
+                reason: "no PEM certificate (-----BEGIN CERTIFICATE-----) in it".into(),
+            }),
+            Err(e) => problems.push(Error::CaCertificate {
+                path: path.clone(),
+                reason: e.to_string(),
+            }),
+        }
+    }
+    (roots, problems)
 }
 
 fn map_send_error(err: &reqwest::Error, timeout: Duration) -> Error {

@@ -74,6 +74,10 @@ pub enum Error {
     #[error("could not access secret values: {0}")]
     SecretStore(String),
 
+    /// R-HTTP-16
+    #[error("CA certificate {}: {reason}", .path.display())]
+    CaCertificate { path: PathBuf, reason: String },
+
     /// R-HTTP-15
     #[error("could not upload the file {}: {reason}", .path.display())]
     UploadFile { path: PathBuf, reason: String },
@@ -107,8 +111,9 @@ fn describe_transport(top: &str, causes: &[String]) -> String {
     }
     if details.to_ascii_lowercase().contains("certificate") {
         format!(
-            "The server's TLS certificate is not trusted. If this is a test server, \
-             certificate checks can be turned off in Settings. ({details})"
+            "The server's TLS certificate is not trusted. If it is signed by your company's \
+             CA, add that CA certificate in Settings; for a test server, certificate checks \
+             can be turned off there. ({details})"
         )
     } else {
         details

@@ -132,6 +132,27 @@ impl Draft {
             .for_each(|v| drop(v.values.remove(col)));
     }
 
+    /// Moves environment column `from` to position `to`, with its URLs and values (R-SRV-6).
+    pub fn move_environment(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.environments.len() || to >= self.environments.len() {
+            return;
+        }
+        move_item(&mut self.environments, from, to);
+        for s in &mut self.servers {
+            move_item(&mut s.urls, from, to);
+        }
+        for v in &mut self.variables {
+            move_item(&mut v.values, from, to);
+        }
+    }
+
+    /// Moves server row `from` to position `to` (R-SRV-6).
+    pub fn move_server(&mut self, from: usize, to: usize) {
+        if from < self.servers.len() && to < self.servers.len() {
+            move_item(&mut self.servers, from, to);
+        }
+    }
+
     pub fn add_server(&mut self, name: String) {
         let urls = vec![String::new(); self.environments.len()];
         self.servers.push(ServerRow {
@@ -259,6 +280,60 @@ impl Draft {
     }
 }
 
+fn move_item<T>(list: &mut Vec<T>, from: usize, to: usize) {
+    let item = list.remove(from);
+    list.insert(to, item);
+}
+
+/// An environment column or server row being dragged (R-SRV-6).
+#[derive(Debug, Clone, Copy)]
+struct EnvDrag(usize);
+#[derive(Debug, Clone, Copy)]
+struct ServerDrag(usize);
+
+/// A handle to drag an environment or server by.
+fn drag_handle<P: Clone + Send + Sync + 'static>(ui: &mut Ui, id: (&str, usize), payload: P) {
+    let id = ui.scope_id().with(id);
+    ui.dnd_drag_source(id, payload, |ui| {
+        ui.label(egui::RichText::new("☰").color(theme::palette(ui).muted))
+    })
+    .response
+    .on_hover_text("Drag to change the order");
+}
+
+/// Makes `zone` a drop target for `P`. Returns the dragged index if dropped here, and
+/// marks the edge it will land on.
+fn drop_index<P: Copy + Send + Sync + 'static>(
+    ui: &Ui,
+    zone: &egui::Response,
+    index: usize,
+    vertical: bool,
+    from: impl Fn(&P) -> usize,
+) -> Option<usize> {
+    let dragged = from(&*zone.dnd_hover_payload::<P>()?);
+    if dragged == index {
+        return None;
+    }
+    let r = zone.rect;
+    let stroke = egui::Stroke::new(2.0, theme::palette(ui).accent);
+    // Lands before this one when coming from after it, else after it.
+    match (vertical, dragged > index) {
+        (true, true) => {
+            ui.painter().hline(r.x_range(), r.top() - 2.0, stroke);
+        }
+        (true, false) => {
+            ui.painter().hline(r.x_range(), r.bottom() + 2.0, stroke);
+        }
+        (false, true) => {
+            ui.painter().vline(r.left() - 3.0, r.y_range(), stroke);
+        }
+        (false, false) => {
+            ui.painter().vline(r.right() + 3.0, r.y_range(), stroke);
+        }
+    }
+    zone.dnd_release_payload::<P>().map(|p| from(&p))
+}
+
 /// Servers × environments and variables × environments (R-SRV-2, R-VAR-2, R-VAR-7).
 #[derive(Debug, Clone)]
 pub struct EnvironmentsDialog {
@@ -365,11 +440,13 @@ fn servers_table(ui: &mut Ui, d: &mut Draft, new_server: &mut String) {
         .show(ui, |ui| {
             theme::section_label(ui, "Servers");
             let mut remove_env = None;
+            let mut move_env = None;
             for (col, e) in d.environments.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
+                let cell = ui.horizontal(|ui| {
+                    drag_handle(ui, ("env-drag", col), EnvDrag(col));
                     theme::sized_edit(
                         ui,
-                        CELL_WIDTH - 30.0,
+                        CELL_WIDTH - 50.0,
                         TextEdit::singleline(&mut e.name).id_salt(("env", col)),
                     );
                     if ui
@@ -380,15 +457,20 @@ fn servers_table(ui: &mut Ui, d: &mut Draft, new_server: &mut String) {
                         remove_env = Some(col);
                     }
                 });
+                if let Some(from) = drop_index(ui, &cell.response, col, false, |p: &EnvDrag| p.0) {
+                    move_env = Some((from, col));
+                }
             }
             ui.end_row();
 
             let mut remove = None;
+            let mut move_server = None;
             for (row, s) in d.servers.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
+                let cell = ui.horizontal(|ui| {
+                    drag_handle(ui, ("server-drag", row), ServerDrag(row));
                     theme::sized_edit(
                         ui,
-                        CELL_WIDTH - 30.0,
+                        CELL_WIDTH - 50.0,
                         TextEdit::singleline(&mut s.name).id_salt(("server", row)),
                     );
                     if ui
@@ -399,6 +481,10 @@ fn servers_table(ui: &mut Ui, d: &mut Draft, new_server: &mut String) {
                         remove = Some(row);
                     }
                 });
+                if let Some(from) = drop_index(ui, &cell.response, row, true, |p: &ServerDrag| p.0)
+                {
+                    move_server = Some((from, row));
+                }
                 for (col, url) in s.urls.iter_mut().enumerate() {
                     theme::sized_edit(
                         ui,
@@ -423,6 +509,12 @@ fn servers_table(ui: &mut Ui, d: &mut Draft, new_server: &mut String) {
             }
             if let Some(col) = remove_env {
                 d.remove_environment(col);
+            }
+            if let Some((from, to)) = move_server {
+                d.move_server(from, to);
+            }
+            if let Some((from, to)) = move_env {
+                d.move_environment(from, to);
             }
         });
 }
@@ -660,5 +752,25 @@ mod tests {
         d.remove_environment(0);
         assert_eq!(d.servers[0].urls, [""]);
         assert_eq!(d.variables[0].values, [""]);
+    }
+
+    /// R-SRV-6: moving an environment moves its URLs and values; the order is saved.
+    #[test]
+    fn environments_and_servers_can_be_reordered() {
+        let mut d = draft();
+        d.servers[0].urls = vec!["http://dev".into(), "http://prod".into()];
+        d.add_server("Auth".into());
+        d.move_environment(1, 0);
+        assert_eq!(d.servers[0].urls, ["http://prod", "http://dev"]);
+        d.move_server(1, 0);
+        assert_eq!(d.servers[0].name, "Auth");
+        assert_eq!(d.variables[0].values, ["", "dev-token"], "values move too");
+        let saved = d.to_config(&Manifest::new("C"), &[]).expect("valid");
+        let names: Vec<&str> = saved.environments.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Staging", "Development"]);
+        assert_eq!(saved.environments[0].seq, Some(1));
+        assert_eq!(saved.manifest.servers[0].name, "Auth");
+        d.move_environment(0, 9);
+        d.move_server(5, 0);
     }
 }

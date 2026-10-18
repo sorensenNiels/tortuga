@@ -508,3 +508,98 @@ fn directories_without_requests_are_not_folders() {
     let col = reopen(&col);
     assert_eq!(names(&col.items), ["Empty", "handmade"]);
 }
+
+/// R-COL-12: dropping an item puts it before another one, at the end, or into a
+/// folder; it usually rewrites only the moved file.
+#[test]
+fn place_reorders_and_moves() {
+    let (dir, col) = new_collection();
+    for name in ["A", "B", "C"] {
+        reopen(&col)
+            .new_request(&FS, Path::new(""), &request(name))
+            .expect("new");
+    }
+    let folder = reopen(&col)
+        .new_folder(&FS, Path::new(""), "F")
+        .expect("folder");
+    reopen(&col)
+        .new_request(&FS, &folder, &request("Inside"))
+        .expect("inside");
+    let col = reopen(&col);
+    assert_eq!(names(&col.items), ["A", "B", "C", "F"]);
+
+    let untouched = modified(&dir.path().join("b.toml"));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    col.place(
+        &FS,
+        Path::new("c.toml"),
+        Path::new(""),
+        Some(Path::new("a.toml")),
+    )
+    .expect("to the top");
+    let col = reopen(&col);
+    assert_eq!(names(&col.items), ["C", "A", "B", "F"]);
+    assert_eq!(
+        modified(&dir.path().join("b.toml")),
+        untouched,
+        "only C was written"
+    );
+
+    col.place(&FS, Path::new("c.toml"), Path::new(""), None)
+        .expect("to the end");
+    let col = reopen(&col);
+    assert_eq!(names(&col.items), ["A", "B", "F", "C"]);
+
+    let moved = col
+        .place(
+            &FS,
+            Path::new("a.toml"),
+            &folder,
+            Some(&folder.join("inside.toml")),
+        )
+        .expect("into the folder");
+    assert_eq!(moved, folder.join("a.toml"));
+    let col = reopen(&col);
+    assert_eq!(names(&col.items), ["B", "F", "C"]);
+    assert_eq!(names(col.children(&folder)), ["A", "Inside"]);
+
+    assert!(
+        col.place(&FS, &folder, &folder, None).is_err(),
+        "not into itself"
+    );
+    assert_eq!(
+        col.place(
+            &FS,
+            Path::new("b.toml"),
+            Path::new(""),
+            Some(Path::new("b.toml"))
+        )
+        .expect("onto itself"),
+        PathBuf::from("b.toml")
+    );
+}
+
+/// R-COL-12, R-GIT-6: with no room between two positions, the folder is renumbered.
+#[test]
+fn place_renumbers_when_positions_touch() {
+    let (dir, col) = new_collection();
+    for (name, seq) in [("a", 1), ("b", 2), ("c", 3)] {
+        std::fs::write(
+            dir.path().join(format!("{name}.toml")),
+            format!(
+                "name = \"{}\"\nseq = {seq}\nurl = \"/\"\n",
+                name.to_uppercase()
+            ),
+        )
+        .expect("write");
+    }
+    let col = reopen(&col);
+    col.place(
+        &FS,
+        Path::new("c.toml"),
+        Path::new(""),
+        Some(Path::new("b.toml")),
+    )
+    .expect("between a and b");
+    assert_eq!(names(&reopen(&col).items), ["A", "C", "B"]);
+}

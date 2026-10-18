@@ -64,7 +64,7 @@ A requirement moves to [FEATURES.md](FEATURES.md) once it is implemented and ver
 | **M6.5: Workspaces & projects** | Group projects (today's collections) into workspaces, also when several share a repo. Built before M7 (D15). | R-WS-1 to 7 | Done (see FEATURES.md) |
 | **M7: Release** | Installable, fast builds for all three platforms. | R-NF-1 to 4 · R-P-3 | Built; verified on Linux. Installers for Windows and macOS are built by the release workflow and still need a check on those OSes (see FEATURES.md, [RELEASING.md](RELEASING.md)) |
 | **UI: egui** | Move the UI from Dioxus to egui (`tortuga-ui-egui`) with a modern look. | — | Done (2026-10-17) |
-| **M8: Daily driver** | Phase 2, first seven items: paste curl, quick open and command palette, search and filter responses, history, preview, folder defaults, multipart bodies. | R-HTTP-11 to 15 · R-COL-9 to 11 · R-HIST-1 to 3 | Done (see FEATURES.md) |
+| **M8: Daily driver** | Phase 2: paste curl, quick open and command palette, search and filter responses, history, preview, folder defaults, multipart bodies, CA certificates, drag and drop. | R-HTTP-11 to 16 · R-COL-9 to 12 · R-HIST-1 to 3 · R-SRV-6 | Done (see FEATURES.md) |
 | **v1 extras** | Decided in D1, plus path variables (requested 2026-10-17). | R-COL-8 · R-HTTP-9 · R-HTTP-10 | Done (see FEATURES.md) |
 
 Since M4, credentials belong in secret variables (R-VAR-3). The app warns where a credential is typed as plain text,
@@ -100,8 +100,8 @@ Small features with a big effect on S1–S4. Proposed order (cheapest high-value
 | Preview the resolved request, secrets masked | IDEA-7 → R-HTTP-14 | S3 |
 | Folder-level defaults | IDEA-1 → R-COL-11 | S2 |
 | `multipart/form-data` bodies and file upload | IDEA-2 → R-HTTP-15 | S1 |
-| Custom CA certificates | IDEA-3 | S2 |
-| Drag and drop in the tree; reorder environments | IDEA-9, IDEA-13 | — |
+| Custom CA certificates | IDEA-3 → R-HTTP-16 | S2 |
+| Drag and drop in the tree; reorder environments | IDEA-9, IDEA-13 → R-COL-12, R-SRV-6 | — |
 
 ### Phase 3 — Workflows and tests: verify APIs (v2)
 
@@ -192,6 +192,7 @@ added.
 | R-HTTP-13 | **Filter JSON responses** with a JSONPath expression (D18): `$`, `.name`, `['name']`, `[n]` (negative counts from the end), `[a:b]`, `[*]`, `..name`, `[a,b]`, and filters `[?(@.field)]` / `[?(@.field <op> value)]` with `== != < <= > >=`. The matches are shown pretty-printed; an invalid expression is explained. The filter is kept per request while the app runs, so a new response is filtered the same way. Works on bodies of any size: it runs off the UI thread. *(IDEA-30)* |
 | R-HTTP-14 | **Preview** tab in the request editor: the request exactly as it will be sent (method, full URL, every header including inherited ones, Content-Type and Authorization, body), with variables, server and path variables resolved and secret values masked as `<secret:name>`. Undefined variables are named instead. Updates while typing. *(IDEA-7)* |
 | R-HTTP-15 | **`multipart/form-data` bodies**: a list of parts, each with a name and either a text value or a file to upload; parts can be switched off; names, values and file paths may use `{{variables}}`. A file inside the project folder is saved relative to it, so teammates can send the request too; a file elsewhere keeps its full path and is marked as working only on this computer (D21). The file is read when sending; a missing file stops the send with a message naming it. A part can set its own content type. A directory with files to upload but no requests (and no `_folder.toml`) is not shown as a folder. "Copy as curl" writes `-F`/`--form-string`; pasting curl reads them (R-HTTP-9, R-HTTP-11). *(IDEA-2)* |
+| R-HTTP-16 | **Custom CA certificates**: in Settings, the user adds PEM files (each may hold several certificates) whose certificates are trusted in addition to the system's, e.g. for internal APIs signed by a company CA. They are local settings, not shared (D22). A file that can't be read or holds no certificate is reported naming it, and the others still apply. *(IDEA-3)* |
 
 #### 6.2.1 History
 
@@ -224,6 +225,7 @@ added.
 | R-COL-8 | Unsaved request edits survive closing and reopening the app (kept as local data, §6.7), or the app warns before closing. *(D1; was IDEA-12)* |
 | R-COL-9 | **Quick open** (Ctrl+P): a search box over every request in the workspace (name, folder path, project, method, URL). Words match in any order and fuzzily; recently opened requests come first. Arrow keys move, Enter opens, Escape closes. *(IDEA-27, D2)* |
 | R-COL-10 | **Command palette** (Ctrl+K, or Ctrl+Shift+P): every frequent action by name, with its shortcut: send, save, revert, copy as curl, new request in the current folder, switch environment, switch workspace, open environments, project defaults, settings, history, add project. Typing filters like quick open. *(IDEA-27)* |
+| R-COL-12 | **Drag and drop in the tree**: drag a request or folder onto a folder to move it into it, or between two items to put it there; the order is saved like "Move up/down" (R-COL-3, R-GIT-6). Only within one project, and not into itself; read-only projects can't be changed. A line or highlight shows where it will land. *(IDEA-9)* |
 | R-COL-11 | **Folder defaults**: a folder can define headers, auth and variables (in its `_folder.toml`), edited from the folder's menu. A request inherits from its folders, nearest first, then from the project: its own header replaces an inherited one with the same name; its auth is its own, else the nearest folder's, else the project's. Variables: local secret, then the active environment, then folder variables (nearest first), then project variables. The editor shows where an inherited header or auth comes from. *(IDEA-1; extends R-COL-4, R-VAR-4)* |
 
 #### 6.4.1 Workspaces & projects
@@ -263,6 +265,7 @@ Servers make that a first-class concept instead of a naming convention for varia
 | R-SRV-3 | A request picks a server from a dropdown in front of the URL field; the URL field then holds only the path and query (e.g. `/users?page=2`). "No server" means the URL field holds a full URL. |
 | R-SRV-4 | When sending, the request goes to the selected server's base URL in the active environment plus the path. If the server has no URL in that environment, or no longer exists, sending stops with a message naming the server and environment. |
 | R-SRV-5 | The active environment is chosen per collection from the title bar, and remembered locally (§6.7). |
+| R-SRV-6 | In the environments dialog, environments (columns) and servers (rows) can be dragged into a new order, which is saved. Variables stay sorted by name (D23). *(IDEA-13)* |
 
 ### 6.6 Collaboration through git
 
@@ -381,17 +384,17 @@ These were discussed and agreed as worth doing, but are not needed for v1.
 |---|---|---|
 | IDEA-1 | Folder-level defaults (headers, auth, variables) inherited by the requests in that folder. | **Moved to M8 as R-COL-11.** |
 | IDEA-2 | `multipart/form-data` bodies, with text fields and file uploads. | **Moved to M8 as R-HTTP-15.** |
-| IDEA-3 | Custom CA certificates (e.g. internal APIs signed by a company CA). | |
+| IDEA-3 | Custom CA certificates (e.g. internal APIs signed by a company CA). | **Moved to M8 as R-HTTP-16.** |
 | IDEA-4 | Copy a request as a `curl` command. Variables resolved; warn before copying if it contains a secret. | **Moved to v1 as R-HTTP-9** (D1). |
 | IDEA-5 | Local request history per collection: last 200 requests and responses, with response bodies over 1 MB truncated. Browse, re-open, clear. | **Moved to M8 as R-HIST-1 to 3.** |
 | IDEA-6 | Cookie viewer: list cookies in the jar and delete individual ones. | Extends R-CK-3. |
 | IDEA-7 | Preview the fully resolved request, with secret values masked. | **Moved to M8 as R-HTTP-14.** |
 | IDEA-8 | "Compare" option when a file changed on disk while it had unsaved edits. | Extends R-GIT-11. |
-| IDEA-9 | Move requests and folders by drag and drop. | R-COL-2 covers moving through menus. |
+| IDEA-9 | Move requests and folders by drag and drop. | **Moved to M8 as R-COL-12.** |
 | IDEA-10 | Import Postman collections (v2.1 JSON). | Once our own format is stable. |
 | IDEA-11 | Web version of the app. | The architecture already keeps this possible (R-P-3). |
 | IDEA-12 | Warn about unsaved edits when closing the app, or keep them across restarts. | **Moved to v1 as R-COL-8** (D1). |
-| IDEA-13 | Drag environments and variables to reorder them in the environments table. | Today environments keep their creation order and variables are sorted by name. |
+| IDEA-13 | Drag environments and variables to reorder them in the environments table. | **Moved to M8 as R-SRV-6** for environments and servers; variables stay sorted by name (D23). |
 | IDEA-14 | Signed installers: Apple Developer ID signing and notarization for the `.dmg`, Authenticode for the `.msi`. | Removes the "unidentified developer" and SmartScreen warnings. Needs paid certificates; see D17. |
 | IDEA-15 | Automatic update check and in-app updates. | Would contact a server, so it must be opt-in (R-P-4). |
 
@@ -459,7 +462,10 @@ Not decided. Needs a real user need before it moves up.
 
 | D21 | How does a request file refer to a file to upload (R-HTTP-15)? | **Relative to the project folder when the file is inside it**, otherwise the full path, marked as working only on this computer (2026-10-17). | Always the full path; copy the file into the project. |
 
-New questions go here as `D22`, `D23`, … with options, until they are decided.
+| D22 | Where are custom CA certificates configured (R-HTTP-16)? | **In the app's Settings**, as local data: file paths differ per machine (2026-10-18). | Per project, shared through git; both. |
+| D23 | Can variables be reordered (IDEA-13)? | **No: they stay sorted by name**, which keeps `tortuga.toml` and environment files stable in diffs (R-GIT-3); environments and servers can be reordered (2026-10-18). | Store variables as an ordered list (a file format change). |
+
+New questions go here as `D24`, `D25`, … with options, until they are decided.
 
 ## 9. How to change this roadmap
 
