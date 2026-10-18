@@ -5,7 +5,7 @@ description: How to add or change engine functionality in crates/tortuga-core (d
 
 # Working in tortuga-core
 
-1. **Check scope** in `docs/ROADMAP.md` (§6 Requirements). If the feature has no requirement yet, add one
+1. **Check scope** in `docs/ROADMAP.md` (§6 Requirements; completed ones are in `docs/FEATURES.md`). If the feature has no requirement yet, add one
    (next free ID) as part of the work; if it conflicts with a recorded decision (§8), ask first.
 2. **Model first.** Add/extend types in `model.rs` (or a new module once it grows):
    `Debug, Clone, PartialEq, Serialize, Deserialize`; `#[serde(default)]` on new fields;

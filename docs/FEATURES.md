@@ -1,10 +1,12 @@
 # Tortuga features
 
-> Features that are implemented **and verified**. Each entry points to the requirement it satisfies
-> in [ROADMAP.md §6](ROADMAP.md#6-requirements).
+> Features that are implemented **and verified**, by requirement ID, and (at the end, under
+> [Agreed requirements](#agreed-requirements)) the requirements they were built to. Open work and new
+> requirements are in [ROADMAP.md](ROADMAP.md).
 >
 > Add an entry only when the requirement is fully met, has automated tests where practical, and has
-> been checked in the running app on at least one OS. Note which OSes were checked.
+> been checked in the running app on at least one OS. Note which OSes were checked. Then move the
+> requirement's row from the roadmap to "Agreed requirements".
 
 **Verified on:** Linux = Ubuntu 24.04 under WSL2/WSLg (desktop build). Windows: start-up only (M7). macOS has not been run yet.
 
@@ -49,6 +51,7 @@ after a restart. Not yet re-checked in the egui app: the body editor types and s
 | R-GIT-7 | `format` version in `tortuga.toml`; a collection from a newer version opens read-only with a badge. | Linux | Automated test. The badge has not been checked in the app. |
 | R-GIT-8 | Hand-editable files; a file that can't be read (e.g. merge-conflict markers) shows as ⚠ with an explanation and can be deleted; the rest loads. | Linux | Automated tests. In the app: a file with conflict markers showed as ⚠ next to working requests. |
 | R-P-1 | Local-first: collections are plain files on disk; no account or service involved. | Linux | By design; nothing else is contacted. |
+| R-P-2 | Git is the collaboration layer: projects are plain files committed next to the code; teammates' changes arrive with `git pull` (M6) and workspaces can be shared as files (M6.5). | Linux | By design; see R-GIT-1 to 14 and R-WS-5. |
 
 ### M3: Environments, servers & variables
 
@@ -170,3 +173,198 @@ method tag; a new response opens at the top instead of where the last one was sc
 - macOS builds are checked by CI but have not been run yet. On Windows only start-up was checked (M7), not the features themselves.
 - The installers are not signed (D17): macOS and Windows warn before opening them the first time.
 - Form URL-encoded bodies are covered by automated tests; in the app only switching to the form editor was checked, not sending a form.
+
+## Agreed requirements
+
+The requirements the features above were built to, as agreed in [ROADMAP.md](ROADMAP.md) (moved here on
+2026-10-18, when Phase 2 was done). Open ones are still in the roadmap.
+
+### Principles
+
+| ID | Requirement |
+|---|---|
+| R-P-1 | **Local-first.** All data are plain files the user owns. No account, login, or cloud service is needed. |
+| R-P-2 | **Git is the collaboration layer.** Teams share collections by committing them to a git repository, often next to the API source code. The on-disk format is effectively our public collaboration API. |
+
+### HTTP requests
+
+| ID | Requirement |
+|---|---|
+| R-HTTP-1 | Methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`. |
+| R-HTTP-2 | URL editor; query parameters also editable as a key/value table, kept in sync with the URL. Each param can be disabled without deleting it. |
+| R-HTTP-3 | Headers as a key/value table; each header can be disabled. Duplicate header names are allowed. |
+| R-HTTP-4 | Body types: none, raw text, JSON, `x-www-form-urlencoded`. Content-Type is set automatically unless overridden. |
+| R-HTTP-5 | Auth: none, Basic, Bearer token. Set per request, or inherited from the collection. |
+| R-HTTP-6 | Response view: status, time, size, headers, body. JSON bodies are pretty-printed; others shown as text; binary bodies can be saved to a file. |
+| R-HTTP-7 | An in-flight request can be cancelled. Per-request timeout with a global default. |
+| R-HTTP-9 | Copy a request as a `curl` command with variables resolved. Secret values are masked unless the user confirms including them. *(D1; was IDEA-4)* |
+| R-HTTP-10 | Path variables: a URL path segment starting with `:` (e.g. `/users/:id`) is a path variable. Its value is edited in a table that follows the URL, may contain `{{variables}}`, is URL-encoded when sent, and is saved in the request file. Sending stops with a message naming any path variable without a value. Only the path counts, so `host:8080` is not a variable. |
+| R-HTTP-11 | **Paste a `curl` command** into the URL field to fill the current request: method, URL and query params, headers, body (JSON, form or text), Basic auth (`-u`) and timeout (`-m`). It becomes unsaved edits (Revert undoes it, D19). If the URL starts with a server's base URL in the active environment, that server is chosen and the URL keeps only the path. Options Tortuga can't use (e.g. `-F`, `-k`) are listed in a notice. Bash/zsh quoting and line continuations are understood (what browsers' "Copy as cURL (bash)" produces). *(IDEA-28, D7)* |
+| R-HTTP-12 | **Search in the response body** (Ctrl+F while the response is shown, or the search field above it): matches are highlighted, "n of m" is shown, Enter / Shift+Enter go to the next / previous match and scroll to it. Case-insensitive. Searches the shown text (the first 2 MB of big bodies). *(IDEA-30)* |
+| R-HTTP-13 | **Filter JSON responses** with a JSONPath expression (D18): `$`, `.name`, `['name']`, `[n]` (negative counts from the end), `[a:b]`, `[*]`, `..name`, `[a,b]`, and filters `[?(@.field)]` / `[?(@.field <op> value)]` with `== != < <= > >=`. The matches are shown pretty-printed; an invalid expression is explained. The filter is kept per request while the app runs, so a new response is filtered the same way. Works on bodies of any size: it runs off the UI thread. *(IDEA-30)* |
+| R-HTTP-14 | **Preview** tab in the request editor: the request exactly as it will be sent (method, full URL, every header including inherited ones, Content-Type and Authorization, body), with variables, server and path variables resolved and secret values masked as `<secret:name>`. Undefined variables are named instead. Updates while typing. *(IDEA-7)* |
+| R-HTTP-15 | **`multipart/form-data` bodies**: a list of parts, each with a name and either a text value or a file to upload; parts can be switched off; names, values and file paths may use `{{variables}}`. A file inside the project folder is saved relative to it, so teammates can send the request too; a file elsewhere keeps its full path and is marked as working only on this computer (D21). The file is read when sending; a missing file stops the send with a message naming it. A part can set its own content type. A directory with files to upload but no requests (and no `_folder.toml`) is not shown as a folder. "Copy as curl" writes `-F`/`--form-string`; pasting curl reads them (R-HTTP-9, R-HTTP-11). *(IDEA-2)* |
+| R-HTTP-16 | **Custom CA certificates**: in Settings, the user adds PEM files (each may hold several certificates) whose certificates are trusted in addition to the system's, e.g. for internal APIs signed by a company CA. They are local settings, not shared (D22). A file that can't be read or holds no certificate is reported naming it, and the others still apply. *(IDEA-3)* |
+
+#### History
+
+| ID | Requirement |
+|---|---|
+| R-HIST-1 | Every sent request is kept in a **local history** (§6.7) per project, and one for the scratch request: when it was sent, the environment, the request as it was in the editor, and the response (status, time, size, headers, body). The last 200 entries per project are kept; bodies over 1 MB are cut to 1 MB. Like unsaved edits, history may hold credentials typed into a request, so it is readable only by the user. *(IDEA-5)* |
+| R-HIST-2 | The sidebar has a **History** view next to Projects (D20): the workspace's entries, newest first, grouped by day, each with method, name or URL, status and time; a filter field searches them. Choosing an entry opens it: its request is selected (or the scratch request, if it is gone) and the response panel shows that past response, marked with its time. "Restore request" puts that version of the request into the editor as unsaved edits. *(IDEA-5)* |
+| R-HIST-3 | History can be cleared per project, or all at once. *(IDEA-5)* |
+
+### Cookies
+
+| ID | Requirement |
+|---|---|
+| R-CK-1 | Each collection has a cookie jar. Cookies from responses are stored in it and sent with later matching requests, like a browser does. On by default. |
+| R-CK-2 | **Cookies can be disabled per request.** A disabled request sends no cookies from the jar and does not store cookies from its response. The setting is saved in the request file. |
+| R-CK-3 | The cookie jar is local data (§6.7), never written to the collection directory. The jar can be cleared. |
+| R-CK-4 | A `Cookie` header set manually on a request is always sent, even when the jar is disabled for that request. |
+
+### Collections
+
+| ID | Requirement |
+|---|---|
+| R-COL-1 | A collection is a named tree of folders and requests, with any nesting depth. |
+| R-COL-2 | Create, rename, duplicate, move, and delete requests and folders. |
+| R-COL-3 | The user controls the order of items; the order is saved. |
+| R-COL-4 | The collection can define defaults that all its requests inherit: headers, auth, and variables. |
+| R-COL-5 | Several collections can be open at once. The app remembers which were open. |
+| R-COL-6 | Unsaved request edits are clearly marked. Saving writes to disk; sending a request does not save it. |
+| R-COL-7 | Requests can be sent ad hoc without being saved to a collection. |
+| R-COL-8 | Unsaved request edits survive closing and reopening the app (kept as local data, §6.7), or the app warns before closing. *(D1; was IDEA-12)* |
+| R-COL-9 | **Quick open** (Ctrl+P): a search box over every request in the workspace (name, folder path, project, method, URL). Words match in any order and fuzzily; recently opened requests come first. Arrow keys move, Enter opens, Escape closes. *(IDEA-27, D2)* |
+| R-COL-10 | **Command palette** (Ctrl+K, or Ctrl+Shift+P): every frequent action by name, with its shortcut: send, save, revert, copy as curl, new request in the current folder, switch environment, switch workspace, open environments, project defaults, settings, history, add project. Typing filters like quick open. *(IDEA-27)* |
+| R-COL-12 | **Drag and drop in the tree**: drag a request or folder onto a folder to move it into it, or between two items to put it there; the order is saved like "Move up/down" (R-COL-3, R-GIT-6). Only within one project, and not into itself; read-only projects can't be changed. A line or highlight shows where it will land. *(IDEA-9)* |
+| R-COL-11 | **Folder defaults**: a folder can define headers, auth and variables (in its `_folder.toml`), edited from the folder's menu. A request inherits from its folders, nearest first, then from the project: its own header replaces an inherited one with the same name; its auth is its own, else the nearest folder's, else the project's. Variables: local secret, then the active environment, then folder variables (nearest first), then project variables. The editor shows where an inherited header or auth comes from. *(IDEA-1; extends R-COL-4, R-VAR-4)* |
+
+#### Workspaces & projects
+
+Decided in D12–D15. A **project** is what earlier versions called a collection; a **workspace** groups projects.
+
+| ID | Requirement |
+|---|---|
+| R-WS-1 | A workspace is a named set of projects that are open together. A default workspace always exists. Workspaces are switched from the title bar, and each one remembers its open projects, active environments and selection. *(IDEA-32)* |
+| R-WS-2 | A project is a directory with `tortuga.toml`: in its own git repo, in a repo shared with other projects, or outside git. The file format does not change. The UI and docs say "project", not "collection" (D12). *(IDEA-33)* |
+| R-WS-3 | Add existing projects: the user picks a folder or repository, and the app lists every `tortuga.toml` below it as a checklist, skipping git-ignored folders. *(IDEA-34)* |
+| R-WS-4 | Projects in the same repository are grouped in the sidebar, with the branch and git state shown once per repository, and one watcher per repository. *(IDEA-35)* |
+| R-WS-5 | Workspaces are local data (§6.7). "Save as file…" writes a shareable `<name>.tortuga-workspace.toml` with each project's relative path and git remote URL. Opening one adds its projects; missing ones show greyed with "Locate…" and their remote URL (D13). *(IDEA-36)* |
+| R-WS-6 | Choosing an environment switches every project in the workspace that has an environment with that name; projects without one keep theirs and are marked. Environments stay defined per project (D14). *(IDEA-37)* |
+| R-WS-7 | New project: in a new folder (optionally initialised as a git repository by the app) or inside a folder of an existing repository. *(IDEA-39)* |
+
+### Variables & environments
+
+| ID | Requirement |
+|---|---|
+| R-VAR-1 | `{{name}}` placeholders are substituted in URL, params, headers, body, and auth fields. |
+| R-VAR-2 | A collection has any number of named environments (e.g. `dev`, `staging`), plus collection-level variables. One environment is active at a time. |
+| R-VAR-3 | **Secrets are never written into the collection directory.** A variable can be marked secret; its value is stored only on the local machine (§6.7). Teammates see that the secret exists, not its value. |
+| R-VAR-4 | Order of precedence, highest first: local secret value, then the active environment, then collection variables. |
+| R-VAR-5 | Undefined variables are highlighted in the editor and reported before the request is sent. |
+| R-VAR-7 | Collection variables and per-environment values are edited in one table: one row per variable, one column for the collection default and one per environment. An empty cell falls back to the collection default. |
+
+#### Servers
+
+A collection usually talks to a few services (e.g. "Users API", "Auth"), and each environment has its own address for each one.
+Servers make that a first-class concept instead of a naming convention for variables.
+
+| ID | Requirement |
+|---|---|
+| R-SRV-1 | A collection defines a list of named servers. Renaming a server does not break the requests that use it. |
+| R-SRV-2 | Each environment sets a base URL for each server, edited in one table: one row per server, one column per environment. Base URLs are shared data (committed to git) and may contain `{{variables}}`. |
+| R-SRV-3 | A request picks a server from a dropdown in front of the URL field; the URL field then holds only the path and query (e.g. `/users?page=2`). "No server" means the URL field holds a full URL. |
+| R-SRV-4 | When sending, the request goes to the selected server's base URL in the active environment plus the path. If the server has no URL in that environment, or no longer exists, sending stops with a message naming the server and environment. |
+| R-SRV-5 | The active environment is chosen per collection from the title bar, and remembered locally (§6.7). |
+| R-SRV-6 | In the environments dialog, environments (columns) and servers (rows) can be dragged into a new order, which is saved. Variables stay sorted by name (D23). *(IDEA-13)* |
+
+### Collaboration through git
+
+#### On-disk format
+
+Example layout:
+```
+my-api/                    # collection root, typically inside the API's git repo
+  tortuga.toml             # manifest: name, format version, servers, collection variables
+  environments/
+    dev.toml
+    staging.toml
+  users/                   # a folder
+    _folder.toml           # optional: folder display name and position (seq)
+    list-users.toml
+    create-user.toml
+```
+Example manifest and environment:
+```toml
+# tortuga.toml
+format = 1
+name = "Acme API"
+[[servers]]
+id = "users"               # stable key used by requests; the name can change freely
+name = "Users API"
+[variables]                # collection defaults
+api_version = "v2"
+```
+```toml
+# environments/dev.toml
+name = "Development"
+seq = 1
+[servers]
+users = "http://localhost:8080"
+[variables]
+user_id = "42"
+```
+Example request file:
+```toml
+name = "Create user"
+seq = 2
+method = "POST"
+server = "users"
+url = "/users"
+[[headers]]
+name = "Accept"
+value = "application/json"
+[body]
+kind = "json"
+content = '''
+{
+  "name": "{{user_name}}"
+}
+'''
+```
+
+| ID | Requirement |
+|---|---|
+| R-GIT-1 | A collection is a directory and can live anywhere, inside or outside a git repo. Folders are directories. |
+| R-GIT-2 | **One TOML file per request**, so concurrent edits to different requests never conflict. |
+| R-GIT-3 | Output is deterministic, so saving an unchanged request never modifies its file. Key order is fixed, and only fields that differ from their defaults are written. |
+| R-GIT-4 | Shared files hold only shared data. No timestamps, response history, window/UI state, cookies, or secret values. |
+| R-GIT-5 | File names come from request names (e.g. `create-user.toml`). Renaming a request renames its file, so git sees a rename. |
+| R-GIT-6 | Order is stored as a `seq` number in each request file, not in a central list, so two people adding requests don't both edit the same file. |
+| R-GIT-7 | The collection manifest `tortuga.toml` holds a `format` version. Newer app versions migrate older formats. If a file uses a newer format than the app understands, it is shown read-only. |
+| R-GIT-8 | Files are hand-editable. A file that fails to parse (e.g. it contains merge-conflict markers) is shown as an error on that item only; the rest of the collection still loads. |
+
+#### Working with git
+
+| ID | Requirement |
+|---|---|
+| R-GIT-10 | The app watches open collections. Changes on disk (git pull, branch switch, edits in another editor) are reloaded automatically. |
+| R-GIT-11 | If a file changes on disk while it has unsaved edits in the app, the user chooses: keep mine or take theirs. |
+| R-GIT-12 | **Git status is shown in the app.** For a collection inside a git repo, show the current branch and mark each request/folder as modified, new, deleted, or conflicted. |
+| R-GIT-13 | Commit, pull, push, and branch switching happen outside the app. The app can open the collection folder in the system file manager or terminal. |
+| R-GIT-14 | Git status works without a `git` executable installed: it is read from the repository by the app itself. Desktop only. |
+
+### Local (non-shared) data
+
+| ID | Requirement |
+|---|---|
+| R-LOC-1 | Secret values, cookies, the selected environment, and UI state are stored in the user's app-data directory, keyed by collection path. Nothing is written inside the repo, so there is no `.gitignore` to forget. |
+
+### Non-functional
+
+| ID | Requirement |
+|---|---|
+| R-NF-1 | Cold start under 1 s on a typical developer laptop. A collection with 1,000 requests opens in under 1 s. |
+| R-NF-2 | Response bodies up to 50 MB are handled without freezing the UI. Larger bodies are truncated in the viewer and can be saved to a file. |
+| R-NF-3 | Fully usable offline. |

@@ -12,11 +12,11 @@ change a decision recorded in the roadmap, ask before building.
 
 | File | Holds | Rule |
 |---|---|---|
-| `docs/ROADMAP.md` | Vision, principles, milestones and phases, requirements (`R-COL-3`), ideas (`IDEA-n`), decisions (`D1`). | The plan and the spec. Implement requirements as written; suggest new ideas by adding a row to its Ideas section; record new decisions there. |
-| `docs/FEATURES.md` | Implemented **and verified** features, by requirement ID. | Add an entry only when the requirement is fully met, tested, and checked in the running app; record which OS. Otherwise it goes under "In progress". |
+| `docs/ROADMAP.md` | Vision, principles, open work and phases, open requirements (`R-COL-3`), ideas (`IDEA-n`), decisions (`D1`), next free IDs. | The plan and the spec for what is not done. Implement requirements as written; suggest new ideas by adding a row to its Ideas section; record new decisions there. |
+| `docs/FEATURES.md` | Implemented **and verified** features by requirement ID, and the text of every completed requirement ("Agreed requirements"). | Add an entry only when the requirement is fully met, tested, and checked in the running app; record which OS, and move the requirement's row there from the roadmap. Otherwise it goes under "In progress". |
 
 IDs are never reused or renumbered. Reference requirement IDs in commit messages and tests.
-When building something that has no requirement yet, add one to the roadmap (next free ID in its area).
+When building something that has no requirement yet, add one to the roadmap (next free ID in its area, listed at the end of the roadmap).
 
 ## Layout
 
