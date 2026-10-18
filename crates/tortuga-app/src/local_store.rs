@@ -263,11 +263,21 @@ mod tests {
         assert_eq!(old.ca_certificates, Vec::<PathBuf>::new());
     }
 
-    /// R-COL-8: unsaved edits round-trip through the drafts file.
+    /// R-COL-8, R-FLOW-5: unsaved edits round-trip through the drafts file.
     #[test]
     fn drafts_round_trip() {
+        use tortuga_core::workflow::{Step, Workflow};
         use tortuga_core::{HttpMethod, Request, RequestBody};
-        use tortuga_ui_egui::{DraftConflict, SavedDraft};
+        use tortuga_ui_egui::{DraftConflict, SavedDraft, SavedWorkflowDraft};
+
+        let base = Workflow {
+            name: "Smoke".into(),
+            ..Workflow::default()
+        };
+        let workflow = Workflow {
+            steps: vec![Step::new(std::path::Path::new("users/create.toml"))],
+            ..base.clone()
+        };
 
         let mut edited = Request::new(HttpMethod::Post, "https://api.test/users?x=1");
         edited.body = RequestBody::Json("{\"a\": 1}".into());
@@ -279,6 +289,12 @@ mod tests {
                 request: edited,
                 base: Some(Request::new(HttpMethod::Post, "https://api.test/users")),
                 conflict: Some(DraftConflict::Changed),
+            }],
+            workflows: vec![SavedWorkflowDraft {
+                root: "/repo/api".into(),
+                id: "smoke".into(),
+                workflow,
+                base: Some(base),
             }],
         };
         let text = serde_json::to_string(&drafts).expect("serialize");

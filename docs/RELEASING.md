@@ -35,8 +35,8 @@ make package      # installers for this OS in target/packages/
    git push origin v0.1.0
    ```
 
-4. The **Release** workflow builds every installer, checks that the tag matches the version, and creates a
-   **draft** GitHub release with the installers and `SHA256SUMS.txt` attached.
+4. The **Release** workflow builds every installer and a `tortuga-cli` archive per OS (R-CLI-4), checks that the tag
+   matches the version, and creates a **draft** GitHub release with them and `SHA256SUMS.txt` attached.
 5. Download the installers and run the checks below on each OS.
 6. Edit the release notes and publish the draft.
 
@@ -57,6 +57,8 @@ On each OS, after installing:
   `& "$env:ProgramFiles\Tortuga\tortuga.exe" --startup-time | Out-String`.
 - Send a request, save it to a project, close and reopen the app: the project is still there.
 - Uninstall: the app is removed; your projects and app data are left alone.
+- The CLI archive for that OS unpacks to `tortuga-cli-<version>-<os>/` with the binary, `README.md` and the licences;
+  `tortuga-cli --version` prints the release version.
 
 Record what was checked, and on which OS, in `docs/FEATURES.md`.
 

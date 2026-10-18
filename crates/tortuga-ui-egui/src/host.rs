@@ -14,6 +14,7 @@ use tortuga_core::git::GitStatus;
 use tortuga_core::history;
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
+use tortuga_core::workflow::Workflow;
 use tortuga_core::workspace::ProjectRef;
 use tortuga_core::{ClientSettings, Request};
 
@@ -121,6 +122,24 @@ pub struct SavedDrafts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scratch: Option<Request>,
     pub drafts: Vec<SavedDraft>,
+    /// Workflows with unsaved edits (R-FLOW-5).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workflows: Vec<SavedWorkflowDraft>,
+}
+
+/// One workflow with unsaved edits (R-FLOW-5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedWorkflowDraft {
+    /// Project root.
+    pub root: PathBuf,
+    /// The workflow file's stem (not part of [`Workflow`]'s own serialized form).
+    pub id: String,
+    /// The edited workflow.
+    pub workflow: Workflow,
+    /// The saved version the edits started from, so a change on disk while the app
+    /// was closed is noticed.
+    #[serde(default)]
+    pub base: Option<Workflow>,
 }
 
 /// One request with unsaved edits.

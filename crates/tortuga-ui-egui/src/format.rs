@@ -99,6 +99,15 @@ pub fn day_label(ms: u64, now_ms: u64, offset_minutes: i32) -> String {
     }
 }
 
+/// "1 step", "2 steps".
+pub fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 /// Local time of day, like "14:05".
 pub fn clock(ms: u64, offset_minutes: i32) -> String {
     let local_ms = i64::try_from(ms).unwrap_or(i64::MAX) + i64::from(offset_minutes) * 60_000;

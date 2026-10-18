@@ -85,7 +85,7 @@ after a restart. Not yet re-checked in the egui app: the body editor types and s
 |---|---|---|---|
 | R-CK-1 | Each collection has a cookie jar, on by default. Cookies from responses — also those set during redirects — are sent with later matching requests, with browser rules for domain, path, expiry and `Secure` (via the `cookie_store` crate). The jar is kept across restarts, session cookies included. The scratch request has its own jar for the session. | Linux | Automated tests (domain/path matching, redirect hop, JSON round trip). In the app: `/login` redirect set `session=abc123`; the next request sent it; still sent after a restart. |
 | R-CK-2 | "Use cookies from this collection's cookie jar" on the request's Options tab; when off, nothing is sent from the jar and response cookies are not stored. Saved as `cookies = false` in the request file. | Linux | Automated tests. In the app: with it off the server got no cookie; request file checked. |
-| R-CK-3 | Jars are saved in the app-data folder (`cookies/<hash>.json`, owner-only), never in the collection. "Clear cookies (N)" in the collection menu empties the jar. | Linux | Automated tests. In the app: jar file `-rw-------`, emptied by Clear; no cookie files in the collection. |
+| R-CK-3 | Jars are saved in the app-data folder (`cookies/<hash>.json`, owner-only), never in the collection. "Clear cookies (N)" in the collection menu empties the jar (now **Clear all** in the cookie viewer, R-CK-5). | Linux | Automated tests. In the app: jar file `-rw-------`, emptied by Clear; no cookie files in the collection. |
 | R-CK-4 | A `Cookie` header set on the request is always sent, also with the jar off, and then replaces the jar's cookies. | Linux | Automated test for both switch positions. In the app: `Cookie: mine=1` sent with the jar off. |
 
 ### M6: Live git collaboration
@@ -191,6 +191,18 @@ and "Orders API", in one workspace.
 | R-COL-13 | Requests open in tabs above the editor. A single click (tree, quick open, history, a workflow step) opens the *preview tab* (italic title; the next single click replaces it); double-clicking the tab or the tree row, or editing the request, keeps it; sending does not. New, duplicated and saved-from-scratch requests open as kept tabs. Closing (🗙, middle-click, Ctrl+W) never discards unsaved edits; the shown tab then goes back to the one used before. Right-click: Keep open, Close, Close others, Close to the right, Close saved tabs. "⏷" lists every tab (unsaved ones with a dot). Ctrl+Tab goes to the previously used tab, Ctrl+PageDown/PageUp to the next/previous one. Tabs follow renames and moves and close when their request is deleted (also in git) unless it has unsaved edits (then the conflict banner asks, R-GIT-11). Open tabs, the preview tab and folded groups are kept per workspace in local data and come back after a restart. | Linux | Automated tests (the tab model: preview, keep, close, used order, neighbours, renames, deletes, saved form; the shell: send does not keep, edit keeps, closing keeps edits, restart, deleted in git; the strip: clicking, closing, chips; the local-data round trip). In the app: single clicks replaced the preview, double-clicks kept tabs, editing "Delete user" kept it with the unsaved dot, Ctrl+Tab, Ctrl+PageDown, Ctrl+W, middle-click and "Close others" (edits of "Delete user" still there), the "⏷" list, and the tabs back after a restart with the unsaved edit. |
 | R-COL-14 | With tabs of two or more projects open, each project's tabs sit together after a chip with its name in a colour worked out from the name; the project rows in the sidebar get a dot in the same colour when the workspace has several projects. Clicking a chip folds the group into "Name · count" (the shown tab stays visible) and unfolds it; opening one of its requests unfolds it; right-click: Collapse/Expand, Close the project's tabs. The preview tab comes after all groups with a stripe in its project's colour and moves into its group when kept. Folded state is forgotten once the chip disappears. | Linux | Automated tests (groups and chips with one and two projects, closing a group, folding, stable colours). In the app: Users API (pink) and Orders API (orange) chips and dots; the preview "List orders" moved into its group when double-clicked; Users API folded to "Users API · 2" and back; closing the last Orders tab removed both chips. Light theme not checked (the app follows the system theme, which is dark here). |
 
+### After Phase 3
+
+Checked in the running app on Linux (Ubuntu 24.04, WSL2/WSLg, debug build, dark theme) with one project, a workflow and
+a local server that sets three cookies.
+
+| Requirement | Feature | Verified on | How it was verified |
+|---|---|---|---|
+| R-CK-5 | **Cookies (N)…** in the project menu opens the cookie viewer: name, value (full value on hover), where it is sent (`host/path`, `*.domain` when subdomains get it too, explained on hover), expiry in local time or "Session", `Secure` / `HttpOnly`. 🗙 removes one cookie, **Clear all** empties the jar; both are saved at once. | Linux | Automated tests (listing with attributes, removing by domain/path/name, the dialog). In the app: after "Log in" the viewer listed `session` (Session, HttpOnly), `theme` (`*.127.0.0.1`, tomorrow) and `api_token` (`/api`, Secure); still there after a restart; 🗙 on `theme` removed it from the jar file (`-rw-------`). Clear all only by the automated test and the existing R-CK-3 path (the session ended before it was clicked in the app). |
+| R-FLOW-5 | Unsaved workflow edits are kept in local data with the request drafts (R-COL-8) and come back after a restart; the workflow row in the sidebar has the unsaved dot. If the file changed on disk meanwhile the edits are kept and a notice says Revert takes the file; if it was deleted the edits are dropped with a notice. Edits of a project that is not open (another workspace) wait until it opens. | Linux | Automated tests (restart, changed and deleted files, saving clears the draft, the drafts file round trip). In the app: a saved draft with 2 steps and "Continue after a failed step" came back marked Unsaved with the dot on "Smoke", ran with both steps, and was still there after a second restart. |
+
+Also fixed: the workflow row in the sidebar says "1 step" rather than "1 steps".
+
 ## In progress
 
 | Requirement | State |
@@ -200,6 +212,7 @@ and "Orders API", in one workspace.
 | R-LOC-2 | The OS credential store (Keychain, Credential Manager, Secret Service via `keyring`) is used when available; otherwise values go to `secrets.toml` in the app-data folder with owner-only permissions (0600 on Unix) and the environments dialog shows a warning. **Verified:** the fallback on Linux/WSL (no Secret Service), including file permissions. **Not yet checked:** the OS credential store itself, on any OS. |
 | R-NF-4 | Installers are built with cargo-packager (D16): `make package` locally, and the **Release** workflow on each OS for a `v*` tag (draft GitHub release) or by hand (artifacts); see [RELEASING.md](RELEASING.md). The app has an icon (window, `.exe`, packages), version information in the `.exe`, no console window on Windows, and `--version`. **Verified:** on Linux the `.deb` (dependencies, desktop entry, icons) and `.AppImage` were built and both started, within the start-up budget; the Windows `.exe` shows the icon and version information. **Not yet checked:** the `.msi` and `.dmg` (built only by the workflow, which has not run yet) and installing the `.deb` with `apt`. |
 | R-P-3 | macOS has not been run yet (built and tested by CI only). |
+| R-CLI-4 | The **Release** workflow builds `tortuga-cli` on each OS, checks `--version` and attaches `tortuga-cli-<version>-<os>.tar.gz` (`.zip` on Windows) with the README and licences. **Verified:** the archive step run locally on Linux (binary needs only libc). **Not yet checked:** the workflow itself, and the Windows and macOS archives. |
 
 ## Known limitations
 
@@ -255,6 +268,7 @@ The requirements the features above were built to, as agreed in [ROADMAP.md](ROA
 | R-CK-2 | **Cookies can be disabled per request.** A disabled request sends no cookies from the jar and does not store cookies from its response. The setting is saved in the request file. |
 | R-CK-3 | The cookie jar is local data (§6.7), never written to the collection directory. The jar can be cleared. |
 | R-CK-4 | A `Cookie` header set manually on a request is always sent, even when the jar is disabled for that request. |
+| R-CK-5 | **Cookie viewer**: the cookies in a project's jar, with value, domain, path, expiry and flags; single cookies can be removed. *(IDEA-6)* |
 
 ### Collections
 
@@ -414,6 +428,7 @@ content = '''
 | R-FLOW-2 | Workflows are listed in the sidebar under their project; they are created, renamed, deleted and edited in the app: add a step by picking a request, reorder, remove, edit its captures and tests. |
 | R-FLOW-3 | **Running a workflow** sends its steps in order with the active environment, each with its pre-request script, captures and tests. Captured values flow to later steps; a run starts with no runtime variables of its own and does not change the project's. It stops at the first failed step (a failed test, an error, or a 4xx/5xx response) unless the workflow says to continue. A result view shows each step: status, time, tests passed and failed, captured values, and its response. A run can be cancelled. |
 | R-FLOW-4 | **Data-driven runs**: a workflow can run once per row of a CSV file (first row: variable names) or a JSON file (an array of objects); each row's values are variables for that iteration (D27). The data file is chosen when running, or named in the workflow file (relative to the project). Results are shown per iteration. |
+| R-FLOW-5 | Unsaved workflow edits are kept when Tortuga closes, like request edits (R-COL-8), as local data. *(IDEA-42)* |
 
 ### Command-line runner
 

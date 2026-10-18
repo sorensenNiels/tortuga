@@ -1,8 +1,8 @@
 name: Release
 
-# Builds the installers (R-NF-4) on each OS.
+# Builds the installers (R-NF-4) and an archive of the command-line runner (R-CLI-4) on each OS.
 # - Push a tag `vX.Y.Z` (matching the version in Cargo.toml): a draft GitHub release is created
-#   with every installer attached. Check it, then publish it by hand.
+#   with every installer and CLI archive attached. Check it, then publish it by hand.
 # - Run it by hand (Actions → Release → Run workflow): the installers are only kept as
 #   artifacts of the run, to try them without releasing.
 # See docs/RELEASING.md.
@@ -82,6 +82,28 @@ jobs:
           bin=target/${{ matrix.target && format('{0}/', matrix.target) || '' }}release/tortuga
           "$bin" --version
 
+      - name: Build the CLI
+        shell: bash
+        run: cargo build -p tortuga-cli --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      # tortuga-cli-<version>-<os>.tar.gz (.zip on Windows): the binary, README and licence (R-CLI-4).
+      - name: Archive the CLI
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          dir=target/${{ matrix.target && format('{0}/', matrix.target) || '' }}release
+          exe=tortuga-cli; [ "$RUNNER_OS" = Windows ] && exe=tortuga-cli.exe
+          if [ "${{ matrix.target }}" != x86_64-apple-darwin ]; then "$dir/$exe" --version; fi
+          name=tortuga-cli-$version-${{ matrix.name }}
+          mkdir -p "target/cli/$name"
+          cp "$dir/$exe" README.md LICENSE* "target/cli/$name/"
+          cd target/cli
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a -tzip "$name.zip" "$name"
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+
       - name: Package
         shell: bash
         env:
@@ -97,6 +119,8 @@ jobs:
             target/packages/*.AppImage
             target/packages/*.msi
             target/packages/*.dmg
+            target/cli/tortuga-cli-*.tar.gz
+            target/cli/tortuga-cli-*.zip
           if-no-files-found: error
 
   release:

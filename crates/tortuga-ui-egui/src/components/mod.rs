@@ -23,9 +23,9 @@ pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, 
 pub use key_value_table::key_value_table;
 use modals::dialog;
 pub use modals::{
-    AddProjects, AddProjectsDialog, ConfirmDialog, CopyCurlDialog, CreateProjectDialog,
-    DialogResult, MoveDialog, NameDialog, RuntimeVarsDialog, SaveToCollectionDialog,
-    SettingsDialog,
+    AddProjects, AddProjectsDialog, ConfirmDialog, CookieAction, CookiesDialog, CopyCurlDialog,
+    CreateProjectDialog, DialogResult, MoveDialog, NameDialog, RuntimeVarsDialog,
+    SaveToCollectionDialog, SettingsDialog,
 };
 pub use palette::{Palette, PaletteItem};
 pub use request_editor::{EditorAction, EditorContext, EditorState, request_editor};
@@ -33,7 +33,7 @@ pub use response_panel::{
     Filtered, Outcome, PanelContext, ResponseAction, ResponseState, ResponseView, TestsView,
     TextBody, filter_body, response_panel, tests_details,
 };
-pub use sidebar::{SidebarAction, SidebarState, sidebar};
+pub use sidebar::{Marks, SidebarAction, SidebarState, sidebar};
 pub use tab_strip::{GroupChip, TabAction, TabGroup, TabStripState, TabView, tab_strip};
 pub use workflow_view::{
     IterationView, RequestChoice, RunView, StepView, WorkflowAction, WorkflowContext,

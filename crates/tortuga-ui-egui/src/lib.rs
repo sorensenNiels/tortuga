@@ -21,7 +21,7 @@ mod theme;
 
 pub use host::{
     BoxTask, DraftConflict, Host, LocalState, SavedDraft, SavedDrafts, SavedTab, SavedTabs,
-    Workspace,
+    SavedWorkflowDraft, Workspace,
 };
 pub use shell::TortugaUi;
 

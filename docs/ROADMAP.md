@@ -56,7 +56,7 @@ Every roadmap item should make at least one of these faster or safer.
 Milestones M1 to M9 are done: sending requests, projects on disk, environments and servers, auth and secrets,
 cookies, live git collaboration, workspaces, the v1 extras, release builds, the Phase 2 "daily driver"
 features, and Phase 3: test and pre-request scripts, captures, workflows (also data-driven) and the `tortuga-cli`
-runner. Request tabs grouped by project (R-COL-13, R-COL-14) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
+runner. Request tabs grouped by project (R-COL-13, R-COL-14), a cookie viewer (R-CK-5) and unsaved workflow edits kept across restarts (R-FLOW-5) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
 
 Open before the first release (v1):
 
@@ -67,6 +67,7 @@ Open before the first release (v1):
 | OS credential store | R-LOC-2 | Check Keychain, Credential Manager and Secret Service (only the file fallback is verified). |
 | No telemetry | R-P-4 | Confirm with a network monitor. |
 | Signing | D17 | Decide whether v1 installers are signed. |
+| CLI archives | R-CLI-4 | Run the Release workflow and check the archives on each OS (only the Linux one was built locally). |
 
 Next: **Phase 4 — Reach**, picked by demand.
 
@@ -103,6 +104,7 @@ Requirements still open: not built yet, or implemented but not yet verified ever
 | R-HTTP-8 | Settings: follow redirects (on/off), verify TLS certificates (on/off, with a visible warning when off), proxy from system settings. |
 | R-LOC-2 | Secret values are stored in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service). If none is available, they fall back to a file in the app-data directory readable only by the current user, and the app shows a warning. |
 | R-NF-4 | Installable packages: `.msi` (Windows), `.dmg` (macOS), `.deb` and `.AppImage` (Linux). |
+| R-CLI-4 | Each release has a `tortuga-cli` archive per OS next to the installers, for CI: the binary with the README and licences, `.zip` on Windows, `.tar.gz` elsewhere. *(IDEA-43)* |
 
 ## 7. Ideas
 
@@ -114,14 +116,12 @@ Agreed as worth doing, not scheduled yet.
 
 | ID | Idea | Notes |
 |---|---|---|
-| IDEA-6 | Cookie viewer: list cookies in the jar and delete individual ones. | Extends R-CK-3. |
 | IDEA-8 | "Compare" option when a file changed on disk while it had unsaved edits. | Extends R-GIT-11. |
 | IDEA-10 | Import Postman collections (v2.1 JSON). | Once our own format is stable. |
 | IDEA-11 | Web version of the app. | The architecture already keeps this possible (R-P-3). |
 | IDEA-14 | Signed installers: Apple Developer ID signing and notarization for the `.dmg`, Authenticode for the `.msi`. | Removes the "unidentified developer" and SmartScreen warnings. Needs paid certificates; see D17. |
 | IDEA-15 | Automatic update check and in-app updates. | Would contact a server, so it must be opt-in (R-P-4). |
-| IDEA-42 | Keep unsaved workflow edits when Tortuga closes, like request edits (R-COL-8). | Today an unsaved workflow draft is lost on exit. |
-| IDEA-43 | Publish `tortuga-cli` with each release (an archive per OS, maybe a container image) for CI. | Today it is built from source (`make cli`); the Release workflow packages only the desktop app. |
+| IDEA-44 | A container image of `tortuga-cli` for CI. | The Release workflow attaches CLI archives (R-CLI-4); an image needs a registry to publish to. |
 
 ### Under consideration
 
@@ -196,4 +196,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-5` · `R-COL-15` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-44` · `D33` · `R-TEST-6` · `R-FLOW-5` · `R-CLI-4`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-15` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-45` · `D33` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5`.

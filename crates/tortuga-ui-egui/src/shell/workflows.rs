@@ -1,7 +1,8 @@
 //! Workflows in the shell: opening, editing, saving and running them (R-FLOW-1..4),
-//! and the runtime variables dialog (R-TEST-5).
+//! unsaved workflow edits kept across restarts (R-FLOW-5), and the runtime variables
+//! dialog (R-TEST-5).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use egui::{Frame, Margin, Panel, Ui};
@@ -16,12 +17,16 @@ use crate::components::{
     RuntimeVarsDialog, StepView, WorkflowAction, WorkflowContext, WorkflowEditorState,
     workflow_editor, workflow_results,
 };
+use crate::host::SavedWorkflowDraft;
 use crate::state::{ItemKey, WorkflowKey};
 
 /// A workflow open in the editor.
 #[derive(Debug)]
 pub(super) struct OpenWorkflow {
     draft: Workflow,
+    /// The saved version, followed while the project is open, so unsaved edits are
+    /// still known after it closes (R-FLOW-5).
+    base: Option<Workflow>,
     st: WorkflowEditorState,
     run: Option<RunView>,
     run_id: u64,
@@ -58,6 +63,9 @@ pub(super) struct Workflows {
     pub(super) open: Option<WorkflowKey>,
     editors: HashMap<WorkflowKey, OpenWorkflow>,
     next_run: u64,
+    /// Unsaved edits of workflows whose project is not open (restored from last time,
+    /// or of another workspace), with the saved version they started from (R-FLOW-5).
+    waiting: HashMap<WorkflowKey, (Workflow, Option<Workflow>)>,
 }
 
 impl TortugaUi {
@@ -75,6 +83,7 @@ impl TortugaUi {
             self.workflows.editors.insert(
                 key.clone(),
                 OpenWorkflow {
+                    base: Some(saved.clone()),
                     draft: saved,
                     st,
                     run: None,
@@ -184,7 +193,8 @@ impl TortugaUi {
         }
     }
 
-    /// Forgets open workflows whose project closed or whose file is gone.
+    /// Forgets open workflows whose project closed or whose file is gone. Unsaved edits
+    /// of a closed project wait until it opens again (R-FLOW-5).
     pub(super) fn drop_missing_workflows(&mut self) {
         let gone: Vec<WorkflowKey> = self
             .workflows
@@ -197,9 +207,130 @@ impl TortugaUi {
             })
             .cloned()
             .collect();
+        for (key, open) in &mut self.workflows.editors {
+            let saved = self
+                .state
+                .collection(&key.root)
+                .and_then(|c| c.workflow(&key.id));
+            if saved.is_some() && open.base.as_ref() != saved {
+                open.base = saved.cloned();
+            }
+        }
         for key in gone {
+            if self.state.collection(&key.root).is_none()
+                && let Some(open) = self.workflows.editors.get(&key)
+                && open.base.as_ref() != Some(&open.draft)
+            {
+                let kept = (open.draft.clone(), open.base.clone());
+                self.workflows.waiting.insert(key.clone(), kept);
+            }
             self.close_workflow(&key);
         }
+    }
+
+    // ------------------------------------------------------------ unsaved edits (R-FLOW-5)
+
+    /// Workflows with unsaved edits as they should be kept now, in a stable order.
+    pub(super) fn workflow_drafts_snapshot(&self) -> Vec<SavedWorkflowDraft> {
+        let open = self.workflows.editors.iter().filter_map(|(key, open)| {
+            let base = self.saved_workflow(key);
+            (base.as_ref() != Some(&open.draft)).then(|| (key, open.draft.clone(), base))
+        });
+        let waiting = self
+            .workflows
+            .waiting
+            .iter()
+            .map(|(key, (draft, base))| (key, draft.clone(), base.clone()));
+        let mut drafts: Vec<SavedWorkflowDraft> = open
+            .chain(waiting)
+            .map(|(key, workflow, base)| SavedWorkflowDraft {
+                root: key.root.clone(),
+                id: key.id.clone(),
+                workflow,
+                base,
+            })
+            .collect();
+        drafts.sort_by(|a, b| (&a.root, &a.id).cmp(&(&b.root, &b.id)));
+        drafts
+    }
+
+    /// Takes back the unsaved workflow edits of last time.
+    pub(super) fn restore_workflow_drafts(&mut self, saved: &[SavedWorkflowDraft]) {
+        for d in saved {
+            let key = WorkflowKey {
+                root: d.root.clone(),
+                id: d.id.clone(),
+            };
+            let mut workflow = d.workflow.clone();
+            workflow.id.clone_from(&d.id);
+            let base = d.base.clone().map(|mut b| {
+                b.id.clone_from(&d.id);
+                b
+            });
+            self.workflows.waiting.insert(key, (workflow, base));
+        }
+        self.check_waiting_workflows();
+    }
+
+    /// Opens waiting edits once their project is open. If the file changed on disk
+    /// meanwhile the edits are kept and the user is told (Revert takes the file); if
+    /// it is gone, they are dropped with a notice; edits equal to the file are dropped.
+    pub(super) fn check_waiting_workflows(&mut self) {
+        let ready: Vec<WorkflowKey> = self
+            .workflows
+            .waiting
+            .keys()
+            .filter(|k| self.state.collection(&k.root).is_some())
+            .cloned()
+            .collect();
+        let mut notes = Vec::new();
+        for key in ready {
+            let Some((draft, base)) = self.workflows.waiting.remove(&key) else {
+                continue;
+            };
+            let Some(saved) = self.saved_workflow(&key) else {
+                notes.push(format!(
+                    "The workflow “{}” was deleted, so its unsaved edits were dropped.",
+                    draft.name
+                ));
+                continue;
+            };
+            if saved == draft {
+                continue;
+            }
+            if base.as_ref() != Some(&saved) {
+                notes.push(format!(
+                    "The workflow “{}” changed on disk while it had unsaved edits. \
+                     Your edits are kept; Revert takes the file's version.",
+                    draft.name
+                ));
+            }
+            let st = WorkflowEditorState::new(&draft);
+            self.workflows.editors.insert(
+                key,
+                OpenWorkflow {
+                    draft,
+                    base: Some(saved),
+                    st,
+                    run: None,
+                    run_id: 0,
+                    abort: None,
+                },
+            );
+        }
+        if !notes.is_empty() {
+            self.state.notify(notes.join("\n"));
+        }
+    }
+
+    /// Workflows with unsaved edits, for the sidebar's dot (R-FLOW-5).
+    pub(super) fn dirty_workflows(&self) -> HashSet<WorkflowKey> {
+        self.workflows
+            .editors
+            .keys()
+            .filter(|k| self.workflow_dirty(k))
+            .cloned()
+            .collect()
     }
 
     fn workflow_dirty(&self, key: &WorkflowKey) -> bool {
@@ -639,5 +770,87 @@ mod tests {
         assert!(ui.workflows.open.is_none());
         assert!(!root.join("workflows").join("smoke-test.toml").exists());
         std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-FLOW-5: unsaved workflow edits survive a restart; a file changed meanwhile
+    /// keeps the edits with a notice, a deleted one drops them with a notice.
+    #[test]
+    fn unsaved_workflow_edits_survive_a_restart() {
+        let root =
+            std::env::temp_dir().join(format!("tortuga-ui-workflow-drafts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let c = Collection::create(&FsStorage, &root, "C").expect("create");
+        let request = Request::new(HttpMethod::Get, "https://a.test/");
+        let path = c
+            .new_request(&FsStorage, Path::new(""), &request)
+            .expect("request");
+        let drafts = std::rc::Rc::new(std::cell::RefCell::new(crate::host::SavedDrafts::default()));
+        let start = || {
+            TortugaUi::new(Box::new(TestHost {
+                open: vec![root.clone()],
+                drafts: drafts.clone(),
+                ..TestHost::default()
+            }))
+        };
+        let edit = |ui: &mut TortugaUi, key: &WorkflowKey| {
+            ui.open_workflow(key.clone());
+            let open = ui.workflows.editors.get_mut(key).expect("editor");
+            open.draft.steps.push(Step::new(&path));
+        };
+
+        let mut ui = start();
+        ui.create_workflow(&root, "Smoke");
+        ui.create_workflow(&root, "Gone");
+        let smoke = WorkflowKey {
+            root: root.clone(),
+            id: "smoke".into(),
+        };
+        let gone = WorkflowKey {
+            root: root.clone(),
+            id: "gone".into(),
+        };
+        edit(&mut ui, &smoke);
+        edit(&mut ui, &gone);
+        assert_eq!(ui.dirty_workflows().len(), 2);
+        ui.on_exit();
+        assert_eq!(drafts.borrow().workflows.len(), 2);
+
+        // Unchanged on disk: the edits come back as they were, without a notice.
+        let mut ui = start();
+        assert!(ui.workflow_dirty(&smoke) && ui.workflow_dirty(&gone));
+        assert_eq!(ui.workflows.editors[&smoke].draft.steps.len(), 1);
+        assert_eq!(ui.workflows.editors[&smoke].draft.id, "smoke");
+        assert!(ui.state.notice.is_none());
+        ui.on_exit();
+
+        // While closed, one file changes and the other is deleted.
+        let mut changed = c_workflow(&root, "smoke");
+        changed.continue_on_failure = true;
+        let c = Collection::open(&FsStorage, &root).expect("open");
+        c.save_workflow(&FsStorage, &changed).expect("save");
+        c.delete_workflow(&FsStorage, "gone").expect("delete");
+        let mut ui = start();
+        let open = &ui.workflows.editors[&smoke];
+        assert_eq!(open.draft.steps.len(), 1);
+        assert!(!open.draft.continue_on_failure);
+        assert!(!ui.workflows.editors.contains_key(&gone));
+        let notice = ui.state.notice.clone().expect("notice");
+        assert!(notice.contains("“Smoke” changed on disk"), "{notice}");
+        assert!(notice.contains("“Gone” was deleted"), "{notice}");
+
+        // Saving makes it clean; nothing is kept for next time.
+        ui.open_workflow(smoke.clone());
+        ui.save_open_workflow();
+        ui.on_exit();
+        assert_eq!(drafts.borrow().workflows, []);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    fn c_workflow(root: &Path, id: &str) -> Workflow {
+        Collection::open(&FsStorage, root)
+            .expect("open")
+            .workflow(id)
+            .expect("workflow")
+            .clone()
     }
 }

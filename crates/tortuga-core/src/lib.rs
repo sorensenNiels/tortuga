@@ -27,7 +27,7 @@ pub mod workflow;
 pub mod workspace;
 
 pub use collection::{Collection, Direction, Item};
-pub use cookies::CookieJar;
+pub use cookies::{CookieInfo, CookieJar};
 pub use error::{Error, Result};
 pub use format::{Environment, Manifest, Server};
 pub use http::{Client, ClientSettings, FileReader};

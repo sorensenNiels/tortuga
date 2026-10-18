@@ -1,4 +1,4 @@
-//! Cookie jars (R-CK-1..4).
+//! Cookie jars (R-CK-1..5).
 //!
 //! Each collection has a [`CookieJar`]. Cookies from responses are stored in it
 //! and sent with later matching requests, like a browser does (domain, path,
@@ -13,11 +13,27 @@
 mod imp {
     use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-    use cookie_store::CookieStore;
+    use cookie_store::{CookieDomain, CookieExpiration, CookieStore};
     #[cfg(not(target_arch = "wasm32"))]
     use reqwest::header::HeaderValue;
 
     use crate::{Error, Result};
+
+    /// One cookie in a jar, for the cookie viewer (R-CK-5).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CookieInfo {
+        /// The host it is sent to (with its subdomains when `host_only` is false).
+        pub domain: String,
+        /// Set without a `Domain` attribute: sent to exactly `domain`.
+        pub host_only: bool,
+        pub path: String,
+        pub name: String,
+        pub value: String,
+        /// When it expires, in milliseconds since 1970; `None` for a session cookie.
+        pub expires_ms: Option<u64>,
+        pub secure: bool,
+        pub http_only: bool,
+    }
 
     /// A cookie jar. Cheap to clone; clones share the same cookies.
     #[derive(Clone, Default)]
@@ -67,6 +83,37 @@ mod imp {
         /// Removes every cookie (R-CK-3).
         pub fn clear(&self) {
             self.lock().clear();
+        }
+
+        /// The cookies that have not expired, by domain, path and name (R-CK-5).
+        pub fn list(&self) -> Vec<CookieInfo> {
+            let mut cookies: Vec<CookieInfo> = self
+                .lock()
+                .iter_unexpired()
+                .map(|c| CookieInfo {
+                    domain: String::from(&c.domain),
+                    host_only: matches!(c.domain, CookieDomain::HostOnly(_)),
+                    path: c.path.to_string(),
+                    name: c.name().to_owned(),
+                    value: c.value().to_owned(),
+                    expires_ms: match &c.expires {
+                        CookieExpiration::AtUtc(at) => {
+                            Some(u64::try_from(at.unix_timestamp_nanos() / 1_000_000).unwrap_or(0))
+                        }
+                        CookieExpiration::SessionEnd => None,
+                    },
+                    secure: c.secure().unwrap_or(false),
+                    http_only: c.http_only().unwrap_or(false),
+                })
+                .collect();
+            cookies
+                .sort_by(|a, b| (&a.domain, &a.path, &a.name).cmp(&(&b.domain, &b.path, &b.name)));
+            cookies
+        }
+
+        /// Removes one cookie (R-CK-5). Returns whether it was in the jar.
+        pub fn remove(&self, domain: &str, path: &str, name: &str) -> bool {
+            self.lock().remove(domain, path, name).is_some()
         }
 
         /// `name=value` pairs that would be sent to `url`.
@@ -131,7 +178,7 @@ mod imp {
     }
 }
 
-pub use imp::CookieJar;
+pub use imp::{CookieInfo, CookieJar};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
@@ -167,6 +214,47 @@ mod tests {
             jar.cookies_for(&url("http://elsewhere.test/api")),
             Vec::<(String, String)>::new(),
             "other hosts get nothing"
+        );
+    }
+
+    /// R-CK-5: the jar lists its cookies with their attributes, and removes one.
+    #[test]
+    fn cookies_are_listed_and_removed_one_by_one() {
+        let jar = CookieJar::default();
+        jar.store_response_cookies(
+            [
+                "session=abc; Path=/api; HttpOnly; Secure",
+                "theme=dark; Domain=example.test; Expires=Wed, 01 Jan 2120 00:00:00 GMT",
+            ],
+            &url("https://api.example.test/login"),
+        );
+        let list = jar.list();
+        assert_eq!(list.len(), 2);
+        let session = &list[0];
+        assert_eq!(
+            (
+                session.domain.as_str(),
+                session.path.as_str(),
+                session.name.as_str()
+            ),
+            ("api.example.test", "/api", "session")
+        );
+        assert!(session.host_only && session.secure && session.http_only);
+        assert_eq!(session.expires_ms, None);
+        let theme = &list[1];
+        assert_eq!(
+            (theme.domain.as_str(), theme.path.as_str()),
+            ("example.test", "/")
+        );
+        assert!(!theme.host_only && !theme.secure && !theme.http_only);
+        assert_eq!(theme.expires_ms, Some(4_733_510_400_000));
+
+        assert!(!jar.remove("example.test", "/", "session"), "wrong domain");
+        assert!(jar.remove("api.example.test", "/api", "session"));
+        assert_eq!(jar.list().len(), 1);
+        assert_eq!(
+            jar.cookies_for(&url("https://api.example.test/api/x")),
+            [("theme".to_owned(), "dark".to_owned())]
         );
     }
 

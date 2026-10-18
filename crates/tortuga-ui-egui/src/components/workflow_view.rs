@@ -349,7 +349,7 @@ fn step_row(
                 }
                 let mut extras = Vec::new();
                 if !step.capture.is_empty() {
-                    extras.push(count(step.capture.len(), "capture"));
+                    extras.push(crate::format::count(step.capture.len(), "capture"));
                 }
                 if !step.tests.trim().is_empty() {
                     extras.push("tests".to_owned());
@@ -561,7 +561,7 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                         ui,
                         format!(
                             "{} skipped after the failure.",
-                            count(iteration.skipped, "later step")
+                            crate::format::count(iteration.skipped, "later step")
                         ),
                     );
                 }
@@ -603,11 +603,14 @@ fn summary(ui: &mut Ui, run: &RunView) {
             theme::badge(ui, "Failed", p.fail);
         }
         let mut parts = vec![
-            format!("{} passed", count(passed, "test")),
+            format!("{} passed", crate::format::count(passed, "test")),
             format!("{failed} failed"),
         ];
         if failed_steps > 0 {
-            parts.push(format!("{} failed", count(failed_steps, "step")));
+            parts.push(format!(
+                "{} failed",
+                crate::format::count(failed_steps, "step")
+            ));
         }
         if run.iterations_planned > 1 {
             parts.push(format!(
@@ -618,15 +621,6 @@ fn summary(ui: &mut Ui, run: &RunView) {
         }
         ui.label(RichText::new(parts.join(" · ")).color(p.muted));
     });
-}
-
-/// "1 step", "2 steps".
-fn count(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("{n} {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
 }
 
 fn mark(ui: &mut Ui, ok: bool) {

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
 use egui::{ComboBox, Context, Id, Modal, RichText, TextEdit, Ui};
-use tortuga_core::ClientSettings;
+use tortuga_core::{ClientSettings, CookieInfo};
 
 use super::request_editor::parse_timeout;
 use crate::state::{AppState, ItemKey};
@@ -651,6 +651,151 @@ impl RuntimeVarsDialog {
     }
 }
 
+/// What the user did in the cookie viewer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CookieAction {
+    /// Remove this one; the dialog stays open.
+    Remove(CookieInfo),
+    /// Empty the jar; the dialog closes.
+    ClearAll,
+}
+
+/// The cookies in a project's jar, each with a remove button, and "Clear all" (R-CK-5).
+#[derive(Debug, Clone)]
+pub struct CookiesDialog {
+    pub root: PathBuf,
+    title: String,
+}
+
+impl CookiesDialog {
+    pub fn new(root: PathBuf, place: &str) -> Self {
+        Self {
+            root,
+            title: format!("Cookies — {place}"),
+        }
+    }
+
+    /// `now_ms` and `offset_minutes` format the expiry dates in local time.
+    pub fn show(
+        &self,
+        ctx: &Context,
+        cookies: &[CookieInfo],
+        now_ms: u64,
+        offset_minutes: i32,
+    ) -> (DialogResult<()>, Option<CookieAction>) {
+        let mut action = None;
+        let result = dialog(ctx, "cookies", &self.title, 760.0, true, |ui| {
+            theme::hint(
+                ui,
+                "Set by responses and sent with later matching requests. Kept on this computer \
+                 only, never in the project.",
+            );
+            ui.add_space(8.0);
+            if cookies.is_empty() {
+                theme::hint(ui, "The jar is empty.");
+            } else {
+                let p = theme::palette(ui);
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("cookies")
+                            .num_columns(6)
+                            .spacing([14.0, 6.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for heading in
+                                    ["", "Name", "Value", "Domain and path", "Expires", ""]
+                                {
+                                    theme::section_label(ui, heading);
+                                }
+                                ui.end_row();
+                                for c in cookies {
+                                    if ui
+                                        .add(theme::icon_button(ui, "🗙"))
+                                        .on_hover_text("Remove this cookie")
+                                        .clicked()
+                                    {
+                                        action = Some(CookieAction::Remove(c.clone()));
+                                    }
+                                    ui.label(RichText::new(&c.name).monospace());
+                                    let shown = crate::format::truncate(&c.value, 60).0.to_owned();
+                                    // A truncated label in a Grid gets almost no width of its own.
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(200.0, ui.spacing().interact_size.y),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.set_width(200.0);
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(shown).monospace().color(p.muted),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(&c.value);
+                                        },
+                                    );
+                                    let place = cookie_place(c);
+                                    ui.label(&place.0).on_hover_text(place.1);
+                                    ui.label(cookie_expiry(c, now_ms, offset_minutes));
+                                    ui.label(RichText::new(cookie_flags(c)).small().color(p.muted));
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            }
+            let (close, clear) = actions(
+                ui,
+                theme::danger_button(ui, "Clear all"),
+                !cookies.is_empty(),
+            );
+            if clear {
+                action = Some(CookieAction::ClearAll);
+            }
+            finish(close, clear.then_some(()))
+        });
+        (result, action)
+    }
+}
+
+/// "example.test/api" and what it means, for a cookie row.
+fn cookie_place(c: &CookieInfo) -> (String, String) {
+    let path = if c.path == "/" { "" } else { c.path.as_str() };
+    let shown = if c.host_only {
+        format!("{}{path}", c.domain)
+    } else {
+        format!("*.{}{path}", c.domain)
+    };
+    let hover = if c.host_only {
+        format!("Sent to {} only, for paths under {}", c.domain, c.path)
+    } else {
+        format!(
+            "Sent to {} and its subdomains, for paths under {}",
+            c.domain, c.path
+        )
+    };
+    (shown, hover)
+}
+
+fn cookie_expiry(c: &CookieInfo, now_ms: u64, offset_minutes: i32) -> String {
+    match c.expires_ms {
+        None => "Session".into(),
+        Some(ms) => format!(
+            "{} {}",
+            crate::format::day_label(ms, now_ms, offset_minutes),
+            crate::format::clock(ms, offset_minutes)
+        ),
+    }
+}
+
+fn cookie_flags(c: &CookieInfo) -> String {
+    [(c.secure, "Secure"), (c.http_only, "HttpOnly")]
+        .iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, name)| *name)
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// CA certificate files trusted besides the system's (R-HTTP-16). Returns whether "Add…"
 /// was clicked.
 fn ca_certificates(ui: &mut Ui, files: &mut Vec<PathBuf>, can_pick_files: bool) -> bool {
@@ -687,6 +832,55 @@ mod tests {
 
     use super::*;
     use crate::test_host::TestHost;
+
+    /// R-CK-5: the cookie viewer lists cookies with where they go and when they expire;
+    /// 🗙 removes one, "Clear all" empties the jar.
+    #[test]
+    fn cookie_viewer_lists_removes_and_clears() {
+        let cookie = |name: &str, host_only, expires_ms| CookieInfo {
+            domain: "example.test".into(),
+            host_only,
+            path: "/".into(),
+            name: name.into(),
+            value: format!("{name}-value"),
+            expires_ms,
+            secure: true,
+            http_only: false,
+        };
+        let cookies = [
+            cookie("session", true, None),
+            cookie("theme", false, Some(4_733_510_400_000)),
+        ];
+        let dialog = CookiesDialog::new(PathBuf::from("/p"), "API");
+        let mut actions = Vec::new();
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                let (_, action) = dialog.show(ui.ctx(), &cookies, 0, 0);
+                actions.extend(action);
+            });
+            h.run();
+            h.get_by_label("Cookies — API");
+            h.get_by_label("session-value");
+            h.get_by_label("example.test");
+            h.get_by_label("*.example.test");
+            h.get_by_label("Session");
+            h.get_by_label("1 Jan 2120 00:00");
+            h.query_all_by_label("🗙")
+                .nth(1)
+                .expect("second row")
+                .click();
+            h.run();
+            h.get_by_label("Clear all").click();
+            h.run();
+        }
+        assert_eq!(
+            actions,
+            [
+                CookieAction::Remove(cookies[1].clone()),
+                CookieAction::ClearAll
+            ]
+        );
+    }
 
     /// R-HTTP-16: CA certificates are listed, added and removed in the settings.
     #[test]

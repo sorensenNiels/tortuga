@@ -58,8 +58,8 @@ pub enum SidebarAction {
         parent: PathBuf,
         before: Option<PathBuf>,
     },
-    /// Empty the collection's cookie jar (R-CK-3).
-    ClearCookies(PathBuf),
+    /// Show the project's cookie jar, to remove cookies or clear it (R-CK-3, R-CK-5).
+    ShowCookies(PathBuf),
     /// Open the collection folder outside the app (R-GIT-13).
     OpenInFileManager(PathBuf),
     OpenInTerminal(PathBuf),
@@ -126,6 +126,7 @@ struct Tree<'a> {
     dirty: &'a HashSet<ItemKey>,
     /// Requests whose file changed on disk while they had unsaved edits (R-GIT-11).
     conflicts: &'a HashSet<ItemKey>,
+    dirty_workflows: &'a HashSet<WorkflowKey>,
     /// Git status of the collection being drawn (R-GIT-12).
     git: Option<&'a GitStatus>,
     /// Show the branch on the project row (not when a repository row above shows it, R-WS-4).
@@ -138,6 +139,17 @@ struct Tree<'a> {
     actions: Vec<SidebarAction>,
 }
 
+/// What the rows of the tree are marked with.
+#[derive(Debug, Clone, Copy)]
+pub struct Marks<'a> {
+    /// Requests with unsaved edits.
+    pub dirty: &'a HashSet<ItemKey>,
+    /// Requests whose file changed on disk while they had unsaved edits (R-GIT-11).
+    pub conflicts: &'a HashSet<ItemKey>,
+    /// Workflows with unsaved edits (R-FLOW-5).
+    pub dirty_workflows: &'a HashSet<WorkflowKey>,
+}
+
 /// The projects of the workspace and their requests (R-COL-1, R-COL-2, R-COL-3, R-WS-4).
 pub fn sidebar(
     ui: &mut Ui,
@@ -145,16 +157,16 @@ pub fn sidebar(
     st: &mut SidebarState,
     selected: Option<&ItemKey>,
     selected_workflow: Option<&WorkflowKey>,
-    dirty: &HashSet<ItemKey>,
-    conflicts: &HashSet<ItemKey>,
+    marks: Marks<'_>,
 ) -> Vec<SidebarAction> {
     let scratch_selected = selected.is_none() && selected_workflow.is_none();
     let mut tree = Tree {
         st,
         selected,
         selected_workflow,
-        dirty,
-        conflicts,
+        dirty: marks.dirty,
+        conflicts: marks.conflicts,
+        dirty_workflows: marks.dirty_workflows,
         git: None,
         show_branch: true,
         env_note: None,
@@ -390,16 +402,20 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
             id: w.id.clone(),
         };
         let selected = tree.selected_workflow == Some(&key);
-        let atoms = [
+        let dirty = tree.dirty_workflows.contains(&key);
+        let mut atoms = vec![
             Atom::from(RichText::new("⏵").size(10.5).color(p.accent)),
             Atom::from(w.name.clone()).atom_shrink(true),
             Atom::from(
-                RichText::new(format!("{} steps", w.steps.len()))
+                RichText::new(crate::format::count(w.steps.len(), "step"))
                     .small()
                     .color(p.muted),
             ),
-            Atom::grow(),
         ];
+        if dirty {
+            atoms.push(Atom::from(RichText::new("⏺").size(9.0).color(p.accent)));
+        }
+        atoms.push(Atom::grow());
         let read_only = c.read_only;
         let menu = |ui: &mut Ui| {
             let mut choice = None;
@@ -427,6 +443,11 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
                 tree_row(ui, depth + 1, selected, atoms, |ui| menu_button(ui, menu))
             })
             .inner;
+        let row = if dirty {
+            row.on_hover_text("Unsaved changes")
+        } else {
+            row
+        };
         if row.clicked() {
             tree.actions
                 .push(SidebarAction::SelectWorkflow(key.clone()));
@@ -845,13 +866,9 @@ fn collection_menu(
     item(ui, "Runtime variables…".into(), &|| {
         MenuChoice::Action(SidebarAction::RuntimeVariables(root.clone()))
     });
-    let clear = ui
-        .add_enabled(
-            cookie_count > 0,
-            egui::Button::new(format!("Clear cookies ({cookie_count})")),
-        )
-        .on_hover_text("Cookies are kept on this machine, never in the project");
-    let clear_clicked = clear.clicked();
+    item(ui, format!("Cookies ({cookie_count})…"), &|| {
+        MenuChoice::Action(SidebarAction::ShowCookies(root.clone()))
+    });
     item(ui, "Reload from disk".into(), &|| {
         MenuChoice::Action(SidebarAction::Reload(root.clone()))
     });
@@ -872,11 +889,6 @@ fn collection_menu(
             root: root.clone(),
             id,
         }));
-    }
-    if clear_clicked {
-        return Some(MenuChoice::Action(SidebarAction::ClearCookies(
-            root.clone(),
-        )));
     }
     choice
 }

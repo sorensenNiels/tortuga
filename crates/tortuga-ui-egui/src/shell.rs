@@ -2,6 +2,7 @@
 //! sending, saving, and the dialogs.
 
 mod commands;
+mod cookies;
 mod history;
 mod tabs;
 mod workflows;
@@ -19,9 +20,9 @@ use futures_util::future::{AbortHandle, abortable};
 use tortuga_core::{Item, Request, vars};
 
 use crate::components::{
-    AddProjects, AddProjectsDialog, ClearHistory, ConfirmDialog, CopyCurlDialog,
+    AddProjects, AddProjectsDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
     CreateProjectDialog, DefaultsDialog, DialogResult, EditorAction, EditorContext, EditorState,
-    EnvironmentsDialog, Filtered, MoveDialog, NameDialog, Outcome, Palette, PanelContext,
+    EnvironmentsDialog, Filtered, Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext,
     ResponseAction, ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog,
     SidebarAction, SidebarState, TabStripState, TestsView, TextBody, request_editor,
     response_panel, sidebar,
@@ -69,6 +70,8 @@ enum Modal {
     RenameWorkflow(crate::state::WorkflowKey, NameDialog),
     DeleteWorkflow(crate::state::WorkflowKey, ConfirmDialog),
     RuntimeVars(crate::components::RuntimeVarsDialog),
+    /// The cookie viewer (R-CK-5).
+    Cookies(CookiesDialog),
 }
 
 /// What the user picked in the workspace menu (R-WS-1, R-WS-5).
@@ -328,6 +331,7 @@ impl TortugaUi {
         let p = theme::palette(ui);
         let dirty = self.dirty_keys();
         let conflicts: HashSet<ItemKey> = self.conflicts.keys().cloned().collect();
+        let dirty_workflows = self.dirty_workflows();
         let actions = Panel::left("sidebar")
             .resizable(true)
             .default_size(270.0)
@@ -358,8 +362,11 @@ impl TortugaUi {
                             .as_ref()
                             .filter(|_| self.workflows.open.is_none()),
                         self.workflows.open.as_ref(),
-                        &dirty,
-                        &conflicts,
+                        Marks {
+                            dirty: &dirty,
+                            conflicts: &conflicts,
+                            dirty_workflows: &dirty_workflows,
+                        },
                     ),
                     SidebarView::History => {
                         self.history_panel(ui);
@@ -458,6 +465,7 @@ impl TortugaUi {
         SavedDrafts {
             scratch: (*scratch != Request::default()).then(|| scratch.clone()),
             drafts,
+            workflows: self.workflow_drafts_snapshot(),
         }
     }
 
@@ -513,6 +521,7 @@ impl TortugaUi {
                 }
             }
         }
+        self.restore_workflow_drafts(&saved.workflows);
         self.drafts_saved = saved;
         self.check_restored_drafts();
     }
@@ -521,6 +530,7 @@ impl TortugaUi {
     /// changed while the app was closed gets the conflict banner (R-GIT-11); edits
     /// that now equal the file are dropped.
     fn check_restored_drafts(&mut self) {
+        self.check_waiting_workflows();
         let open: Vec<ItemKey> = self
             .unchecked_bases
             .keys()
@@ -1601,7 +1611,7 @@ impl TortugaUi {
                     self.state.notify(e);
                 }
             }
-            SidebarAction::ClearCookies(root) => self.state.clear_cookies(&root),
+            SidebarAction::ShowCookies(root) => self.show_cookies(root),
             SidebarAction::Close(root) => {
                 self.forget(&root, Path::new(""));
                 self.state.close_collection(&root);
@@ -1836,6 +1846,7 @@ impl TortugaUi {
             | Modal::RenameWorkflow(..)
             | Modal::DeleteWorkflow(..)
             | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
+            Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
             Modal::ClearHistory(target, d) => match d.show(ctx) {
                 DialogResult::Done(()) => {
                     self.clear_history(target);

@@ -22,6 +22,80 @@ Download the installer for your OS from the [releases page](https://github.com/s
 
 Tortuga needs no account and works offline. To build installers yourself, see [docs/RELEASING.md](docs/RELEASING.md).
 
+## Working as a team
+
+Tortuga has no server and no sign-in: your team shares requests through **git**, the same way you share code.
+A Tortuga *project* is a folder of plain TOML files, usually kept in the repository of the API it calls:
+
+```
+my-api/                          your API's git repository
+├── src/ …
+└── api-requests/                a Tortuga project
+    ├── tortuga.toml             project name, servers, variables (names of secrets only)
+    ├── environments/            one file per environment: base URLs and values
+    ├── users/                   a folder of requests
+    │   ├── _folder.toml         folder defaults (headers, auth), if any
+    │   ├── get-user.toml        one file per request
+    │   └── create-user.toml
+    └── workflows/               chained requests with checks
+        └── user-lifecycle.toml
+```
+
+### What is shared and what stays on your computer
+
+| Shared through git (commit it) | Stays on your computer (never in the repository) |
+|---|---|
+| Requests, folders and folder defaults | Values of **secret** variables (tokens, passwords) |
+| Servers and their base URLs per environment | Which environment you have selected |
+| Variables and their non-secret values | Your workspaces (unless you save one as a file) |
+| Test and pre-request scripts, captures | Cookies, history, unsaved edits |
+| Workflows and their data files | Settings, e.g. your company's CA certificate |
+
+Tortuga writes nothing local into the project folder, so you don't need a `.gitignore` for it.
+
+### Set up a project (done once, by one person)
+
+1. In your API's repository, choose **+ Add → New project…** in the sidebar and pick (or create) a folder such as
+   `api-requests/`.
+2. In the project's **…** menu, open **Environments…**. Add your environments (e.g. *Local*, *Dev*, *Staging*),
+   your servers with a base URL for each environment, and the variables the requests need. Mark credentials as
+   **secret** (🔒): only the variable name goes into the files, the value stays on your machine.
+3. Add the requests the team uses. Pick the server in front of the URL field and type only the path, so one request
+   works in every environment.
+4. Commit and push the folder like any other change.
+5. Optional: if the team works across several repositories, choose **Save as file…** in the workspace menu (title
+   bar) and commit the `.tortuga-workspace.toml` file. It lists the projects, each with its path and clone URL.
+
+### Join as a colleague
+
+1. [Install Tortuga](#install) and clone the repository.
+2. Open the project: **+ Add → Add existing projects…** and pick the repository folder. Tortuga lists every project
+   in it. Or, if the team committed a workspace file, open it with **Open workspace file…** in the workspace menu.
+   Projects you haven't cloned yet show as *missing* with **Copy clone URL** and **Locate…**.
+3. Choose an environment in the title bar.
+4. Fill in your own secrets: open **Environments…** in the project's **…** menu and type your value for each 🔒
+   variable. Requests that use a variable without a value are highlighted, and Tortuga won't send them until it
+   has one.
+
+### Day to day
+
+- **Change requests and commit them.** Each request is its own small file, so a pull request shows exactly which
+  requests changed and how. Commit, pull and push with your usual git tools; the project's **…** menu has **Open in
+  terminal** and **Open in file manager**.
+- **Your teammates' changes appear by themselves.** After a `git pull` or a branch switch, Tortuga reloads the
+  project; there is no import step.
+- **See what you changed.** The sidebar shows the branch next to each repository, and marks requests as **M**
+  (modified), **N** (new), **D** (deleted, struck through until committed) or **C** (merge conflict).
+- **Conflicts.** If a request you are editing changes on disk, a banner asks whether to **Keep mine** or **Take
+  theirs**. A file with git conflict markers shows as ⚠; fix it in your editor, or delete it in Tortuga.
+- **Hand something over quickly.** **Copy as curl** (next to Save) gives a teammate a command they can run anywhere.
+  You choose whether to mask secret values.
+- **Run the same checks in CI.** `tortuga-cli` runs the committed workflows and requests without a window. Pass
+  secrets as `TORTUGA_VAR_<name>` environment variables (see [In CI](#using-tortuga) below).
+
+Keep everything a request needs inside the project, such as files to upload in a `fixtures/` folder and data files
+for workflows. Then the request works on every teammate's machine.
+
 ## Getting started (development)
 
 ### 1. Install the prerequisites (once per machine)
@@ -155,7 +229,7 @@ TORTUGA_VAR_token=$TOKEN tortuga-cli run path/to/project users/get-user.toml --v
 
 It prints each step with its tests and exits with 0 when everything passed, 1 when something failed and 2 for
 usage errors. Pass secrets with `--var name=value` or `TORTUGA_VAR_<name>` environment variables. `--data FILE`
-runs once per row; `--report json` writes JSON instead of JUnit XML. Build it with `make cli`.
+runs once per row; `--report json` writes JSON instead of JUnit XML. Download it from a release (`tortuga-cli-<version>-<os>` archive, R-CLI-4) or build it with `make cli`.
 
 ## Make targets
 
