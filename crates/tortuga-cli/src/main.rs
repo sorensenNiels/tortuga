@@ -19,6 +19,8 @@ Options:
   --env NAME            Use this environment (by name or id)
   --data FILE           Run once per row of a CSV or JSON data file
   --var NAME=VALUE      Set a variable (repeatable); wins over the project's values
+  --workspace FILE      Use the variables of this .tortuga-workspace.toml; the
+                        project's own values win over them
   --insecure            Do not verify TLS certificates
   --cacert FILE         Also trust the CA certificates in this PEM file (repeatable)
   --report junit|json   Write a report ...
@@ -40,6 +42,7 @@ struct Args {
     env: Option<String>,
     data: Option<PathBuf>,
     vars: BTreeMap<String, String>,
+    workspace: Option<PathBuf>,
     insecure: bool,
     cacerts: Vec<PathBuf>,
     report: Option<(ReportKind, PathBuf)>,
@@ -116,6 +119,7 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
                     .ok_or_else(|| format!("--var needs NAME=VALUE, not '{v}'"))?;
                 args.vars.insert(name.trim().to_owned(), val.to_owned());
             }
+            "--workspace" => args.workspace = Some(value("--workspace")?.into()),
             "--insecure" | "-k" => args.insecure = true,
             "--cacert" => args.cacerts.push(value("--cacert")?.into()),
             "--report" => {
@@ -159,6 +163,14 @@ fn env_vars(env: impl Iterator<Item = (String, String)>) -> BTreeMap<String, Str
     .collect()
 }
 
+/// The shared variables of a workspace file (R-WS-8). Secret ones have no value in the
+/// file; pass them with `--var` or `TORTUGA_VAR_<name>`.
+fn workspace_values(path: &Path) -> Result<BTreeMap<String, String>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file = tortuga_core::workspace::read(&text, path).map_err(|e| e.to_string())?;
+    Ok(file.variables.values)
+}
+
 /// Runs what `args` asks for. `Ok(passed)`, or an error in the command or the project.
 fn run(args: &Args) -> Result<bool, String> {
     let collection = Collection::open(&FsStorage, &args.project).map_err(|e| e.to_string())?;
@@ -197,11 +209,16 @@ fn run(args: &Args) -> Result<bool, String> {
                 .map_err(|e| format!("{}: {e}", path.display()))?
         }
     };
+    let workspace = match &args.workspace {
+        None => BTreeMap::new(),
+        Some(path) => workspace_values(path)?,
+    };
     let client = client(args)?;
     let options = RunOptions {
         environment,
         secrets: BTreeMap::new(),
         overrides: args.vars.clone(),
+        workspace,
         rows,
     };
 
@@ -391,7 +408,7 @@ mod tests {
     #[test]
     fn parses_options() {
         let Ok(Command::Run(a)) = args(
-            "run api lifecycle --env Staging --var user=ann --var x=a=b --data rows.csv --insecure --report junit --out r.xml",
+            "run api lifecycle --env Staging --var user=ann --var x=a=b --data rows.csv --insecure --report junit --out r.xml --workspace w.toml",
         ) else {
             panic!("run")
         };
@@ -399,6 +416,7 @@ mod tests {
         assert_eq!(a.target.as_deref(), Some("lifecycle"));
         assert_eq!(a.env.as_deref(), Some("Staging"));
         assert_eq!(a.vars["x"], "a=b");
+        assert_eq!(a.workspace, Some(PathBuf::from("w.toml")));
         assert!(a.insecure);
         assert_eq!(a.report, Some((ReportKind::Junit, PathBuf::from("r.xml"))));
         assert!(matches!(args("--help"), Ok(Command::Help)));

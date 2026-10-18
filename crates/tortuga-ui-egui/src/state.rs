@@ -13,7 +13,7 @@ use tortuga_core::CookieJar;
 use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretValues;
 use tortuga_core::storage::Storage;
-use tortuga_core::workspace::{self, ProjectRef};
+use tortuga_core::workspace::{self, ProjectRef, WorkspaceVariables};
 use tortuga_core::{Client, ClientSettings, Collection, Request, vars};
 
 use crate::format::sentence;
@@ -87,6 +87,11 @@ pub struct AppState {
     /// Values captured or set by scripts, per project (`None`: the scratch request);
     /// kept until the app closes, never on disk (R-TEST-5, D26).
     pub runtime: BTreeMap<Option<PathBuf>, BTreeMap<String, String>>,
+    /// Values captured or set as `workspace.<name>`, per workspace id (R-WS-8); kept
+    /// like `runtime`.
+    pub workspace_runtime: BTreeMap<String, BTreeMap<String, String>>,
+    /// This machine's values of the active workspace's secret variables (R-WS-8).
+    pub workspace_secrets: BTreeMap<String, String>,
 }
 
 impl fmt::Debug for AppState {
@@ -170,6 +175,8 @@ impl AppState {
             live: Live::default(),
             notice: (!problems.is_empty()).then(|| problems.join("\n")),
             runtime: BTreeMap::new(),
+            workspace_runtime: BTreeMap::new(),
+            workspace_secrets: BTreeMap::new(),
         };
         state.open_workspace();
         state
@@ -311,6 +318,7 @@ impl AppState {
             match self.read_workspace_file(&file) {
                 Ok(read) => {
                     let ws = self.workspace_mut();
+                    ws.variables = read.variables;
                     let projects = read
                         .projects
                         .into_iter()
@@ -330,6 +338,7 @@ impl AppState {
                 Err(e) => self.notify(format!("Could not read the workspace file: {e}")),
             }
         }
+        self.load_workspace_secrets();
         for project in self.workspace().projects.clone() {
             if self.collection(&project.path).is_some() {
                 continue; // listed twice
@@ -365,6 +374,7 @@ impl AppState {
             name: name.to_owned(),
             ..Workspace::default()
         });
+        self.local.give_ids();
         self.switch_workspace(self.local.workspaces.len() - 1);
     }
 
@@ -410,8 +420,10 @@ impl AppState {
             name: read.name,
             file: Some(file.to_owned()),
             projects: read.projects,
+            variables: read.variables,
             ..Workspace::default()
         });
+        self.local.give_ids();
         self.switch_workspace(self.local.workspaces.len() - 1);
         Ok(())
     }
@@ -430,7 +442,7 @@ impl AppState {
         let Some(file) = &ws.file else {
             return Ok(());
         };
-        let text = workspace::write(&ws.name, &ws.projects, file);
+        let text = workspace::write(&ws.name, &ws.projects, &ws.variables, file);
         if self.storage().read_to_string(file).ok().as_deref() == Some(text.as_str()) {
             return Ok(()); // unchanged: leave the file (and git) alone
         }
@@ -445,6 +457,79 @@ impl AppState {
         if let Err(e) = self.write_workspace_file() {
             self.notify(e);
         }
+    }
+
+    // ------------------------------------------------------------ workspace variables (R-WS-8)
+
+    /// Reads this machine's values of the workspace's secret variables.
+    fn load_workspace_secrets(&mut self) {
+        self.workspace_secrets.clear();
+        let ws = self.workspace();
+        let mut problem = None;
+        let mut values = BTreeMap::new();
+        for name in &ws.variables.secrets {
+            match self
+                .host
+                .secrets()
+                .get(&workspace::secret_key(&ws.id, name))
+            {
+                Ok(Some(value)) => drop(values.insert(name.clone(), value)),
+                Ok(None) => {}
+                Err(e) => problem = Some(e),
+            }
+        }
+        self.workspace_secrets = values;
+        if let Some(e) = problem {
+            self.notify(format!("Could not read secret values: {e}"));
+        }
+    }
+
+    /// The workspace's variables as requests use them: shared values plus this
+    /// machine's secret values.
+    pub fn workspace_values(&self) -> BTreeMap<String, String> {
+        self.workspace().variables.resolved(&self.workspace_secrets)
+    }
+
+    /// Saves the workspace's variables: shared ones to local data and the workspace
+    /// file, secret values (`secret_values`, by name) to this machine's secret store.
+    /// Values of secrets that were removed are deleted from the store.
+    pub fn save_workspace_variables(
+        &mut self,
+        variables: WorkspaceVariables,
+        secret_values: &BTreeMap<String, String>,
+    ) -> Result<(), String> {
+        let id = self.workspace().id.clone();
+        let old: Vec<String> = self.workspace().variables.secrets.iter().cloned().collect();
+        let store = self.host.secrets();
+        for name in old.iter().filter(|n| !variables.secrets.contains(*n)) {
+            store
+                .delete(&workspace::secret_key(&id, name))
+                .map_err(|e| e.to_string())?;
+        }
+        for name in &variables.secrets {
+            let key = workspace::secret_key(&id, name);
+            match secret_values.get(name).filter(|v| !v.is_empty()) {
+                Some(value) => store.set(&key, value),
+                None => store.delete(&key),
+            }
+            .map_err(|e| e.to_string())?;
+        }
+        self.workspace_mut().variables = variables;
+        self.workspace_changed();
+        self.load_workspace_secrets();
+        Ok(())
+    }
+
+    /// Values captured or set as `workspace.<name>` in the active workspace.
+    pub fn workspace_runtime_vars(&self) -> Option<&BTreeMap<String, String>> {
+        self.workspace_runtime
+            .get(&self.workspace().id)
+            .filter(|v| !v.is_empty())
+    }
+
+    pub fn clear_workspace_runtime(&mut self) {
+        let id = self.workspace().id.clone();
+        self.workspace_runtime.remove(&id);
     }
 
     /// Removes a missing project from the workspace.
@@ -591,8 +676,15 @@ impl AppState {
         }
     }
 
-    /// Runtime variables win over every other value (R-TEST-5).
-    fn with_runtime(&self, mut ctx: vars::Context, root: Option<&Path>) -> vars::Context {
+    /// Adds the workspace's variables below everything else (R-WS-8), then runtime
+    /// variables above everything else (R-TEST-5): the workspace's captured values,
+    /// then the project's.
+    fn with_runtime(&self, ctx: vars::Context, root: Option<&Path>) -> vars::Context {
+        let ws = self.workspace();
+        let mut ctx = ctx.with_workspace(&self.workspace_values(), &ws.variables.secrets);
+        if let Some(runtime) = self.workspace_runtime.get(&ws.id) {
+            ctx.variables.extend(runtime.clone());
+        }
         if let Some(runtime) = self.runtime.get(&root.map(Path::to_path_buf)) {
             ctx.variables.extend(runtime.clone());
         }
@@ -606,17 +698,23 @@ impl AppState {
             .filter(|v| !v.is_empty())
     }
 
-    /// Applies variables set or unset by a run (R-TEST-5).
+    /// Applies variables set or unset by a run (R-TEST-5); `workspace.<name>` ones go
+    /// to the workspace (R-WS-8).
     pub fn apply_runtime(
         &mut self,
         root: Option<&Path>,
         changes: &BTreeMap<String, Option<String>>,
     ) {
-        if changes.is_empty() {
-            return;
+        let (project, workspace) = tortuga_core::runner::split_changes(changes);
+        if !project.is_empty() {
+            let vars = self.runtime.entry(root.map(Path::to_path_buf)).or_default();
+            tortuga_core::runner::apply_changes(vars, &project);
         }
-        let vars = self.runtime.entry(root.map(Path::to_path_buf)).or_default();
-        tortuga_core::runner::apply_changes(vars, changes);
+        if !workspace.is_empty() {
+            let id = self.workspace().id.clone();
+            let vars = self.workspace_runtime.entry(id).or_default();
+            tortuga_core::runner::apply_changes(vars, &workspace);
+        }
     }
 
     pub fn clear_runtime(&mut self, root: Option<&Path>) {
@@ -1041,6 +1139,110 @@ mod tests {
         state.set_project_environment(&b, "local");
         assert_eq!(state.active_environment(&b).as_deref(), Some("local"));
         assert!(state.follows_workspace_environment(&a));
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-WS-8: workspace variables reach every project below the project's own values,
+    /// go into the workspace file (secrets by name only), and a `workspace.` capture in
+    /// one project is used by the others.
+    #[test]
+    fn workspace_variables_are_shared_by_every_project() {
+        use tortuga_core::storage::FsStorage;
+
+        let dir = temp("ws-vars");
+        let (auth, orders) = (dir.join("auth"), dir.join("orders"));
+        project(&auth, "Auth", &[]);
+        project(&orders, "Orders", &[]);
+        let c = Collection::open(&FsStorage, &orders).expect("orders");
+        let manifest = tortuga_core::Manifest {
+            variables: [("tenant".to_owned(), "orders-own".to_owned())].into(),
+            ..c.manifest.clone()
+        };
+        c.save_config(&FsStorage, &manifest, &c.environments)
+            .expect("config");
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![auth.clone(), orders.clone()],
+            ..Default::default()
+        }));
+        state.rename_workspace("Acme");
+        let file = dir.join("acme.tortuga-workspace.toml");
+        state.save_workspace_as(&file).expect("save");
+        assert!(
+            std::fs::read_to_string(&file)
+                .expect("file")
+                .starts_with("format = 1\n"),
+            "no variables: older versions can still read it"
+        );
+
+        let vars = WorkspaceVariables {
+            values: [("tenant".to_owned(), "acme".to_owned())].into(),
+            secrets: ["api_key".to_owned()].into(),
+        };
+        let secrets = BTreeMap::from([("api_key".to_owned(), "k-1".to_owned())]);
+        state
+            .save_workspace_variables(vars.clone(), &secrets)
+            .expect("save variables");
+        let value = |state: &AppState, root: Option<&Path>, name: &str| {
+            state.context(root).variables.get(name).cloned()
+        };
+        assert_eq!(
+            value(&state, Some(&auth), "tenant").as_deref(),
+            Some("acme")
+        );
+        assert_eq!(
+            value(&state, Some(&orders), "tenant").as_deref(),
+            Some("orders-own"),
+            "the project's own value wins"
+        );
+        assert_eq!(value(&state, None, "api_key").as_deref(), Some("k-1"));
+        assert!(state.context(Some(&auth)).secrets.contains("api_key"));
+        let text = std::fs::read_to_string(&file).expect("file");
+        assert!(text.contains("tenant = \"acme\""), "{text}");
+        assert!(text.contains("secrets = [\"api_key\"]"), "{text}");
+        assert!(!text.contains("k-1"), "secret values stay local: {text}");
+
+        // A capture in Auth named `workspace.token`; Orders uses {{token}}.
+        let changes = BTreeMap::from([
+            ("workspace.token".to_owned(), Some("t-1".to_owned())),
+            ("own".to_owned(), Some("auth-only".to_owned())),
+        ]);
+        state.apply_runtime(Some(&auth), &changes);
+        assert_eq!(
+            value(&state, Some(&orders), "token").as_deref(),
+            Some("t-1")
+        );
+        assert_eq!(value(&state, Some(&orders), "own"), None);
+        assert_eq!(
+            value(&state, Some(&auth), "own").as_deref(),
+            Some("auth-only")
+        );
+        state.clear_workspace_runtime();
+        assert_eq!(value(&state, Some(&orders), "token"), None);
+
+        // A teammate opens the file: shared values come along; the secret is unset.
+        let mut teammate = AppState::new(Box::new(crate::test_host::TestHost::default()));
+        teammate.open_workspace_file(&file).expect("open");
+        assert_eq!(teammate.workspace().variables, vars);
+        assert_eq!(
+            value(&teammate, Some(&auth), "tenant").as_deref(),
+            Some("acme")
+        );
+        assert_eq!(value(&teammate, Some(&auth), "api_key"), None);
+
+        // Renaming keeps the secret value: it is keyed by the workspace's id.
+        let key = workspace::secret_key(&state.workspace().id, "api_key");
+        state.rename_workspace("Acme platform");
+        assert_eq!(workspace::secret_key(&state.workspace().id, "api_key"), key);
+        assert_eq!(
+            state.host.secrets().get(&key).expect("store").as_deref(),
+            Some("k-1")
+        );
+
+        // Removing the secret deletes its value from this machine.
+        state
+            .save_workspace_variables(WorkspaceVariables::default(), &BTreeMap::new())
+            .expect("remove");
+        assert_eq!(state.host.secrets().get(&key).expect("store"), None);
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 

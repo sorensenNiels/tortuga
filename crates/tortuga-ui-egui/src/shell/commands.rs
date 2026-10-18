@@ -42,6 +42,8 @@ pub(super) enum Command {
     RunWorkflow(crate::state::WorkflowKey),
     NewWorkflow(PathBuf),
     RuntimeVars(Option<PathBuf>),
+    /// The workspace's variables (R-WS-8).
+    WorkspaceVariables,
     AddProjects,
     NewProject,
     Import(ImportKind),
@@ -180,6 +182,11 @@ impl TortugaUi {
                 .detail(place)
                 .keywords("captured clear"),
         );
+        items.push(
+            run("Workspace variables…", Command::WorkspaceVariables)
+                .detail(self.state.workspace().name.clone())
+                .keywords("shared captured secret"),
+        );
         items.push(run("Settings…", Command::Settings).keywords("preferences options"));
         if self.state.host.keeps_history() {
             items.push(run("Show history", Command::History).keywords("sent past responses"));
@@ -260,6 +267,7 @@ impl TortugaUi {
             Command::RunWorkflow(key) => self.run_workflow(&key, ctx),
             Command::NewWorkflow(root) => self.new_workflow_dialog(root),
             Command::RuntimeVars(root) => self.show_runtime_vars(root),
+            Command::WorkspaceVariables => self.on_workspace(WorkspaceAction::Variables),
             Command::AddProjects => self.add_projects(),
             Command::NewProject => self.new_project(),
             Command::Import(kind) => self.import_file(kind),

@@ -252,6 +252,12 @@ function __path(obj, path) {
   return { found: true, value: cur };
 }
 
+// `workspace.token` sets {{token}} for the whole workspace (R-WS-8).
+function __var(name) {
+  const n = String(name);
+  return n.startsWith("workspace.") && n.length > 10 ? n.slice(10) : n;
+}
+
 const vars = Object.freeze({
   get(name) {
     const v = __vars[String(name)];
@@ -263,11 +269,11 @@ const vars = Object.freeze({
   },
   set(name, value) {
     const v = typeof value === "string" ? value : __fmt(value);
-    __vars[String(name)] = v;
+    __vars[__var(name)] = v;
     __out.vars[String(name)] = v;
   },
   unset(name) {
-    __vars[String(name)] = null;
+    __vars[__var(name)] = null;
     __out.vars[String(name)] = null;
   },
 });
@@ -434,6 +440,29 @@ mod tests {
             Some("Expected 201 not to be 201")
         );
         assert_eq!(out.failed_tests(), 2);
+    }
+
+    /// R-WS-8: `vars.set("workspace.token", …)` is reported by that name, and the script
+    /// itself sees it as `token`.
+    #[test]
+    fn workspace_variables_from_scripts() {
+        let req = Request::new(HttpMethod::Get, "https://api.test/");
+        let out = run(
+            r#"
+            vars.set("workspace.token", "t-1");
+            console.log(vars.get("token"));
+            "#,
+            Phase::PreRequest,
+            &BTreeMap::new(),
+            &req,
+            None,
+        );
+        assert_eq!(out.error, None);
+        assert_eq!(
+            out.vars,
+            BTreeMap::from([("workspace.token".to_owned(), Some("t-1".to_owned()))])
+        );
+        assert_eq!(out.logs, ["t-1"]);
     }
 
     /// R-TEST-2, R-TEST-5: variables and headers set by scripts.

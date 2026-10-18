@@ -15,6 +15,7 @@ mod response_panel;
 mod sidebar;
 mod tab_strip;
 mod workflow_view;
+mod workspace_vars;
 
 pub use auth_editor::request_auth;
 pub use body_editor::{BodyDrafts, body_editor};
@@ -41,3 +42,4 @@ pub use workflow_view::{
     IterationView, RequestChoice, RunView, StepView, WorkflowAction, WorkflowContext,
     WorkflowEditorState, workflow_editor, workflow_results,
 };
+pub use workspace_vars::{WorkspaceVarsAction, WorkspaceVarsDialog};

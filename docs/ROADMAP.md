@@ -132,7 +132,6 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-21 | In-app commit, pull, push, and branch switching. | Large scope: needs git credential handling on three OSes. |
 | IDEA-22 | Code snippets for other languages (Python, JavaScript, …). | |
 | IDEA-25 | Other protocols: GraphQL tooling, WebSockets, SSE, gRPC. | |
-| IDEA-38 | Workspace variables, local only: values used across projects, e.g. log in with the Auth project and use `{{token}}` in the others. | Requests that use them depend on the workspace, so teammates without it see them as undefined (R-VAR-5). Precedence to be decided. |
 | IDEA-45 | Import again: update a project from a changed OpenAPI description, keeping local changes. | An import always creates a new project today (D34). |
 | IDEA-46 | Import Swagger 2.0 descriptions. | Today they are refused with a hint to convert them (D33). |
 | IDEA-47 | Import Postman environment files into a project's environments (base URLs into servers, secrets into the secret store). | A Postman import makes one "Default" environment today (R-COL-16). |
@@ -193,6 +192,8 @@ Not decided. Needs a real user need before it moves up.
 | D36 | How are Postman's base URLs, credentials and scripts mapped (R-COL-16)? | **A `{{variable}}` that starts request URLs becomes a server**, its value the base URL of a "Default" environment; **credentials become secret variables**, and values written in the collection go to this machine's secret store, never into the files (as D35); **scripts are kept as comments** with a note, since the `pm` API is not Tortuga's (D28); collection- and folder-level scripts are left out with a warning (2026-10-18). | Keep `{{baseUrl}}` as a plain variable; drop credential values; translate scripts. |
 | D37 | How is a `.http` file mapped (R-COL-17)? | **One file is one new project** named after the file, a request per `###` block named by its `###` title, else `# @name`, else the comment above it; `@variables` as project variables and base URLs as servers (D36); `Authorization` and key/token headers as auth or headers with secret variables (D35), moved to the project when every request has the same auth; **REST Client request variables become captures** (R-TEST-4); JetBrains handler scripts are kept as comments (2026-10-18). | A folder per file in an existing project; keep request variables and warn. |
 
+| D38 | How do workspace variables work (IDEA-38)? | **Shared through the workspace file, secrets local; below every project value; captures opt in with a `workspace.` name** (2026-10-18). Shared, because the point is collaboration; lowest, so existing projects behave as before and a project can always override; opt-in, so runtime values stay per project by default (D26). | Local only; ranked above project variables; every captured value shared; static values only. |
+
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
 ## 9. How to change this roadmap
@@ -204,4 +205,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-18` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-50` · `D38` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-18` · `R-WS-9` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-50` · `D39` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5`.

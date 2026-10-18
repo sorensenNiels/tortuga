@@ -12,6 +12,18 @@ use crate::model::{Request, Response};
 use crate::script::{self, Phase, ScriptRun, TestResult};
 use crate::{Client, vars};
 
+/// A capture or `vars.set` name starting with this goes to the workspace (R-WS-8):
+/// `workspace.token` sets `{{token}}` for every project of the workspace.
+pub const WORKSPACE_PREFIX: &str = "workspace.";
+
+/// The variable a name sets: `(true, "token")` for `workspace.token`, else `(false, name)`.
+pub fn target(name: &str) -> (bool, &str) {
+    match name.strip_prefix(WORKSPACE_PREFIX) {
+        Some(rest) if !rest.trim().is_empty() => (true, rest),
+        _ => (false, name),
+    }
+}
+
 /// Captures and a test script added on top of the request's own (a workflow step, R-FLOW-1).
 #[derive(Debug, Clone, Default)]
 pub struct Extra<'a> {
@@ -34,7 +46,8 @@ pub struct StepOutcome {
     pub logs: Vec<String>,
     /// Errors from scripts and captures.
     pub errors: Vec<String>,
-    /// Variables set (`Some`) or unset (`None`) by scripts and captures (R-TEST-5).
+    /// Variables set (`Some`) or unset (`None`) by scripts and captures (R-TEST-5), by
+    /// the name used, so `workspace.token` for the workspace (R-WS-8).
     pub vars: BTreeMap<String, Option<String>>,
 }
 
@@ -175,9 +188,10 @@ fn apply_vars(
     changes: &BTreeMap<String, Option<String>>,
 ) {
     for (name, value) in changes {
+        let (_, var) = target(name);
         match value {
-            Some(v) => drop(ctx.variables.insert(name.clone(), v.clone())),
-            None => drop(ctx.variables.remove(name)),
+            Some(v) => drop(ctx.variables.insert(var.to_owned(), v.clone())),
+            None => drop(ctx.variables.remove(var)),
         }
         out.vars.insert(name.clone(), value.clone());
     }
@@ -210,17 +224,37 @@ pub fn capture(from: &str, response: &Response) -> Result<String, String> {
     })
 }
 
-/// Turns runtime variable changes into the map the app keeps (R-TEST-5).
+/// Turns runtime variable changes into the map the app keeps (R-TEST-5). Workspace
+/// names (R-WS-8) are applied without their prefix, as in a run with one project.
 pub fn apply_changes(
     runtime: &mut BTreeMap<String, String>,
     changes: &BTreeMap<String, Option<String>>,
 ) {
     for (name, value) in changes {
+        let (_, var) = target(name);
         match value {
-            Some(v) => drop(runtime.insert(name.clone(), v.clone())),
-            None => drop(runtime.remove(name)),
+            Some(v) => drop(runtime.insert(var.to_owned(), v.clone())),
+            None => drop(runtime.remove(var)),
         }
     }
+}
+
+/// Splits changes into the project's and the workspace's (R-WS-8, without the prefix).
+pub fn split_changes(
+    changes: &BTreeMap<String, Option<String>>,
+) -> (
+    BTreeMap<String, Option<String>>,
+    BTreeMap<String, Option<String>>,
+) {
+    let mut project = BTreeMap::new();
+    let mut workspace = BTreeMap::new();
+    for (name, value) in changes {
+        match target(name) {
+            (true, var) => drop(workspace.insert(var.to_owned(), value.clone())),
+            (false, var) => drop(project.insert(var.to_owned(), value.clone())),
+        }
+    }
+    (project, workspace)
 }
 
 /// The outcome of a step as plain data, for JSON reports (R-CLI-3).
@@ -248,5 +282,48 @@ impl From<&StepOutcome> for StepSummary {
                 .collect(),
             failed: o.failed(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R-WS-8: `workspace.` names go to the workspace, without the prefix.
+    #[test]
+    fn workspace_names_are_split_off() {
+        assert_eq!(target("workspace.token"), (true, "token"));
+        assert_eq!(target("token"), (false, "token"));
+        assert_eq!(
+            target("workspace."),
+            (false, "workspace."),
+            "no name after it"
+        );
+        let changes = BTreeMap::from([
+            ("workspace.token".to_owned(), Some("t".to_owned())),
+            ("workspace.old".to_owned(), None),
+            ("id".to_owned(), Some("7".to_owned())),
+        ]);
+        let (project, workspace) = split_changes(&changes);
+        assert_eq!(
+            project,
+            BTreeMap::from([("id".to_owned(), Some("7".to_owned()))])
+        );
+        assert_eq!(
+            workspace,
+            BTreeMap::from([
+                ("old".to_owned(), None),
+                ("token".to_owned(), Some("t".to_owned())),
+            ])
+        );
+        let mut runtime = BTreeMap::from([("old".to_owned(), "x".to_owned())]);
+        apply_changes(&mut runtime, &changes);
+        assert_eq!(
+            runtime,
+            BTreeMap::from([
+                ("id".to_owned(), "7".to_owned()),
+                ("token".to_owned(), "t".to_owned()),
+            ])
+        );
     }
 }

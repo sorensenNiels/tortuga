@@ -25,8 +25,8 @@ use crate::components::{
     CreateProjectDialog, DefaultsDialog, DialogResult, EditorAction, EditorContext, EditorState,
     EnvironmentsDialog, Filtered, Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext,
     ResponseAction, ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog,
-    SidebarAction, SidebarState, TabStripState, TestsView, TextBody, request_editor,
-    response_panel, sidebar,
+    SidebarAction, SidebarState, TabStripState, TestsView, TextBody, WorkspaceVarsAction,
+    request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
 use crate::host::{DraftConflict, Host, SavedDraft, SavedDrafts};
@@ -62,6 +62,8 @@ enum Modal {
     NewWorkspace(NameDialog),
     RenameWorkspace(NameDialog),
     RemoveWorkspace(ConfirmDialog),
+    /// The workspace's variables (R-WS-8).
+    WorkspaceVars(crate::components::WorkspaceVarsDialog),
     CopyCurl(CopyCurlDialog),
     /// Quick open and the command palette (R-COL-9, R-COL-10).
     Palette(Palette),
@@ -83,6 +85,7 @@ enum WorkspaceAction {
     Switch(usize),
     New,
     Rename,
+    Variables,
     SaveAsFile,
     OpenFile,
     Remove,
@@ -625,6 +628,13 @@ impl TortugaUi {
                 if ui.button("Rename…").clicked() {
                     action = Some(WorkspaceAction::Rename);
                 }
+                if ui
+                    .button("Variables…")
+                    .on_hover_text("Variables every project in this workspace can use")
+                    .clicked()
+                {
+                    action = Some(WorkspaceAction::Variables);
+                }
                 if self.state.host.can_save_files() {
                     let hover = match &current.file {
                         Some(file) => format!(
@@ -683,6 +693,11 @@ impl TortugaUi {
                     "Rename",
                     &name,
                 )));
+            }
+            WorkspaceAction::Variables => {
+                self.modal = Some(Modal::WorkspaceVars(
+                    crate::components::WorkspaceVarsDialog::new(&self.state),
+                ));
             }
             WorkspaceAction::SaveAsFile => {
                 let name = tortuga_core::workspace::file_name(&self.state.workspace().name);
@@ -1863,7 +1878,8 @@ impl TortugaUi {
             | Modal::AddProjects(_)
             | Modal::NewWorkspace(_)
             | Modal::RenameWorkspace(_)
-            | Modal::RemoveWorkspace(_) => self.show_workspace_modal(ctx, &mut modal),
+            | Modal::RemoveWorkspace(_)
+            | Modal::WorkspaceVars(_) => self.show_workspace_modal(ctx, &mut modal),
         };
         // A dialog may have opened another one ("Create a project there…"); never overwrite it.
         if keep && self.modal.is_none() {
@@ -1921,6 +1937,22 @@ impl TortugaUi {
                 DialogResult::Done(()) => {
                     self.switch_workspace(AppState::delete_workspace);
                     false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::WorkspaceVars(d) => match d.show(ctx, &self.state) {
+                DialogResult::Done(WorkspaceVarsAction::ClearCaptured) => {
+                    self.state.clear_workspace_runtime();
+                    true
+                }
+                DialogResult::Done(WorkspaceVarsAction::Save(vars, secrets)) => {
+                    match self.state.save_workspace_variables(vars, &secrets) {
+                        Ok(()) => false,
+                        Err(e) => {
+                            d.error = Some(e);
+                            true
+                        }
+                    }
                 }
                 result => result == DialogResult::Open,
             },
@@ -2496,6 +2528,62 @@ mod tests {
         harness.key_press(Key::Enter);
         harness.run();
         assert!(matches!(ui.borrow().modal, Some(Modal::Settings(_))));
+        drop(harness);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-WS-8: "Variables…" in the workspace menu adds a variable every project uses,
+    /// and the dialog lists values captured as `workspace.<name>`.
+    #[test]
+    fn workspace_variables_dialog() {
+        use egui_kittest::kittest::Queryable;
+
+        let (ui, root, _) = setup("ws-vars-dialog");
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
+        ui.borrow_mut().state.apply_runtime(
+            Some(&root),
+            &[("workspace.token".to_owned(), Some("t-1".to_owned()))].into(),
+        );
+        let shared = ui.clone();
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+        harness.get_by_label_contains("My workspace").click();
+        harness.run();
+        harness.get_by_label("Variables…").click();
+        harness.run();
+        harness.get_by_label_contains("Workspace variables — My workspace");
+        harness.get_by_label("t-1");
+        // The dialog's fields come after the editor's; its only one is "Add variable".
+        let name = harness
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .last()
+            .expect("new variable field");
+        name.focus();
+        name.type_text("tenant");
+        harness.run();
+        harness.key_press(Key::Enter);
+        harness.run();
+        // Now: the row's name, its value, and "Add variable" again.
+        let fields: Vec<_> = harness
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .collect();
+        assert_eq!(fields[fields.len() - 3].value().as_deref(), Some("tenant"));
+        fields[fields.len() - 2].focus();
+        fields[fields.len() - 2].type_text("acme");
+        harness.run();
+        // The request editor has a Save button too; the dialog's is drawn last.
+        harness
+            .query_all_by_label("Save")
+            .last()
+            .expect("dialog's Save")
+            .click();
+        harness.run();
+        assert!(ui.borrow().modal.is_none(), "saved and closed");
+        let ctx = ui.borrow().state.context(Some(&root));
+        assert_eq!(
+            ctx.variables.get("tenant").map(String::as_str),
+            Some("acme")
+        );
         drop(harness);
         std::fs::remove_dir_all(root).expect("clean up");
     }

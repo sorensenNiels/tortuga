@@ -133,6 +133,8 @@ pub struct RunOptions {
     pub secrets: BTreeMap<String, String>,
     /// Values given for this run (`--var`, `TORTUGA_VAR_*`); they win over the project's.
     pub overrides: BTreeMap<String, String>,
+    /// The workspace's variables (R-WS-8); every value of the project wins over them.
+    pub workspace: BTreeMap<String, String>,
     /// One iteration per row; none means one iteration without a row.
     pub rows: Vec<BTreeMap<String, String>>,
 }
@@ -243,7 +245,8 @@ pub async fn run(
                         options.environment.as_deref(),
                         Some(&path),
                     )
-                    .with_secrets(options.secrets.clone());
+                    .with_secrets(options.secrets.clone())
+                    .with_workspace(&options.workspace, &std::collections::BTreeSet::new());
                     ctx.variables.extend(options.overrides.clone());
                     ctx.variables.extend(row.cloned().unwrap_or_default());
                     ctx.variables.extend(captured.clone());

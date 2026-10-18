@@ -132,7 +132,7 @@ pub fn request_editor(
         theme::warning(
             ui,
             format!(
-                "Undefined: {} — define them in the project's environments.",
+                "Undefined: {} — define them in the project's environments or the workspace's variables.",
                 names.join(", ")
             ),
         );

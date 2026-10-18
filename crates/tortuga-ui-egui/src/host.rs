@@ -15,7 +15,7 @@ use tortuga_core::history;
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
 use tortuga_core::workflow::Workflow;
-use tortuga_core::workspace::ProjectRef;
+use tortuga_core::workspace::{ProjectRef, WorkspaceVariables};
 use tortuga_core::{ClientSettings, Request};
 
 /// What is remembered on this machine only, never in a project (R-LOC-1): the
@@ -57,6 +57,20 @@ impl LocalState {
         if self.active_workspace >= self.workspaces.len() {
             self.active_workspace = 0;
         }
+        self.give_ids();
+    }
+
+    /// Gives every workspace without one a local id, unique on this machine (R-WS-8).
+    pub fn give_ids(&mut self) {
+        for i in 0..self.workspaces.len() {
+            if !self.workspaces[i].id.is_empty() {
+                continue;
+            }
+            let base = tortuga_core::slug::slugify(&self.workspaces[i].name);
+            let id =
+                tortuga_core::slug::unique(&base, |id| self.workspaces.iter().any(|w| w.id == id));
+            self.workspaces[i].id = id;
+        }
     }
 }
 
@@ -64,6 +78,10 @@ impl LocalState {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Workspace {
+    /// Local id that stays the same when the workspace is renamed; keys its secret
+    /// values (R-WS-8). Given by [`LocalState::give_ids`].
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     /// The shareable workspace file this workspace is saved in, if any (R-WS-5).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,6 +97,9 @@ pub struct Workspace {
     pub tabs: SavedTabs,
     /// Projects in sidebar order, including ones that are missing on this machine.
     pub projects: Vec<ProjectRef>,
+    /// Variables every project can use (R-WS-8); kept in the workspace file too, if any.
+    #[serde(skip_serializing_if = "WorkspaceVariables::is_empty")]
+    pub variables: WorkspaceVariables,
     /// Project root (as text) → environment id, for projects without an environment
     /// named like the workspace's (R-WS-6).
     pub project_environments: BTreeMap<String, String>,

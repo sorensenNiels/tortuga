@@ -47,7 +47,7 @@ my-api/                          your API's git repository
 |---|---|
 | Requests, folders and folder defaults | Values of **secret** variables (tokens, passwords) |
 | Servers and their base URLs per environment | Which environment you have selected |
-| Variables and their non-secret values | Your workspaces (unless you save one as a file) |
+| Variables and their non-secret values | Your workspaces (unless you save one as a file, with its variables) |
 | Test and pre-request scripts, captures | Cookies, history, unsaved edits |
 | Workflows and their data files | Settings, e.g. your company's CA certificate |
 
@@ -67,7 +67,8 @@ Tortuga writes nothing local into the project folder, so you don't need a `.giti
    works in every environment.
 4. Commit and push the folder like any other change.
 5. Optional: if the team works across several repositories, choose **Save as file…** in the workspace menu (title
-   bar) and commit the `.tortuga-workspace.toml` file. It lists the projects, each with its path and clone URL.
+   bar) and commit the `.tortuga-workspace.toml` file. It lists the projects, each with its path and clone URL, and
+   the workspace variables.
 
 ### Join as a colleague
 
@@ -143,6 +144,9 @@ you work on together; several projects may live in one repository, and the sideb
 - **+ Add → Add existing projects…** finds every project in a folder or repository.
 - **Save as file…** in the workspace menu writes a `.tortuga-workspace.toml` you can commit; teammates open it with
   **Open workspace file…** and see which repositories to clone.
+- **Variables…** in the workspace menu holds variables every project in the workspace can use, such as a tenant id
+  or an API key several services share. A project's own values win over them. They are saved in the workspace file;
+  mark one secret (🔒) and only its name is, while each person's value stays on their machine.
 
 Use an item's **…** menu (or right-click it) to add, rename, duplicate, move, reorder or delete. **Ctrl+S** saves,
 **Ctrl+Enter** sends.
@@ -234,6 +238,10 @@ Scripts have `res` (`status`, `headers`, `json()`, `header(name)`, `time`, …),
 of the project until you close Tortuga, are never saved, and are listed (and cleared) under **Runtime variables…** in
 the project's **…** menu.
 
+To share a captured value with the other projects of the workspace, start its name with `workspace.`: a capture
+`workspace.token = $.access_token` in the *Auth* project's login request (or `vars.set("workspace.token", …)`) gives
+every project `{{token}}`. The workspace menu's **Variables…** lists these values and clears them.
+
 **Workflows.** **New workflow…** in a project's **…** menu creates a workflow: a list of the project's requests that
 run in order, each step with optional extra captures and tests. Values captured by a step are available to the next
 ones as `{{variables}}`. Choose a CSV or JSON **data file** to run the workflow once per row. Workflows are saved in
@@ -250,7 +258,8 @@ TORTUGA_VAR_token=$TOKEN tortuga-cli run path/to/project users/get-user.toml --v
 
 It prints each step with its tests and exits with 0 when everything passed, 1 when something failed and 2 for
 usage errors. Pass secrets with `--var name=value` or `TORTUGA_VAR_<name>` environment variables. `--data FILE`
-runs once per row; `--report json` writes JSON instead of JUnit XML. Download it from a release (`tortuga-cli-<version>-<os>` archive, R-CLI-4) or build it with `make cli`.
+runs once per row; `--report json` writes JSON instead of JUnit XML; `--workspace FILE` also uses the variables of a
+`.tortuga-workspace.toml` (the project's own values win). Download it from a release (`tortuga-cli-<version>-<os>` archive, R-CLI-4) or build it with `make cli`.
 
 ## Make targets
 

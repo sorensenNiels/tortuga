@@ -470,6 +470,21 @@ test("ok", () => expect(res.status).toBe(200));
         assert_eq!(back, r);
     }
 
+    /// R-WS-8: a capture into the workspace is a quoted key and round-trips.
+    #[test]
+    fn workspace_capture_in_the_request_file() {
+        let mut r = Request::new(HttpMethod::Post, "/login");
+        r.capture
+            .insert("workspace.token".into(), "$.access_token".into());
+        let text = write_request(&r, None);
+        assert!(
+            text.contains("[capture]\n\"workspace.token\" = \"$.access_token\"\n"),
+            "{text}"
+        );
+        let (back, _) = parse_request(&text, "x").expect("parse");
+        assert_eq!(back, r);
+    }
+
     /// R-HTTP-15, R-GIT-3: multipart bodies are readable, stable and round-trip.
     #[test]
     fn multipart_body_file() {

@@ -132,6 +132,26 @@ impl Context {
         self
     }
 
+    /// Adds the workspace's variables (R-WS-8). They rank below every value the project
+    /// defines, so they only fill in names that are still undefined. Names in `secrets`
+    /// that are filled in this way are masked like the project's secrets (P6).
+    #[must_use]
+    pub fn with_workspace(
+        mut self,
+        values: &BTreeMap<String, String>,
+        secrets: &BTreeSet<String>,
+    ) -> Self {
+        for (name, value) in values {
+            if !self.variables.contains_key(name) {
+                self.variables.insert(name.clone(), value.clone());
+                if secrets.contains(name) {
+                    self.secrets.insert(name.clone());
+                }
+            }
+        }
+        self
+    }
+
     /// The auth `request` uses: its own, or the collection's.
     pub fn auth_for<'a>(&'a self, request: &'a Request) -> &'a Auth {
         request.auth.as_ref().unwrap_or(&self.auth)
@@ -605,6 +625,29 @@ mod tests {
         assert_eq!(
             prepare(&req, &ctx).expect("prepared").url,
             "https://a.test/secret-7"
+        );
+    }
+
+    /// R-WS-8: workspace variables only fill names the project leaves undefined.
+    #[test]
+    fn workspace_values_rank_below_the_project() {
+        let workspace = BTreeMap::from([
+            ("id".to_owned(), "from-workspace".to_owned()),
+            ("tenant".to_owned(), "acme".to_owned()),
+        ]);
+        let secrets = BTreeSet::from(["tenant".to_owned(), "id".to_owned()]);
+        let ctx = ctx().with_workspace(&workspace, &secrets);
+        let req = Request::new(HttpMethod::Get, "https://a.test/{{tenant}}/{{id}}");
+        assert_eq!(
+            prepare(&req, &ctx).expect("prepared").url,
+            "https://a.test/acme/42",
+            "the project's id wins"
+        );
+        assert_eq!(undefined_in(&req, &ctx), Vec::<String>::new());
+        assert_eq!(
+            preview(&req, &ctx).expect("preview").url,
+            "https://a.test/<secret:tenant>/42",
+            "a workspace secret is masked; the project's own id is not"
         );
     }
 

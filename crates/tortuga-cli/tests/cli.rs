@@ -159,6 +159,33 @@ async fn runs_a_workflow_with_secrets_data_and_reports() {
     );
     assert_eq!(code, 0, "{stdout}");
     assert!(stdout.contains("Shop — Shop"), "{stdout}");
+
+    // R-WS-8: `{{user}}` from a workspace file; --var still wins over it.
+    let ws = dir.path().join("acme.tortuga-workspace.toml");
+    std::fs::write(
+        &ws,
+        "format = 2\nname = \"Acme\"\n\n[variables]\nuser = \"ann\"\n\n[[projects]]\npath = \"shop\"\n",
+    )
+    .expect("workspace file");
+    let ws = ws.to_str().expect("utf-8");
+    let (code, stdout, _) = cli(
+        &["run", p, "Lifecycle", "--workspace", ws],
+        &[("TORTUGA_VAR_api_key", "k-1")],
+    );
+    assert_eq!(code, 0, "{stdout}");
+    let (code, stdout, _) = cli(
+        &[
+            "run",
+            p,
+            "Lifecycle",
+            "--workspace",
+            ws,
+            "--var",
+            "user=bob",
+        ],
+        &[("TORTUGA_VAR_api_key", "k-1")],
+    );
+    assert_eq!(code, 1, "--var wins: {stdout}");
 }
 
 /// R-CLI-1: usage and setup errors exit with 2 and say what is wrong.
