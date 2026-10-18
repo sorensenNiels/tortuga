@@ -100,6 +100,13 @@ impl Item {
     }
 }
 
+/// A request or folder to add with [`Collection::add_items`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewItem {
+    Request(Box<Request>),
+    Folder { name: String, items: Vec<NewItem> },
+}
+
 /// Direction for [`Collection::move_by`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -205,6 +212,51 @@ impl Collection {
             &format::write_request(request, Some(seq)),
         )?;
         Ok(path)
+    }
+
+    /// Adds requests and folders of requests at the end of `parent` in one go, e.g. from
+    /// an import (R-COL-15). The collection must be opened again to see them.
+    pub fn add_items(&self, storage: &dyn Storage, parent: &Path, items: &[NewItem]) -> Result<()> {
+        self.ensure_writable()?;
+        self.write_new_items(storage, parent, self.next_seq(parent), items)
+    }
+
+    fn write_new_items(
+        &self,
+        storage: &dyn Storage,
+        parent: &Path,
+        first_seq: i64,
+        items: &[NewItem],
+    ) -> Result<()> {
+        let mut seq = first_seq;
+        for item in items {
+            match item {
+                NewItem::Request(request) => {
+                    let path = self.free_file_path(storage, parent, &request.name, None);
+                    write(
+                        storage,
+                        &self.root.join(&path),
+                        &format::write_request(request, Some(seq)),
+                    )?;
+                }
+                NewItem::Folder { name, items } => {
+                    let path = self.free_dir_path(storage, parent, name, None);
+                    let meta = FolderMeta::new(
+                        name.trim().to_owned(),
+                        Some(seq),
+                        &FolderDefaults::default(),
+                    );
+                    write(
+                        storage,
+                        &self.root.join(&path).join(FOLDER_FILE),
+                        &format::write_folder(&meta),
+                    )?;
+                    self.write_new_items(storage, &path, SEQ_STEP, items)?;
+                }
+            }
+            seq += SEQ_STEP;
+        }
+        Ok(())
     }
 
     /// Adds a folder at the end of `parent`. Returns its path.

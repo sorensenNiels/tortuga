@@ -56,7 +56,8 @@ Tortuga writes nothing local into the project folder, so you don't need a `.giti
 ### Set up a project (done once, by one person)
 
 1. In your API's repository, choose **+ Add → New project…** in the sidebar and pick (or create) a folder such as
-   `api-requests/`.
+   `api-requests/`. If the API has an OpenAPI description, **+ Add → Import OpenAPI…** creates the project with
+   its requests, environments and auth for you; then continue with step 4.
 2. In the project's **…** menu, open **Environments…**. Add your environments (e.g. *Local*, *Dev*, *Staging*),
    your servers with a base URL for each environment, and the variables the requests need. Mark credentials as
    **secret** (🔒): only the variable name goes into the files, the value stays on your machine.
@@ -165,6 +166,12 @@ doesn't pile up tabs. Double-click the tab or the request, or edit it, and the t
 projects open, each project's tabs are grouped behind a coloured chip; click the chip to fold the group away.
 **Ctrl+Tab** goes back to the previous tab, **Ctrl+PageDown/PageUp** to the next/previous one, **Ctrl+W** closes it
 (unsaved edits are kept).
+
+**From an OpenAPI description.** **+ Add → Import OpenAPI…** turns an OpenAPI 3 file (JSON or YAML) into a new
+project: a folder per tag, a request per operation with its parameters and an example body, the spec's servers as
+environments, and its security schemes as auth that uses secret variables. The dialog shows what you'll get and where
+before anything is written; afterwards, fill in the secret values under **Environments…**. Swagger 2.0 files need to be
+converted to OpenAPI 3 first.
 
 **From curl to request.** Paste a `curl` command (e.g. from API docs or the browser's "Copy as cURL") into the URL
 field: method, URL, headers, body and auth are filled in. In a saved request this is an unsaved change; **Revert**

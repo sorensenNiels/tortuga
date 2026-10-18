@@ -75,6 +75,8 @@ pub enum SidebarAction {
     NewProject,
     /// Find projects in a folder or repository and add them (R-WS-3).
     AddProjects,
+    /// Create a project from an OpenAPI description (R-COL-15).
+    ImportOpenApi,
     /// A missing project was moved: pick its new folder (R-WS-5).
     LocateMissing(PathBuf),
     RemoveMissing(PathBuf),
@@ -199,6 +201,15 @@ pub fn sidebar(
                                 .clicked()
                             {
                                 action = Some(SidebarAction::AddProjects);
+                            }
+                            if ui
+                                .button("Import OpenAPI…")
+                                .on_hover_text(
+                                    "Create a project from an OpenAPI 3 description (JSON or YAML)",
+                                )
+                                .clicked()
+                            {
+                                action = Some(SidebarAction::ImportOpenApi);
                             }
                             action
                         });

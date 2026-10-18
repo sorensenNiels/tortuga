@@ -84,6 +84,10 @@ pub enum Error {
     #[error("could not read the saved cookies: {0}")]
     InvalidCookies(String),
 
+    /// R-COL-15
+    #[error("could not import the OpenAPI description: {0}")]
+    InvalidOpenApi(String),
+
     /// R-VAR-3, R-LOC-2
     #[error("could not access secret values: {0}")]
     SecretStore(String),

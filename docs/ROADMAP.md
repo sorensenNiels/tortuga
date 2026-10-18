@@ -56,7 +56,7 @@ Every roadmap item should make at least one of these faster or safer.
 Milestones M1 to M9 are done: sending requests, projects on disk, environments and servers, auth and secrets,
 cookies, live git collaboration, workspaces, the v1 extras, release builds, the Phase 2 "daily driver"
 features, and Phase 3: test and pre-request scripts, captures, workflows (also data-driven) and the `tortuga-cli`
-runner. Request tabs grouped by project (R-COL-13, R-COL-14), a cookie viewer (R-CK-5) and unsaved workflow edits kept across restarts (R-FLOW-5) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
+runner. Request tabs grouped by project (R-COL-13, R-COL-14), a cookie viewer (R-CK-5), unsaved workflow edits kept across restarts (R-FLOW-5) and OpenAPI import (R-COL-15) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
 
 Open before the first release (v1):
 
@@ -80,7 +80,7 @@ collections safely), Phase 2 (daily driver) and Phase 3 (workflows and tests, v2
 
 Picked by demand, not in a fixed order:
 
-- Import OpenAPI (IDEA-29), then Postman collections (IDEA-10), so teams can adopt Tortuga gradually (D7).
+- ~~Import OpenAPI~~ (done: R-COL-15), then Postman collections (IDEA-10), so teams can adopt Tortuga gradually (D7).
 - GraphQL, WebSockets, Server-Sent Events, gRPC (IDEA-25).
 - Client certificates / mTLS (IDEA-20).
 - Code snippets for other languages (IDEA-22).
@@ -133,8 +133,9 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-21 | In-app commit, pull, push, and branch switching. | Large scope: needs git credential handling on three OSes. |
 | IDEA-22 | Code snippets for other languages (Python, JavaScript, …). | |
 | IDEA-25 | Other protocols: GraphQL tooling, WebSockets, SSE, gRPC. | |
-| IDEA-29 | Import an OpenAPI description as a collection (servers, folders per tag, example bodies). | Phase 4. |
 | IDEA-38 | Workspace variables, local only: values used across projects, e.g. log in with the Auth project and use `{{token}}` in the others. | Requests that use them depend on the workspace, so teammates without it see them as undefined (R-VAR-5). Precedence to be decided. |
+| IDEA-45 | Import again: update a project from a changed OpenAPI description, keeping local changes. | An import always creates a new project today (D34). |
+| IDEA-46 | Import Swagger 2.0 descriptions. | Today they are refused with a hint to convert them (D33). |
 
 ### Not planned
 
@@ -184,6 +185,9 @@ Not decided. Needs a real user need before it moves up.
 | D30 | How does CI pass secrets to `tortuga-cli`? | **Environment variables `TORTUGA_VAR_<name>`**, plus `--var name=value` (2026-10-18). | A secrets file; only `--var`. |
 | D31 | Tabs after all (revisits D2)? How do they not pile up? | **Tabs with a preview tab** (R-COL-13): single click previews, double click or an edit keeps the tab; sending does not keep it, since history has the response. Only requests open in tabs. No automatic closing of tabs; bulk close, a list of all tabs and Ctrl+Tab instead (2026-10-18). | Tab limit that closes the least recently used saved tab; tabs per project; an "open requests" list in the sidebar. |
 | D32 | How are tabs of several projects told apart? | **Automatic groups per project** (R-COL-14): a coloured chip per project, collapsible, shown only with two or more projects; colours worked out from the project name (2026-10-18). | Colour stripe only; a project switcher above the tabs; groups only in the tab list; colours chosen by the user. |
+| D33 | Which descriptions does the OpenAPI import read (R-COL-15)? | **OpenAPI 3.0 and 3.1, JSON or YAML**, local `$ref`s only; Swagger 2.0 is refused with a hint to convert it (2026-10-18). | Also Swagger 2.0; also references to other files and URLs. |
+| D34 | Where does an import go? | **Always a new project**, in a folder next to the description by default; re-importing is IDEA-45 (2026-10-18). | Into an existing project, merging by operation. |
+| D35 | How are an API's servers and credentials mapped? | **One server per API with a base URL per environment** (each `servers` entry is an environment); **security schemes become auth with secret variables** (`{{token}}`, `{{username}}`/`{{password}}`, API keys by name), so nothing secret is written (2026-10-18). | A server per `servers` entry; plain variables for credentials. |
 
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
@@ -196,4 +200,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-15` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-45` · `D33` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-16` · `R-WS-8` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-47` · `D36` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5`.

@@ -23,6 +23,8 @@ web-time.workspace = true
 cookie_store.workspace = true
 # Pre-request and test scripts (R-TEST-3).
 boa_engine.workspace = true
+# OpenAPI import (R-COL-15).
+yaml-rust2.workspace = true
 
 # `time` needs the browser clock on wasm32.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

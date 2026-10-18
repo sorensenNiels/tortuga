@@ -6,6 +6,7 @@ mod body_editor;
 mod defaults_dialog;
 mod environments;
 mod history_list;
+mod import_dialog;
 mod key_value_table;
 mod modals;
 mod palette;
@@ -20,6 +21,7 @@ pub use body_editor::{BodyDrafts, body_editor};
 pub use defaults_dialog::DefaultsDialog;
 pub use environments::{EnvironmentsDialog, SavedConfig};
 pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, history_list};
+pub use import_dialog::{ImportDialog, ImportTarget};
 pub use key_value_table::key_value_table;
 use modals::dialog;
 pub use modals::{

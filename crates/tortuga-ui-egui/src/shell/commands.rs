@@ -43,6 +43,7 @@ pub(super) enum Command {
     RuntimeVars(Option<PathBuf>),
     AddProjects,
     NewProject,
+    ImportOpenApi,
 }
 
 impl TortugaUi {
@@ -167,6 +168,9 @@ impl TortugaUi {
         if self.state.host.can_pick_folders() {
             items.push(run("Add existing projects…", Command::AddProjects));
             items.push(run("New project…", Command::NewProject));
+            items.push(
+                run("Import OpenAPI…", Command::ImportOpenApi).keywords("swagger spec yaml json"),
+            );
         }
         items
     }
@@ -243,6 +247,7 @@ impl TortugaUi {
             Command::RuntimeVars(root) => self.show_runtime_vars(root),
             Command::AddProjects => self.add_projects(),
             Command::NewProject => self.new_project(),
+            Command::ImportOpenApi => self.import_openapi(),
         }
     }
 }

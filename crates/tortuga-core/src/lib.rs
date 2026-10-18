@@ -15,6 +15,7 @@ pub mod http;
 pub mod json;
 pub mod jsonpath;
 pub mod model;
+pub mod openapi;
 pub mod query;
 pub mod report;
 pub mod runner;
@@ -26,7 +27,7 @@ pub mod vars;
 pub mod workflow;
 pub mod workspace;
 
-pub use collection::{Collection, Direction, Item};
+pub use collection::{Collection, Direction, Item, NewItem};
 pub use cookies::{CookieInfo, CookieJar};
 pub use error::{Error, Result};
 pub use format::{Environment, Manifest, Server};
