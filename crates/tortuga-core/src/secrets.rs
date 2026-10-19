@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::Result;
@@ -54,9 +55,18 @@ pub trait SecretStore {
 }
 
 /// Keeps values in memory for the session (web build, tests).
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MemorySecretStore {
     values: RefCell<BTreeMap<SecretKey, String>>,
+}
+
+/// Shows which secrets are stored, never their values.
+impl fmt::Debug for MemorySecretStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemorySecretStore")
+            .field("keys", &self.values.borrow().keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl SecretStore for MemorySecretStore {
@@ -78,10 +88,19 @@ impl SecretStore for MemorySecretStore {
 }
 
 /// The local values of one collection's secret variables.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct SecretValues {
     /// (environment id or `None` for the default, variable name) → value.
     pub values: BTreeMap<(Option<String>, String), String>,
+}
+
+/// Shows which secrets have a value, never the values.
+impl fmt::Debug for SecretValues {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretValues")
+            .field("keys", &self.values.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl SecretValues {
@@ -159,6 +178,19 @@ mod tests {
                 .iter()
                 .map(|(e, n, v)| ((e.map(str::to_owned), (*n).to_owned()), (*v).to_owned()))
                 .collect(),
+        }
+    }
+
+    /// R-VAR-3: secret values never show up in debug output or logs.
+    #[test]
+    fn debug_output_hides_secret_values() {
+        let v = values(&[(None, "token", "s3cr3t")]);
+        let store = MemorySecretStore::default();
+        let key = SecretKey::new(Path::new("/c"), None, "token");
+        store.set(&key, "s3cr3t").expect("set");
+        for shown in [format!("{v:?}"), format!("{store:?}")] {
+            assert!(shown.contains("token"), "{shown}");
+            assert!(!shown.contains("s3cr3t"), "{shown}");
         }
     }
 

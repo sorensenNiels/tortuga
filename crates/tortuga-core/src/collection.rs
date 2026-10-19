@@ -61,14 +61,14 @@ pub struct Folder {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestItem {
     pub path: PathBuf,
     pub seq: Option<i64>,
     pub request: Request,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Broken {
     pub path: PathBuf,
     pub error: String,

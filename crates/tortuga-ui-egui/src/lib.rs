@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn ctrl_enter_sends() {
         let host = test_host::TestHost::default();
-        let spawned = host.spawned.clone();
+        let spawned = std::rc::Rc::clone(&host.spawned);
         let mut app = TortugaUi::new(Box::new(host));
         let mut harness = test_host::harness(move |ui| app.ui(ui));
         harness.run();

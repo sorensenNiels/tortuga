@@ -240,9 +240,9 @@ mod tests {
             summary("1", "health", now - 2 * day, None),
         ];
         let action = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let shared = action.clone();
+        let shared = std::rc::Rc::clone(&action);
         let filter = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
-        let shared_filter = filter.clone();
+        let shared_filter = std::rc::Rc::clone(&filter);
         let mut h = crate::test_host::harness(move |ui| {
             let rows: Vec<HistoryRow<'_>> = summaries
                 .iter()

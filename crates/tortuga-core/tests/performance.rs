@@ -66,6 +66,7 @@ fn count_requests(items: &[Item]) -> usize {
 
 /// R-NF-1: a project with 1,000 requests opens in under 1 s.
 #[test]
+#[expect(clippy::print_stdout, reason = "the timing is useful in test output")]
 fn a_project_with_1000_requests_opens_in_under_a_second() {
     let dir = tempfile::tempdir().expect("temp dir");
     let col = project_with_1000_requests(dir.path());

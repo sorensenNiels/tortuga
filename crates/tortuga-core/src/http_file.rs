@@ -24,7 +24,9 @@ use std::collections::BTreeMap;
 use crate::collection::NewItem;
 use crate::format::{self, Manifest};
 use crate::import::{Collected, Import, ImportKind, short_name, variable_name, variables_in};
-use crate::model::{Auth, HttpMethod, KeyValue, Request, RequestBody, Scripts};
+use crate::model::{
+    Auth, HttpMethod, KeyValue, Request, RequestBody, Scripts, is_json_content_type,
+};
 use crate::{Error, Result, curl};
 
 /// Reads a `.http` file into a project named after `file_name` (R-COL-17).
@@ -400,7 +402,7 @@ impl Importer {
         }
         let content_type = headers
             .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("content-type"))
+            .find(|h| h.is_named("content-type"))
             .map(|h| h.value.to_ascii_lowercase())
             .unwrap_or_default();
         if graphql {
@@ -410,7 +412,7 @@ impl Importer {
             let json = serde_json::json!({ "query": query.trim(), "variables": variables });
             return RequestBody::Json(serde_json::to_string_pretty(&json).unwrap_or_default());
         }
-        if content_type.contains("json")
+        if is_json_content_type(&content_type)
             || (content_type.is_empty() && text.trim_start().starts_with(['{', '[']))
         {
             return RequestBody::Json(text.to_owned());

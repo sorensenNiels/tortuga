@@ -308,7 +308,7 @@ fn shown(text: String, json: bool) -> TextBody {
 fn looks_json(response: &Response, start: &str) -> bool {
     response
         .content_type()
-        .is_some_and(|ct| ct.to_ascii_lowercase().contains("json"))
+        .is_some_and(tortuga_core::model::is_json_content_type)
         || matches!(start.trim_start().as_bytes().first(), Some(b'{' | b'['))
 }
 
@@ -1173,6 +1173,7 @@ mod tests {
 
     /// R-NF-2: a 50 MB response keeps only what is shown, and drawing it stays quick.
     #[test]
+    #[expect(clippy::print_stdout, reason = "the timing is useful in test output")]
     fn a_50_mb_body_is_prepared_and_drawn_quickly() {
         let mut res = json_response();
         let item = r#"{"id": 12345, "name": "Ærøskøbing", "tags": ["a", "b"]},"#;

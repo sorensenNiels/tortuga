@@ -14,7 +14,7 @@ use crate::state::{AppState, ItemKey, WorkflowKey};
 use crate::theme;
 
 /// Something the user asked for in the sidebar; handled by the shell.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SidebarAction {
     /// Open in the preview tab (R-COL-13); `None` = the scratch request.
     Select(Option<ItemKey>),
@@ -1273,7 +1273,7 @@ mod tests {
     fn hidden_rows_take_the_space_of_drawn_rows() {
         let drawn = Rc::new(Cell::new(0.0));
         let skipped = Rc::new(Cell::new(0.0));
-        let (d, s) = (drawn.clone(), skipped.clone());
+        let (d, s) = (Rc::clone(&drawn), Rc::clone(&skipped));
         let mut harness = crate::test_host::harness(move |ui| {
             let key = ItemKey::new(Path::new("/p"), "get-user.toml");
             let top = ui.cursor().min.y;

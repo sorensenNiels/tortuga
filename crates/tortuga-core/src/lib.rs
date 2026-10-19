@@ -1,7 +1,7 @@
 //! Tortuga core: everything that is not UI.
 //!
-//! This crate must stay free of any UI framework so it can be reused by the
-//! desktop app, a future web build and a future CLI runner.
+//! This crate must stay free of any UI framework so the desktop app, the web build
+//! and `tortuga-cli` all behave the same (P7).
 
 pub mod collection;
 pub mod cookies;

@@ -84,6 +84,10 @@ pub enum Error {
     #[error("could not read the saved cookies: {0}")]
     InvalidCookies(String),
 
+    /// R-CK-3
+    #[error("could not save the cookies: {0}")]
+    SaveCookies(String),
+
     /// R-COL-15
     #[error("could not import the OpenAPI description: {0}")]
     InvalidOpenApi(String),
@@ -157,6 +161,14 @@ fn format_duration(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sentence_capitalises_only_the_first_letter() {
+        assert_eq!(sentence("the collection"), "The collection");
+        assert_eq!(sentence("“x” uses"), "“x” uses");
+        assert_eq!(sentence("ærø"), "Ærø");
+        assert_eq!(sentence(""), "");
+    }
 
     #[test]
     fn transport_message_includes_causes_once() {

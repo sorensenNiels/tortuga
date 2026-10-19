@@ -23,7 +23,9 @@ use yaml_rust2::{Yaml, YamlLoader};
 use crate::collection::{Collection, NewItem};
 use crate::format::{Environment, FolderDefaults, Manifest, Server};
 use crate::import::{Import, ImportKind, short_name, unique_name, variable_name};
-use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody};
+use crate::model::{
+    Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, is_json_content_type,
+};
 use crate::{Error, Result};
 
 /// Reads an OpenAPI 3 description (JSON or YAML) into a project (R-COL-15).
@@ -614,7 +616,7 @@ impl<'a> Importer<'a> {
                 .iter()
                 .find(|(ct, _)| want(&ct.to_ascii_lowercase()))
         };
-        let Some((content_type, media)) = pick(is_json)
+        let Some((content_type, media)) = pick(is_json_content_type)
             .or_else(|| pick(|ct| ct.starts_with("application/x-www-form-urlencoded")))
             .or_else(|| pick(|ct| ct.starts_with("multipart/form-data")))
             .or_else(|| content.iter().next())
@@ -623,7 +625,7 @@ impl<'a> Importer<'a> {
         };
         let lower = content_type.to_ascii_lowercase();
         let example = self.media_example(media);
-        if is_json(&lower) {
+        if is_json_content_type(&lower) {
             let text = serde_json::to_string_pretty(&example).unwrap_or_default();
             let header = (lower != "application/json")
                 .then(|| KeyValue::new("Content-Type", content_type.clone()));
@@ -752,11 +754,6 @@ impl<'a> Importer<'a> {
             _ => Value::Null,
         }
     }
-}
-
-fn is_json(content_type: &str) -> bool {
-    let essence = content_type.split(';').next().unwrap_or_default().trim();
-    essence == "application/json" || essence.ends_with("+json")
 }
 
 /// The schema's type, also from 3.1's `["string", "null"]` or from its shape.
@@ -1176,7 +1173,9 @@ components:
             request_name(&long, HttpMethod::Get, "/").chars().count(),
             60
         );
-        assert!(is_json("application/problem+json; charset=utf-8"));
-        assert!(!is_json("application/xml"));
+        assert!(is_json_content_type(
+            "application/problem+json; charset=utf-8"
+        ));
+        assert!(!is_json_content_type("application/xml"));
     }
 }

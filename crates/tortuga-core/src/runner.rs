@@ -115,9 +115,7 @@ pub async fn run_step(
         );
         apply_vars(&mut ctx, &mut out, &run.vars);
         for header in &run.headers {
-            request
-                .headers
-                .retain(|h| !h.name.trim().eq_ignore_ascii_case(header.name.trim()));
+            request.headers.retain(|h| !h.is_named(&header.name));
             request.headers.push(header.clone());
         }
         out.logs.extend(run.logs.iter().cloned());

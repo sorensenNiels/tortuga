@@ -6,6 +6,14 @@
 
 // Release builds on Windows are GUI apps: no console window opens next to Tortuga.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::print_stdout,
+        clippy::print_stderr,
+        reason = "a binary reports to the terminal"
+    )
+)]
 
 #[cfg(all(feature = "desktop", not(target_arch = "wasm32")))]
 mod desktop;

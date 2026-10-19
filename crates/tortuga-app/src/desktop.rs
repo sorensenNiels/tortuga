@@ -285,7 +285,7 @@ impl Host for DesktopHost {
         let Some(dir) = local_store::history_dir(root) else {
             return;
         };
-        let lock = self.history_lock.clone();
+        let lock = Arc::clone(&self.history_lock);
         // Writing up to a megabyte (and syncing it) would make the UI stutter.
         drop(self.runtime.spawn_blocking(move || {
             let _one_at_a_time = lock

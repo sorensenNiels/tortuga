@@ -5,6 +5,7 @@ use egui::{Context, Grid, ScrollArea, TextEdit, Ui};
 use tortuga_core::secrets::SecretValues;
 use tortuga_core::{Collection, Environment, Manifest, Server};
 
+use super::variable_row::{self, SecretHelp, new_row_input};
 use super::{DialogResult, dialog};
 use crate::state::AppState;
 use crate::theme;
@@ -12,21 +13,21 @@ use crate::theme;
 /// Editable copy of a collection's servers, variables and environments.
 /// Rows and columns are kept as parallel vectors so names can be edited
 /// freely; ids are only assigned when saving (R-SRV-1).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Draft {
     pub environments: Vec<EnvColumn>,
     pub servers: Vec<ServerRow>,
     pub variables: Vec<VarRow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EnvColumn {
     /// `None` until saved for the first time.
     pub id: Option<String>,
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ServerRow {
     pub id: Option<String>,
     pub name: String,
@@ -34,7 +35,7 @@ pub struct ServerRow {
     pub urls: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VarRow {
     pub name: String,
     /// Values stay on this machine instead of the collection files (R-VAR-3).
@@ -45,7 +46,7 @@ pub struct VarRow {
 }
 
 /// What saving the environments dialog writes: files, and local secret values.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedConfig {
     pub manifest: Manifest,
     pub environments: Vec<Environment>,
@@ -497,9 +498,13 @@ fn servers_table(ui: &mut Ui, d: &mut Draft, new_server: &mut String) {
                 }
                 ui.end_row();
             }
-            if let Some(name) =
-                new_row_input(ui, "new-server", new_server, "Add server (press Enter)…")
-            {
+            if let Some(name) = new_row_input(
+                ui,
+                "new-server",
+                CELL_WIDTH,
+                new_server,
+                "Add server (press Enter)…",
+            ) {
                 d.add_server(name);
             }
             ui.end_row();
@@ -532,39 +537,24 @@ fn variables_table(ui: &mut Ui, d: &mut Draft, new_variable: &mut String) {
 
             let mut remove = None;
             for (row, v) in d.variables.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    theme::sized_edit(
-                        ui,
-                        CELL_WIDTH - 56.0,
-                        TextEdit::singleline(&mut v.name)
-                            .id_salt(("var", row))
-                            .font(egui::TextStyle::Monospace),
-                    );
-                    let p = theme::palette(ui);
-                    let lock = egui::RichText::new("🔒")
-                        .size(12.0)
-                        .color(if v.secret { p.accent } else { p.muted.gamma_multiply(0.6) });
-                    let toggle = ui
-                        .add(egui::Button::selectable(v.secret, lock).frame_when_inactive(false))
-                        .on_hover_text(if v.secret {
-                            "Secret: values stay on this machine. Click to share them through the project files."
-                        } else {
-                            "Shared through the project files. Click to make it secret (values stay on this machine)."
-                        });
-                    if toggle.clicked() {
-                        v.secret = !v.secret;
-                    }
-                    if ui
-                        .add(theme::icon_button(ui, "🗙"))
-                        .on_hover_text("Remove this variable")
-                        .clicked()
-                    {
-                        remove = Some(row);
-                    }
-                });
+                if variable_row::name_cell(
+                    ui,
+                    ("var", row),
+                    CELL_WIDTH,
+                    &mut v.name,
+                    &mut v.secret,
+                    SECRET_HELP,
+                ) {
+                    remove = Some(row);
+                }
                 // Secret values are masked; a placeholder never shows the secret default.
                 let default_hint = if v.secret {
-                    if v.default.is_empty() { "not set" } else { "default" }.to_owned()
+                    if v.default.is_empty() {
+                        "not set"
+                    } else {
+                        "default"
+                    }
+                    .to_owned()
                 } else {
                     v.default.clone()
                 };
@@ -593,6 +583,7 @@ fn variables_table(ui: &mut Ui, d: &mut Draft, new_variable: &mut String) {
             if let Some(name) = new_row_input(
                 ui,
                 "new-variable",
+                CELL_WIDTH,
                 new_variable,
                 "Add variable (press Enter)…",
             ) {
@@ -606,22 +597,10 @@ fn variables_table(ui: &mut Ui, d: &mut Draft, new_variable: &mut String) {
         });
 }
 
-/// A blank input that adds a row when Enter is pressed or the field is left.
-fn new_row_input(ui: &mut Ui, id: &str, value: &mut String, hint: &str) -> Option<String> {
-    let response = theme::sized_edit(
-        ui,
-        CELL_WIDTH,
-        TextEdit::singleline(value)
-            .id_salt(id)
-            .hint_text(hint.to_owned()),
-    );
-    let name = value.trim().to_owned();
-    if response.lost_focus() && !name.is_empty() {
-        value.clear();
-        return Some(name);
-    }
-    None
-}
+const SECRET_HELP: SecretHelp = SecretHelp {
+    secret: "Secret: values stay on this machine. Click to share them through the project files.",
+    shared: "Shared through the project files. Click to make it secret (values stay on this machine).",
+};
 
 #[cfg(test)]
 mod tests {

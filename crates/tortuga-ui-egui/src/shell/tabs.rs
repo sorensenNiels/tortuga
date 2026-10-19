@@ -247,7 +247,7 @@ impl TortugaUi {
     }
 
     /// Ctrl+Tab, Ctrl+PageDown/PageUp and Ctrl+W (R-COL-13).
-    pub(super) fn tab_shortcuts(&mut self, ui: &mut Ui) {
+    pub(super) fn tab_shortcuts(&mut self, ui: &Ui) {
         let (previous, next, before, close) = ui.input_mut(|i| {
             (
                 i.consume_shortcut(&PREVIOUS_TAB),

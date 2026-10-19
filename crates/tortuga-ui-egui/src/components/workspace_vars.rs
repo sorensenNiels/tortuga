@@ -7,6 +7,7 @@ use egui::{Context, Grid, RichText, ScrollArea, TextEdit, Ui};
 use tortuga_core::runner::WORKSPACE_PREFIX;
 use tortuga_core::workspace::WorkspaceVariables;
 
+use super::variable_row::{self, SecretHelp};
 use super::{DialogResult, dialog};
 use crate::state::AppState;
 use crate::theme;
@@ -38,6 +39,10 @@ pub struct WorkspaceVarsDialog {
 
 const NAME_WIDTH: f32 = 220.0;
 const VALUE_WIDTH: f32 = 340.0;
+const SECRET_HELP: SecretHelp = SecretHelp {
+    secret: "Secret: the value stays on this machine. Click to share it.",
+    shared: "Shared with the workspace. Click to make it secret (the value stays on this machine).",
+};
 
 impl WorkspaceVarsDialog {
     pub fn new(state: &AppState) -> Self {
@@ -147,39 +152,16 @@ fn variables_table(ui: &mut Ui, rows: &mut Vec<WorkspaceVarRow>, new_variable: &
             ui.end_row();
             let mut remove = None;
             for (i, row) in rows.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    theme::sized_edit(
-                        ui,
-                        NAME_WIDTH - 56.0,
-                        TextEdit::singleline(&mut row.name)
-                            .id_salt(("ws-var", i))
-                            .hint_text("name")
-                            .font(egui::TextStyle::Monospace),
-                    );
-                    let p = theme::palette(ui);
-                    let lock = RichText::new("🔒").size(12.0).color(if row.secret {
-                        p.accent
-                    } else {
-                        p.muted.gamma_multiply(0.6)
-                    });
-                    let toggle = ui
-                        .add(egui::Button::selectable(row.secret, lock).frame_when_inactive(false))
-                        .on_hover_text(if row.secret {
-                            "Secret: the value stays on this machine. Click to share it."
-                        } else {
-                            "Shared with the workspace. Click to make it secret (the value stays on this machine)."
-                        });
-                    if toggle.clicked() {
-                        row.secret = !row.secret;
-                    }
-                    if ui
-                        .add(theme::icon_button(ui, "🗙"))
-                        .on_hover_text("Remove this variable")
-                        .clicked()
-                    {
-                        remove = Some(i);
-                    }
-                });
+                if variable_row::name_cell(
+                    ui,
+                    ("ws-var", i),
+                    NAME_WIDTH,
+                    &mut row.name,
+                    &mut row.secret,
+                    SECRET_HELP,
+                ) {
+                    remove = Some(i);
+                }
                 theme::sized_edit(
                     ui,
                     VALUE_WIDTH,
@@ -191,16 +173,13 @@ fn variables_table(ui: &mut Ui, rows: &mut Vec<WorkspaceVarRow>, new_variable: &
                 );
                 ui.end_row();
             }
-            let response = theme::sized_edit(
+            if let Some(name) = variable_row::new_row_input(
                 ui,
+                "ws-new-variable",
                 NAME_WIDTH,
-                TextEdit::singleline(new_variable)
-                    .id_salt("ws-new-variable")
-                    .hint_text("Add variable (press Enter)…"),
-            );
-            let name = new_variable.trim().to_owned();
-            if response.lost_focus() && !name.is_empty() {
-                new_variable.clear();
+                new_variable,
+                "Add variable (press Enter)…",
+            ) {
                 rows.push(WorkspaceVarRow {
                     name,
                     ..WorkspaceVarRow::default()

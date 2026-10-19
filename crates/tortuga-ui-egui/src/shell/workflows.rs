@@ -490,7 +490,7 @@ impl TortugaUi {
         self.workflows.next_run += 1;
         let run_id = self.workflows.next_run;
         let client = self.state.client.clone();
-        let tx = self.workflow_tx.clone();
+        let tx = self.workflow_events.sender();
         let repaint = egui_ctx.clone();
         let event_key = key.clone();
         let iterations_planned = options.rows.len().max(1);
@@ -538,7 +538,7 @@ impl TortugaUi {
 
     /// Takes in progress from running workflows.
     pub(super) fn collect_workflow_events(&mut self) {
-        while let Ok(event) = self.workflow_rx.try_recv() {
+        while let Some(event) = self.workflow_events.try_recv() {
             let Some(open) = self.workflows.editors.get_mut(&event.key) else {
                 continue;
             };
@@ -755,7 +755,7 @@ mod tests {
         });
         let shared = std::rc::Rc::new(std::cell::RefCell::new(ui));
         {
-            let ui = shared.clone();
+            let ui = std::rc::Rc::clone(&shared);
             let mut h = crate::test_host::harness(move |egui_ui| ui.borrow_mut().ui(egui_ui));
             h.run_steps(3);
             egui_kittest::kittest::Queryable::get_by_label(&h, "Cancel").click();
@@ -790,7 +790,7 @@ mod tests {
         let start = || {
             TortugaUi::new(Box::new(TestHost {
                 open: vec![root.clone()],
-                drafts: drafts.clone(),
+                drafts: std::rc::Rc::clone(&drafts),
                 ..TestHost::default()
             }))
         };

@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/tortuga-core"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT OR Apache-2.0"
@@ -28,7 +28,6 @@ base64 = "0.22"
 cookie_store = "0.22"
 thiserror = "2"
 url = { version = "2", features = ["serde"] }
-tracing = "0.1"
 web-time = "1"
 toml = "1"
 # Native file dialogs. Linux uses the GTK backend (see tortuga-app dialogs.rs).
@@ -78,6 +77,15 @@ must_use_candidate = "allow"
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+# Beyond pedantic: cheap `Arc` clones read differently from deep ones; locks and other
+# guards are dropped as soon as possible; no `&mut` that is never used mutably.
+clone_on_ref_ptr = "warn"
+significant_drop_tightening = "warn"
+needless_pass_by_ref_mut = "warn"
+derive_partial_eq_without_eq = "warn"
+# Library code returns errors; only the binaries print (see CLAUDE.md "Code quality").
+print_stdout = "warn"
+print_stderr = "warn"
 
 [profile.dev]
 # Faster incremental builds; dependencies still optimised a bit for a snappy UI.

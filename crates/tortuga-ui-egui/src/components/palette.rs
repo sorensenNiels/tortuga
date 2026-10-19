@@ -277,7 +277,7 @@ mod tests {
 
     fn run(palette: Palette, keys: &[Key], text: &str) -> (Palette, Option<u32>) {
         let result = std::rc::Rc::new(std::cell::RefCell::new((palette, None)));
-        let shared = result.clone();
+        let shared = std::rc::Rc::clone(&result);
         let items = items();
         let mut h = crate::test_host::harness(move |ui| {
             let mut r = shared.borrow_mut();

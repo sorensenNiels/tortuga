@@ -48,7 +48,7 @@ mod tests {
             s.appearance.text_size = 120;
         });
         let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
-        let shared = ui.clone();
+        let shared = std::rc::Rc::clone(&ui);
         let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
         harness.run();
         let ctx = harness.ctx.clone();

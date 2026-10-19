@@ -793,7 +793,7 @@ impl AppState {
 
     /// A function that wakes the UI from any thread, e.g. when background work is done.
     pub fn waker(&self) -> impl Fn() + Send + Sync + 'static {
-        let repaint = self.live.repaint.clone();
+        let repaint = Arc::clone(&self.live.repaint);
         move || {
             if let Some(ctx) = repaint.get() {
                 ctx.request_repaint();
@@ -804,7 +804,7 @@ impl AppState {
     /// Watches a collection's files and git state (R-GIT-10) and reads its git status.
     fn start_watching(&mut self, root: &Path) {
         let tx = self.live.changed_tx.clone();
-        let repaint = self.live.repaint.clone();
+        let repaint = Arc::clone(&self.live.repaint);
         let changed_root = root.to_owned();
         let on_change = move || {
             let _ = tx.send(changed_root.clone());
@@ -828,7 +828,7 @@ impl AppState {
             return;
         }
         let tx = self.live.git_tx.clone();
-        let repaint = self.live.repaint.clone();
+        let repaint = Arc::clone(&self.live.repaint);
         let for_root = root.to_owned();
         self.host.git_status(
             root,
@@ -906,7 +906,11 @@ impl AppState {
         let Some((root, jar)) = root.and_then(|r| self.cookies.get_key_value(r)) else {
             return;
         };
-        if let Err(e) = self.host.save_cookies(root, &jar.to_json()) {
+        let saved = jar
+            .to_json()
+            .map_err(|e| e.to_string())
+            .and_then(|json| self.host.save_cookies(root, &json));
+        if let Err(e) = saved {
             self.notify(format!("Could not save cookies: {e}"));
         }
     }
@@ -997,7 +1001,7 @@ mod tests {
             open: vec![root.clone()],
             ..Default::default()
         };
-        let saved = host.cookies.clone();
+        let saved = std::rc::Rc::clone(&host.cookies);
 
         let mut state = AppState::new(Box::new(host));
         let url = url::Url::parse("http://api.test/").expect("url");
@@ -1009,7 +1013,7 @@ mod tests {
 
         let reopened = AppState::new(Box::new(crate::test_host::TestHost {
             open: vec![root.clone()],
-            cookies: saved.clone(),
+            cookies: std::rc::Rc::clone(&saved),
             ..Default::default()
         }));
         assert_eq!(reopened.cookie_jar(Some(&root)).len(), 1);
@@ -1076,7 +1080,7 @@ mod tests {
             open: vec![a.clone()],
             ..Default::default()
         };
-        let saved = host.local.clone();
+        let saved = std::rc::Rc::clone(&host.local);
         let mut state = AppState::new(Box::new(host));
         assert_eq!(state.workspace().name, LocalState::DEFAULT_WORKSPACE);
         assert_eq!(roots(&state), std::slice::from_ref(&a));

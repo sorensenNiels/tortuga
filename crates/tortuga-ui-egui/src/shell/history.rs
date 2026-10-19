@@ -213,7 +213,12 @@ impl TortugaUi {
         {
             label.push_str(" · body cut to 1 MB");
         }
-        let latest = self.outcomes.insert(key.clone(), outcome);
+        let latest = self
+            .sent
+            .entry(key.clone())
+            .or_default()
+            .outcome
+            .replace(outcome);
         self.response.reset();
         self.history.past = Some(Past {
             key,
@@ -227,17 +232,28 @@ impl TortugaUi {
     /// Puts the latest response back in place of a past one.
     pub(super) fn back_to_latest(&mut self) {
         if let Some(past) = self.history.past.take() {
-            match past.latest {
-                Some(latest) => drop(self.outcomes.insert(past.key, latest)),
-                None => drop(self.outcomes.remove(&past.key)),
-            }
+            self.sent.entry(past.key).or_default().outcome = past.latest;
         }
     }
 
     /// A send replaces a past response of the same request.
     pub(super) fn forget_past(&mut self, key: &Selection) {
-        if self.history.past.as_ref().is_some_and(|p| &p.key == key) {
+        self.forget_past_if(|k| k == key);
+    }
+
+    /// Drops the past response shown for a request that `gone` says is gone.
+    pub(super) fn forget_past_if(&mut self, gone: impl Fn(&Selection) -> bool) {
+        if self.history.past.as_ref().is_some_and(|p| gone(&p.key)) {
             self.history.past = None;
+        }
+    }
+
+    /// Moves the past response along with its request (R-COL-2).
+    pub(super) fn remap_past(&mut self, moved: impl Fn(&Selection) -> Option<Selection>) {
+        if let Some(past) = &mut self.history.past
+            && let Some(to) = moved(&past.key)
+        {
+            past.key = to;
         }
     }
 

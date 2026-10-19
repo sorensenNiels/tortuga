@@ -446,7 +446,7 @@ impl CopyCurlDialog {
     }
 
     /// Done with the text to copy.
-    pub fn show(&mut self, ctx: &Context) -> DialogResult<String> {
+    pub fn show(&self, ctx: &Context) -> DialogResult<String> {
         let names = self.command.secrets.join(", ");
         dialog(ctx, "copy-curl", "Copy as curl", 460.0, true, |ui| {
             ui.label(format!(

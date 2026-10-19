@@ -253,8 +253,7 @@ pub fn preview(request: &Request, ctx: &Context) -> Result<Request> {
     let mut out = prepare(request, &ctx)?;
     if matches!(out.body, RequestBody::Multipart(_)) {
         // Always set when sending, with the boundary (R-HTTP-15).
-        out.headers
-            .retain(|h| !h.name.trim().eq_ignore_ascii_case("content-type"));
+        out.headers.retain(|h| !h.is_named("content-type"));
         out.headers.push(KeyValue::new(
             "Content-Type",
             "multipart/form-data; boundary=… (set when sending)",
@@ -292,7 +291,7 @@ fn file_path(path: &str, ctx: &Context) -> Result<String> {
 }
 
 fn same_name(a: &KeyValue, b: &KeyValue) -> bool {
-    a.name.trim().eq_ignore_ascii_case(b.name.trim())
+    a.is_named(&b.name)
 }
 
 /// Resolves the server and all variables, giving a request with an absolute

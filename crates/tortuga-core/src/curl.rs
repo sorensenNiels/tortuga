@@ -79,10 +79,10 @@ pub fn write(request: &Request, settings: &ClientSettings) -> String {
     // curl sets a multipart Content-Type itself, with the boundary (like sending does).
     let multipart = matches!(request.body, RequestBody::Multipart(_));
     for header in request.headers.iter().filter(|h| h.is_active()) {
-        if multipart && header.name.trim().eq_ignore_ascii_case("content-type") {
+        if multipart && header.is_named("content-type") {
             continue;
         }
-        if header.name.eq_ignore_ascii_case("authorization")
+        if header.is_named("authorization")
             && let Some(user) = basic_credentials(&header.value)
         {
             // Readable (and maskable) instead of base64.

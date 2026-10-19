@@ -5,7 +5,9 @@
 //! continuations, and the options that describe a request. Options that only change
 //! how curl itself behaves are skipped quietly; options Tortuga can't use are listed.
 
-use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody};
+use crate::model::{
+    Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, is_json_content_type,
+};
 use crate::{query, vars};
 
 /// A request read from a `curl` command.
@@ -361,12 +363,12 @@ impl Builder {
     fn header_value(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
-            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .find(|h| h.is_named(name))
             .map(|h| h.value.as_str())
     }
 
     fn remove_header(&mut self, name: &str) {
-        self.headers.retain(|h| !h.name.eq_ignore_ascii_case(name));
+        self.headers.retain(|h| !h.is_named(name));
     }
 
     fn finish(mut self) -> Result<Pasted, String> {
@@ -420,7 +422,7 @@ impl Builder {
             .is_ok_and(|v| v.is_object() || v.is_array());
         let body = match content_type.as_deref() {
             _ if self.json => RequestBody::Json(data),
-            Some(ct) if ct.contains("json") => RequestBody::Json(data),
+            Some(ct) if is_json_content_type(ct) => RequestBody::Json(data),
             Some(ct) if ct.starts_with("application/x-www-form-urlencoded") => form(&data),
             Some(_) => RequestBody::Text(data),
             None if looks_json => RequestBody::Json(data),

@@ -61,6 +61,10 @@ pub struct Watchers {
 }
 
 impl Watchers {
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the watcher is borrowed from `active` until the end"
+    )]
     pub fn watch(&self, root: &Path, on_change: OnChange) -> Result<(), String> {
         self.unwatch(root);
         let canonical = std::fs::canonicalize(root)
@@ -88,6 +92,10 @@ impl Watchers {
         Ok(())
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the watcher is borrowed from `active` until the end"
+    )]
     pub fn unwatch(&self, root: &Path) {
         let Some((key, canonical)) = lock(&self.roots).remove(root) else {
             return;
@@ -142,7 +150,7 @@ fn start(root: &Path, git_dir: Option<&Path>) -> Result<Watch, String> {
                 .map_err(|e| e.to_string())?,
         )
     };
-    let for_reports = projects.clone();
+    let for_reports = Arc::clone(&projects);
     let git = git_dir.map(Path::to_path_buf);
     std::thread::Builder::new()
         .name("tortuga-watch".into())
@@ -221,7 +229,7 @@ mod tests {
 
     fn counter() -> (Arc<AtomicUsize>, OnChange) {
         let count = Arc::new(AtomicUsize::new(0));
-        let seen = count.clone();
+        let seen = Arc::clone(&count);
         (
             count,
             Box::new(move || {

@@ -22,9 +22,12 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::collection::NewItem;
+use crate::error::sentence;
 use crate::format::{FolderDefaults, Manifest};
 use crate::import::{Collected, Import, ImportKind, short_name, variable_name};
-use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts};
+use crate::model::{
+    Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts, is_json_content_type,
+};
 use crate::{Error, Result};
 
 /// Reads a Postman collection (v2.0 or v2.1 JSON) into a project (R-COL-16).
@@ -272,7 +275,13 @@ impl<'a> Importer<'a> {
         request.headers = headers(req.get("header"));
         let (body, content_type) = self.body(req.get("body"), &request.name);
         request.body = match body {
-            RequestBody::Text(text) if is_json_header(&request.headers) => RequestBody::Json(text),
+            RequestBody::Text(text)
+                if request
+                    .header("content-type")
+                    .is_some_and(is_json_content_type) =>
+            {
+                RequestBody::Json(text)
+            }
             body => body,
         };
         if let Some(content_type) = content_type
@@ -348,14 +357,14 @@ impl<'a> Importer<'a> {
                 self.c.warn(format!(
                     "{} uses OAuth 2, which became Bearer {{{{access_token}}}}: get a token and \
                      put it in access_token under Environments….",
-                    capitalized(place)
+                    sentence(place)
                 ));
             }
             other => {
                 out.auth = Some(Auth::None);
                 self.c.warn(format!(
                     "{} uses {other} auth, which Tortuga does not support, so it was left out.",
-                    capitalized(place)
+                    sentence(place)
                 ));
             }
         }
@@ -500,7 +509,7 @@ impl<'a> Importer<'a> {
 fn turned_off(headers: &[KeyValue], own: Option<&KeyValue>) -> Vec<KeyValue> {
     headers
         .iter()
-        .filter(|h| own.is_none_or(|o| !o.name.eq_ignore_ascii_case(&h.name)))
+        .filter(|h| own.is_none_or(|o| !o.is_named(&h.name)))
         .map(|h| KeyValue {
             enabled: false,
             ..h.clone()
@@ -574,14 +583,6 @@ fn headers(headers: Option<&Value>) -> Vec<KeyValue> {
     }
 }
 
-fn is_json_header(headers: &[KeyValue]) -> bool {
-    headers.iter().any(|h| {
-        h.enabled
-            && h.name.eq_ignore_ascii_case("content-type")
-            && h.value.to_ascii_lowercase().contains("json")
-    })
-}
-
 /// A `{key, value, disabled}` entry; ones without a key are left out.
 fn key_value(entry: &Value) -> Option<KeyValue> {
     let name = key(entry)?;
@@ -629,13 +630,6 @@ fn script_code(script: Option<&Value>) -> String {
             .join("\n"),
         other => text(other),
     }
-}
-
-fn capitalized(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
 }
 
 #[cfg(test)]
@@ -1073,11 +1067,5 @@ mod tests {
         assert!(!looks_like_collection(
             &serde_json::json!({"openapi": "3.0.0"})
         ));
-    }
-
-    #[test]
-    fn helpers() {
-        assert_eq!(capitalized("“x” uses"), "“x” uses");
-        assert_eq!(capitalized("the collection"), "The collection");
     }
 }

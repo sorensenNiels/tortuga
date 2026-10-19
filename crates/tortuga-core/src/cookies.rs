@@ -61,14 +61,11 @@ mod imp {
 
         /// Everything in the jar, including session cookies, so a restart keeps
         /// you logged in to your dev server. Expired cookies are never sent.
-        pub fn to_json(&self) -> String {
+        pub fn to_json(&self) -> Result<String> {
             let mut out = Vec::new();
-            // Writing to a Vec cannot fail.
-            let _ = cookie_store::serde::json::save_incl_expired_and_nonpersistent(
-                &self.lock(),
-                &mut out,
-            );
-            String::from_utf8(out).unwrap_or_default()
+            cookie_store::serde::json::save_incl_expired_and_nonpersistent(&self.lock(), &mut out)
+                .map_err(|e| Error::SaveCookies(e.to_string()))?;
+            String::from_utf8(out).map_err(|e| Error::SaveCookies(e.to_string()))
         }
 
         /// Number of cookies that have not expired.
@@ -265,7 +262,7 @@ mod tests {
             ["session=abc", "id=7; Max-Age=3600"],
             &url("http://a.test/"),
         );
-        let back = CookieJar::from_json(&jar.to_json()).expect("load");
+        let back = CookieJar::from_json(&jar.to_json().expect("save")).expect("load");
         assert_eq!(back.len(), 2);
         back.clear();
         assert!(back.is_empty());

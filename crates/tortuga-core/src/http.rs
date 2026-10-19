@@ -204,20 +204,23 @@ impl Client {
         if key == ClientKey::plain(&self.settings) {
             return Ok(self.inner.clone());
         }
-        let mut clients = self
-            .clients
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(client) = clients.get(&key) {
-            return Ok(client.clone());
+        let clients = || {
+            self.clients
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let cached = clients().get(&key).cloned();
+        if let Some(client) = cached {
+            return Ok(client);
         }
+        // Built without the lock: loading certificates takes a while, and other sends
+        // shouldn't wait for it. If two sends build the same client, the first one is kept.
         let mut b = builder(&self.settings, key, &self.roots);
         if let Some(jar) = jar {
             b = b.cookie_provider(std::sync::Arc::new(jar.clone()));
         }
         let client = b.build().map_err(|e| Error::ClientSetup(e.to_string()))?;
-        clients.insert(key, client.clone());
-        Ok(client)
+        Ok(clients().entry(key).or_insert(client).clone())
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -311,8 +314,6 @@ impl Client {
                 .map_err(|e| map_send_error(&e, timeout))?,
         );
         let elapsed = started.elapsed();
-
-        tracing::debug!(%status, ?elapsed, "request completed");
 
         Ok(Response {
             status: status.as_u16(),

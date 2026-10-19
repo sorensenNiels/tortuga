@@ -97,6 +97,22 @@ impl KeyValue {
     pub fn is_active(&self) -> bool {
         self.enabled && !self.name.trim().is_empty()
     }
+
+    /// Whether this is called `name`, the way header names compare: ignoring case and
+    /// surrounding spaces.
+    pub fn is_named(&self, name: &str) -> bool {
+        self.name.trim().eq_ignore_ascii_case(name.trim())
+    }
+}
+
+/// Whether a `Content-Type` value says JSON: `application/json`, `text/json` or a
+/// `+json` type such as `application/problem+json`. Case and parameters are ignored.
+pub fn is_json_content_type(content_type: &str) -> bool {
+    let essence = content_type.split(';').next().unwrap_or_default().trim();
+    essence.rsplit_once('/').is_some_and(|(_, subtype)| {
+        let subtype = subtype.to_ascii_lowercase();
+        subtype == "json" || subtype == "x-json" || subtype.ends_with("+json")
+    })
 }
 
 /// Request body (R-HTTP-4).
@@ -355,9 +371,15 @@ impl Request {
 
     /// True if an enabled header with this name exists (case-insensitive).
     pub fn has_header(&self, name: &str) -> bool {
+        self.header(name).is_some()
+    }
+
+    /// The value of the first enabled header called `name` (case-insensitive).
+    pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
-            .any(|h| h.is_active() && h.name.trim().eq_ignore_ascii_case(name))
+            .find(|h| h.is_active() && h.is_named(name))
+            .map(|h| h.value.as_str())
     }
 }
 
@@ -390,7 +412,7 @@ impl Response {
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
-            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .find(|h| h.is_named(name))
             .map(|h| h.value.as_str())
     }
 
@@ -408,10 +430,8 @@ impl Response {
         let Ok(text) = std::str::from_utf8(&self.body) else {
             return BodyView::Binary;
         };
-        let looks_json = self.content_type().is_some_and(|ct| {
-            let ct = ct.to_ascii_lowercase();
-            ct.contains("/json") || ct.contains("+json")
-        }) || matches!(text.trim_start().as_bytes().first(), Some(b'{' | b'['));
+        let looks_json = self.content_type().is_some_and(is_json_content_type)
+            || matches!(text.trim_start().as_bytes().first(), Some(b'{' | b'['));
         if looks_json
             && let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
             && let Ok(pretty) = serde_json::to_string_pretty(&value)
@@ -457,6 +477,49 @@ mod tests {
             body: body.to_vec(),
             elapsed: Duration::ZERO,
         }
+    }
+
+    #[test]
+    fn json_content_types() {
+        for json in [
+            "application/json",
+            "Application/JSON; charset=utf-8",
+            "text/json",
+            "application/x-json",
+            "application/problem+json",
+            "application/vnd.api+json ; ext=bulk",
+        ] {
+            assert!(is_json_content_type(json), "{json}");
+        }
+        for other in [
+            "application/jsonl",
+            "text/plain",
+            "application/json-seq",
+            "json",
+            "",
+        ] {
+            assert!(!is_json_content_type(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn header_names_ignore_case_and_spaces() {
+        let request = Request {
+            headers: vec![
+                KeyValue {
+                    enabled: false,
+                    ..KeyValue::new("Accept", "off")
+                },
+                KeyValue::new(" content-TYPE ", "application/json"),
+            ],
+            ..Request::default()
+        };
+        assert_eq!(request.header("Content-Type"), Some("application/json"));
+        assert_eq!(
+            request.header("accept"),
+            None,
+            "disabled headers don't count"
+        );
     }
 
     #[test]

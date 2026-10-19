@@ -14,6 +14,7 @@ mod request_editor;
 mod response_panel;
 mod sidebar;
 mod tab_strip;
+mod variable_row;
 mod workflow_view;
 mod workspace_vars;
 

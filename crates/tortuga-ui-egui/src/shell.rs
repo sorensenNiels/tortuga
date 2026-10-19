@@ -1,13 +1,21 @@
-//! Top-level layout and the request workflow: selection, unsaved drafts,
-//! sending, saving, and the dialogs.
+//! Top-level layout and the request workflow: selection, the request editor and
+//! response area, saving. Each other area is a submodule with its own `impl TortugaUi`
+//! block: unsaved edits (`drafts`), sending (`sending`), changes on disk (`disk`),
+//! sidebar actions (`projects`), dialogs (`dialogs`), tabs, history, workflows, ….
 
 mod appearance;
 mod commands;
 mod cookies;
+mod dialogs;
+mod disk;
+mod drafts;
 mod history;
 mod import;
+mod projects;
+mod sending;
 mod tabs;
 mod workflows;
+mod workspace_menu;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -15,22 +23,20 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use egui::{
-    CentralPanel, ComboBox, Frame, Key, KeyboardShortcut, Margin, Modifiers, Panel, RichText,
-    TextEdit, Ui,
+    CentralPanel, Frame, Key, KeyboardShortcut, Margin, Modifiers, Panel, RichText, TextEdit, Ui,
 };
-use futures_util::future::{AbortHandle, abortable};
-use tortuga_core::{Item, Request, vars};
+use futures_util::future::AbortHandle;
+use tortuga_core::{Request, vars};
 
 use crate::components::{
-    AddProjects, AddProjectsDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
-    CreateProjectDialog, DefaultsDialog, DialogResult, EditorAction, EditorContext, EditorState,
+    AddProjectsDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
+    CreateProjectDialog, DefaultsDialog, EditorAction, EditorContext, EditorState,
     EnvironmentsDialog, Filtered, Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext,
     ResponseAction, ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog,
-    SidebarAction, SidebarState, TabStripState, TestsView, TextBody, WorkspaceVarsAction,
-    request_editor, response_panel, sidebar,
+    SidebarState, TabStripState, TestsView, TextBody, request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
-use crate::host::{DraftConflict, Host, SavedDraft, SavedDrafts};
+use crate::host::{Host, SavedDrafts};
 use crate::state::{AppState, ItemKey};
 use crate::theme;
 use history::{HistoryState, SidebarView};
@@ -148,12 +154,12 @@ pub struct TortugaUi {
     editor: EditorState,
     sidebar: SidebarState,
 
-    outcomes: HashMap<Selection, Outcome>,
+    /// What each request's last send left to show.
+    sent: HashMap<Selection, Sent>,
     response: ResponseState,
     in_flight: Option<InFlight>,
     next_send_id: u64,
-    finished_tx: Sender<Finished>,
-    finished_rx: Receiver<Finished>,
+    finished: Inbox<Finished>,
     /// Fonts and style are installed on the first frame.
     styled: bool,
     /// The theme and text size last given to egui (R-SET-4, R-SET-5).
@@ -170,19 +176,56 @@ pub struct TortugaUi {
     unchecked_bases: HashMap<ItemKey, Option<Request>>,
     /// Recently opened requests, newest first, for quick open (R-COL-9).
     recent: Vec<ItemKey>,
-    /// The JSON filter typed for each request, kept while the app runs (R-HTTP-13).
-    filters: HashMap<Selection, String>,
     filter_job: Option<FilterJob>,
-    filter_tx: Sender<FilterDone>,
-    filter_rx: Receiver<FilterDone>,
+    filter_results: Inbox<FilterDone>,
     sidebar_view: SidebarView,
     history: HistoryState,
-    /// What each request's scripts and captures did on its last send (R-TEST-1).
-    test_results: HashMap<Selection, TestsView>,
     /// Open workflows and their runs (R-FLOW-2, R-FLOW-3).
     workflows: Workflows,
-    workflow_tx: Sender<WorkflowEvent>,
-    workflow_rx: Receiver<WorkflowEvent>,
+    workflow_events: Inbox<WorkflowEvent>,
+}
+
+/// Results that background tasks send back to the UI thread, which reads them each frame.
+#[derive(Debug)]
+struct Inbox<T> {
+    tx: Sender<T>,
+    rx: Receiver<T>,
+}
+
+impl<T> Inbox<T> {
+    fn new() -> Self {
+        let (tx, rx) = channel();
+        Self { tx, rx }
+    }
+
+    /// For a task to send its result with.
+    fn sender(&self) -> Sender<T> {
+        self.tx.clone()
+    }
+
+    /// The next result that arrived, if any.
+    fn try_recv(&self) -> Option<T> {
+        self.rx.try_recv().ok()
+    }
+}
+
+/// What the last send of one request left to show. One struct, so a rename or delete
+/// can't move or drop one part and forget another.
+#[derive(Debug, Default)]
+struct Sent {
+    outcome: Option<Outcome>,
+    /// The JSON filter typed for it, kept while the app runs (R-HTTP-13).
+    filter: String,
+    /// What its scripts and captures did (R-TEST-1).
+    tests: Option<TestsView>,
+}
+
+/// Moves every value whose key `moved` gives a new place to that place.
+fn rekey<K: Eq + std::hash::Hash, V>(map: &mut HashMap<K, V>, moved: impl Fn(&K) -> Option<K>) {
+    *map = std::mem::take(map)
+        .into_iter()
+        .map(|(k, v)| (moved(&k).unwrap_or(k), v))
+        .collect();
 }
 
 /// How often unsaved edits are written to local data, at most (R-COL-8).
@@ -206,9 +249,6 @@ impl TortugaUi {
     /// Loads settings and reopens the collections that were open last time.
     pub fn new(host: Box<dyn Host>) -> Self {
         let current = Request::default();
-        let (finished_tx, finished_rx) = channel();
-        let (filter_tx, filter_rx) = channel();
-        let (workflow_tx, workflow_rx) = channel();
         let mut ui = Self {
             state: AppState::new(host),
             modal: None,
@@ -220,12 +260,11 @@ impl TortugaUi {
             tabs: Tabs::default(),
             tab_strip: TabStripState::default(),
             sidebar: SidebarState::default(),
-            outcomes: HashMap::new(),
+            sent: HashMap::new(),
             response: ResponseState::default(),
             in_flight: None,
             next_send_id: 0,
-            finished_tx,
-            finished_rx,
+            finished: Inbox::new(),
             styled: false,
             applied_appearance: None,
             conflicts: HashMap::new(),
@@ -234,16 +273,12 @@ impl TortugaUi {
             drafts_checked_at: 0.0,
             unchecked_bases: HashMap::new(),
             recent: Vec::new(),
-            filters: HashMap::new(),
             filter_job: None,
-            filter_tx,
-            filter_rx,
+            filter_results: Inbox::new(),
             sidebar_view: SidebarView::default(),
             history: HistoryState::default(),
-            test_results: HashMap::new(),
             workflows: Workflows::default(),
-            workflow_tx,
-            workflow_rx,
+            workflow_events: Inbox::new(),
         };
         ui.restore_drafts();
         // Back where the user left off (R-WS-1, R-COL-13).
@@ -393,7 +428,7 @@ impl TortugaUi {
     }
 
     /// Keyboard shortcuts that work anywhere outside dialogs.
-    fn shortcuts(&mut self, ui: &mut Ui) {
+    fn shortcuts(&mut self, ui: &Ui) {
         let (save, send) = ui.input_mut(|i| (i.consume_shortcut(&SAVE), i.consume_shortcut(&SEND)));
         // With a workflow open, they save and run the workflow (R-FLOW-2, R-FLOW-3).
         if let Some(key) = self.workflows.open.clone() {
@@ -434,139 +469,6 @@ impl TortugaUi {
         self.save_drafts();
     }
 
-    // ---------------------------------------------------------------- unsaved edits (R-COL-8)
-
-    /// Unsaved edits as they should be kept now.
-    fn drafts_snapshot(&self) -> SavedDrafts {
-        let mut edited = self.drafts.clone();
-        if let Some(k) = &self.selection {
-            if self.is_dirty(k, &self.current) {
-                edited.insert(k.clone(), self.current.clone());
-            } else {
-                edited.remove(k);
-            }
-        }
-        let mut drafts: Vec<SavedDraft> = edited
-            .into_iter()
-            .map(|(key, request)| {
-                let base = if self.state.collection(&key.root).is_some() {
-                    self.state.saved_request(&key)
-                } else {
-                    self.unchecked_bases.get(&key).cloned().flatten()
-                };
-                let conflict = self.conflicts.get(&key).map(|c| match c {
-                    DiskChange::Changed => DraftConflict::Changed,
-                    DiskChange::Deleted => DraftConflict::Deleted,
-                });
-                SavedDraft {
-                    root: key.root,
-                    path: key.path,
-                    request,
-                    base,
-                    conflict,
-                }
-            })
-            .collect();
-        // A stable order, so an unchanged set is never written again.
-        drafts.sort_by(|a, b| (&a.root, &a.path).cmp(&(&b.root, &b.path)));
-        let scratch = if self.selection.is_none() {
-            &self.current
-        } else {
-            &self.scratch
-        };
-        SavedDrafts {
-            scratch: (*scratch != Request::default()).then(|| scratch.clone()),
-            drafts,
-            workflows: self.workflow_drafts_snapshot(),
-        }
-    }
-
-    /// Keeps unsaved edits for next time, checking at most every [`DRAFTS_SAVE_SECONDS`].
-    fn save_drafts_now_and_then(&mut self, now: f64) {
-        if now - self.drafts_checked_at >= DRAFTS_SAVE_SECONDS {
-            self.drafts_checked_at = now;
-            self.save_drafts();
-        }
-    }
-
-    /// Writes unsaved edits to local data if they changed since the last write.
-    fn save_drafts(&mut self) {
-        let snapshot = self.drafts_snapshot();
-        if snapshot == self.drafts_saved {
-            return;
-        }
-        if let Err(e) = self.state.host.save_drafts(&snapshot) {
-            self.state.notify(format!(
-                "Unsaved edits could not be kept for next time: {e}"
-            ));
-        }
-        self.drafts_saved = snapshot;
-    }
-
-    /// Brings back the unsaved edits of the last session.
-    fn restore_drafts(&mut self) {
-        let saved = match self.state.host.load_drafts() {
-            Ok(saved) => saved,
-            Err(e) => {
-                self.state.notify(format!(
-                    "Could not read the unsaved edits of last time: {e}"
-                ));
-                return;
-            }
-        };
-        self.scratch = saved.scratch.clone().unwrap_or_default();
-        self.load(self.scratch.clone());
-        for draft in &saved.drafts {
-            let key = ItemKey::new(&draft.root, draft.path.clone());
-            self.drafts.insert(key.clone(), draft.request.clone());
-            let change = match draft.conflict {
-                Some(DraftConflict::Changed) => Some(DiskChange::Changed),
-                Some(DraftConflict::Deleted) => Some(DiskChange::Deleted),
-                None => None,
-            };
-            match change {
-                Some(change) => {
-                    self.conflicts.insert(key, change);
-                }
-                None => {
-                    self.unchecked_bases.insert(key, draft.base.clone());
-                }
-            }
-        }
-        self.restore_workflow_drafts(&saved.workflows);
-        self.drafts_saved = saved;
-        self.check_restored_drafts();
-    }
-
-    /// Compares restored edits with the disk once their project is open: a file that
-    /// changed while the app was closed gets the conflict banner (R-GIT-11); edits
-    /// that now equal the file are dropped.
-    fn check_restored_drafts(&mut self) {
-        self.check_waiting_workflows();
-        let open: Vec<ItemKey> = self
-            .unchecked_bases
-            .keys()
-            .filter(|k| self.state.collection(&k.root).is_some())
-            .cloned()
-            .collect();
-        for key in open {
-            let Some(base) = self.unchecked_bases.remove(&key) else {
-                continue;
-            };
-            let saved = self.state.saved_request(&key);
-            if saved != base {
-                let change = if saved.is_some() {
-                    DiskChange::Changed
-                } else {
-                    DiskChange::Deleted
-                };
-                self.conflicts.insert(key, change);
-            } else if saved.as_ref() == self.drafts.get(&key) {
-                self.drafts.remove(&key);
-            }
-        }
-    }
-
     // ---------------------------------------------------------------- layout
 
     fn topbar(&mut self, ui: &mut Ui) {
@@ -603,223 +505,6 @@ impl TortugaUi {
                 }
             });
         });
-    }
-
-    /// The workspace switcher and what can be done with workspaces (R-WS-1, R-WS-5).
-    fn workspace_menu(&self, ui: &mut Ui) -> Option<WorkspaceAction> {
-        let local = &self.state.local;
-        let current = self.state.workspace();
-        let button =
-            egui::Button::new((theme::semibold(&current.name), "  ⏷")).frame_when_inactive(false);
-        let (response, inner) =
-            egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                let mut action = None;
-                theme::section_label(ui, "Workspaces");
-                for (i, ws) in local.workspaces.iter().enumerate() {
-                    let mut button = ui.add(egui::Button::selectable(
-                        i == local.active_workspace,
-                        &ws.name,
-                    ));
-                    if let Some(file) = &ws.file {
-                        button = button.on_hover_text(format!("Saved in {}", file.display()));
-                    }
-                    if button.clicked() {
-                        action = Some(WorkspaceAction::Switch(i));
-                    }
-                }
-                ui.separator();
-                if ui.button("New workspace…").clicked() {
-                    action = Some(WorkspaceAction::New);
-                }
-                if ui.button("Rename…").clicked() {
-                    action = Some(WorkspaceAction::Rename);
-                }
-                if ui
-                    .button("Variables…")
-                    .on_hover_text("Variables every project in this workspace can use")
-                    .clicked()
-                {
-                    action = Some(WorkspaceAction::Variables);
-                }
-                if ui
-                    .button("Defaults…")
-                    .on_hover_text(
-                        "Headers, auth, timeout, redirects and cookies every project in this \
-                         workspace inherits",
-                    )
-                    .clicked()
-                {
-                    action = Some(WorkspaceAction::Defaults);
-                }
-                if self.state.host.can_save_files() {
-                    let hover = match &current.file {
-                        Some(file) => format!(
-                            "Kept in sync with {}. Choose another file to move it.",
-                            file.display()
-                        ),
-                        None => {
-                            "Write the workspace to a file you can commit, so teammates can open it"
-                                .into()
-                        }
-                    };
-                    if ui.button("Save as file…").on_hover_text(hover).clicked() {
-                        action = Some(WorkspaceAction::SaveAsFile);
-                    }
-                    if ui
-                        .button("Open workspace file…")
-                        .on_hover_text("Open a workspace a teammate saved as a file")
-                        .clicked()
-                    {
-                        action = Some(WorkspaceAction::OpenFile);
-                    }
-                }
-                let danger = theme::palette(ui).fail;
-                if ui
-                    .add_enabled(
-                        local.workspaces.len() > 1,
-                        egui::Button::new(RichText::new("Remove workspace…").color(danger)),
-                    )
-                    .on_disabled_hover_text("There is always at least one workspace")
-                    .clicked()
-                {
-                    action = Some(WorkspaceAction::Remove);
-                }
-                action
-            });
-        response.on_hover_text("Switch workspace");
-        inner.and_then(|i| i.inner)
-    }
-
-    fn on_workspace(&mut self, action: WorkspaceAction) {
-        match action {
-            WorkspaceAction::Switch(index) => self.switch_workspace(|state| {
-                state.switch_workspace(index);
-            }),
-            WorkspaceAction::New => {
-                self.modal = Some(Modal::NewWorkspace(NameDialog::new(
-                    "New workspace",
-                    "Create",
-                    "",
-                )));
-            }
-            WorkspaceAction::Rename => {
-                let name = self.state.workspace().name.clone();
-                self.modal = Some(Modal::RenameWorkspace(NameDialog::new(
-                    "Rename workspace",
-                    "Rename",
-                    &name,
-                )));
-            }
-            WorkspaceAction::Variables => {
-                self.modal = Some(Modal::WorkspaceVars(
-                    crate::components::WorkspaceVarsDialog::new(&self.state),
-                ));
-            }
-            WorkspaceAction::Defaults => {
-                self.modal = Some(Modal::Defaults(DefaultsDialog::for_workspace(&self.state)));
-            }
-            WorkspaceAction::SaveAsFile => {
-                let name = tortuga_core::workspace::file_name(&self.state.workspace().name);
-                if let Some(file) = self.state.host.pick_save_path("Save workspace as", &name)
-                    && let Err(e) = self.state.save_workspace_as(&file)
-                {
-                    self.state.notify(e);
-                }
-            }
-            WorkspaceAction::OpenFile => {
-                if let Some(file) = self.state.host.pick_file(
-                    "Open a workspace file",
-                    tortuga_core::workspace::WORKSPACE_FILE_SUFFIX,
-                ) {
-                    let mut result = Ok(());
-                    self.switch_workspace(|state| result = state.open_workspace_file(&file));
-                    if let Err(e) = result {
-                        self.state.notify(e);
-                    }
-                }
-            }
-            WorkspaceAction::Remove => {
-                let name = self.state.workspace().name.clone();
-                self.modal = Some(Modal::RemoveWorkspace(ConfirmDialog {
-                    title: "Remove workspace?".into(),
-                    message: format!(
-                        "“{name}” is removed from this machine. Its projects and files stay where they are."
-                    ),
-                    confirm_label: "Remove".into(),
-                }));
-            }
-        }
-    }
-
-    /// Runs `change` (which may switch workspace), keeping unsaved edits of the old
-    /// workspace for this session, then selects the new workspace's remembered request.
-    fn switch_workspace(&mut self, change: impl FnOnce(&mut AppState)) {
-        self.keep_if_edited();
-        self.state.remember_tabs(self.tabs.to_saved());
-        self.select_and_remember(None, false);
-        change(&mut self.state);
-        self.check_restored_drafts();
-        self.restore_tabs();
-        let remembered = self.state.remembered_selection();
-        self.tabs.open(&remembered, false);
-        self.select_and_remember(remembered, false);
-    }
-
-    /// One environment for the whole workspace (R-WS-6, R-SRV-5): every project with an
-    /// environment of that name uses it.
-    fn environment_picker(&mut self, ui: &mut Ui) {
-        let names = self.state.environment_names();
-        // The project whose environments ✏ edits: the selected request's, else the first.
-        let root = self
-            .selection
-            .as_ref()
-            .map(|k| k.root.clone())
-            .or_else(|| self.state.collections.first().map(|c| c.root.clone()));
-        let Some(root) = root else {
-            return;
-        };
-        let p = theme::palette(ui);
-        ui.label(RichText::new("Environment").color(p.muted));
-        let edit = if names.is_empty() {
-            ui.button("Add environments…").clicked()
-        } else {
-            let shown = self.state.workspace().environment.clone().or_else(|| {
-                let c = self.state.collection(&root)?;
-                let id = self.state.active_environment(&root)?;
-                c.environment(&id).map(|e| e.name.clone())
-            });
-            let mut picked = None;
-            ComboBox::from_id_salt("environment")
-                .selected_text((
-                    RichText::new("⏺").size(9.0).color(p.ok),
-                    " ",
-                    shown.clone().unwrap_or_default(),
-                ))
-                .show_ui(ui, |ui| {
-                    for name in &names {
-                        if ui
-                            .selectable_label(shown.as_ref() == Some(name), name)
-                            .clicked()
-                        {
-                            picked = Some(name.clone());
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("Switches every project in the workspace that has an environment with this name");
-            if let Some(name) = picked {
-                self.state.set_workspace_environment(&name);
-            }
-            ui.add(theme::ghost_button("✏"))
-                .on_hover_text("Edit environments, servers and variables of this project")
-                .clicked()
-        };
-        if edit {
-            self.modal = Some(Modal::Environments(EnvironmentsDialog::new(
-                &self.state,
-                root,
-            )));
-        }
     }
 
     fn workspace(&mut self, ui: &mut Ui) {
@@ -933,15 +618,12 @@ impl TortugaUi {
             self.past_banner(ui, key);
         }
         let can_save = self.state.host.can_save_files();
-        let view = match self.outcomes.get(key) {
-            Some(Outcome::Response(view)) => Some(view.clone()),
+        let sent = self.sent.get(key);
+        let view = match sent.and_then(|s| s.outcome.as_ref()) {
+            Some(Outcome::Response(view)) => Some(Arc::clone(view)),
             _ => None,
         };
-        let expr = self
-            .filters
-            .get(key)
-            .map(|f| f.trim().to_owned())
-            .unwrap_or_default();
+        let expr = sent.map(|s| s.filter.trim().to_owned()).unwrap_or_default();
         self.update_filter(view.as_ref(), &expr, ui.ctx());
         let filtered = match self.filter_job.as_ref().map(|j| &j.result) {
             None => Filtered::Off,
@@ -949,13 +631,18 @@ impl TortugaUi {
             Some(Some(Ok(body))) => Filtered::Done(body),
             Some(Some(Err(message))) => Filtered::Failed(message),
         };
-        let outcome = self.outcomes.get(key);
+        let Sent {
+            outcome,
+            filter,
+            tests,
+        } = self.sent.entry(key.clone()).or_default();
+        let outcome = outcome.as_ref();
         let cx = PanelContext {
             sending,
             can_save,
-            filter: self.filters.entry(key.clone()).or_default(),
+            filter,
             filtered,
-            tests: self.test_results.get(key),
+            tests: tests.as_ref(),
             wrap: self.state.settings.appearance.wrap_lines,
         };
         match response_panel(ui, outcome, &mut self.response, cx) {
@@ -1193,60 +880,42 @@ impl TortugaUi {
 
     /// Keys follow files and folders that were renamed or moved.
     fn remap(&mut self, root: &Path, old: &Path, new: &Path) {
+        // Every field that holds per-request state is listed here and in `forget`.
         self.retarget_workflows(root, old, new);
         self.tabs.remap(root, old, new);
-        let moved: Vec<_> = self
-            .drafts
-            .keys()
-            .filter_map(|k| Some((k.clone(), k.moved(root, old, new)?)))
-            .collect();
-        for (from, to) in moved {
-            if let Some(v) = self.drafts.remove(&from) {
-                self.drafts.insert(to, v);
-            }
-        }
-        let moved: Vec<_> = self
-            .outcomes
-            .keys()
-            .flatten()
-            .filter_map(|k| Some((k.clone(), k.moved(root, old, new)?)))
-            .collect();
-        for (from, to) in moved {
-            if let Some(v) = self.outcomes.remove(&Some(from)) {
-                self.outcomes.insert(Some(to), v);
+        let moved = |k: &ItemKey| k.moved(root, old, new);
+        let moved_selection = |k: &Selection| k.as_ref().and_then(moved).map(Some);
+        rekey(&mut self.drafts, moved);
+        rekey(&mut self.conflicts, moved);
+        rekey(&mut self.unchecked_bases, moved);
+        rekey(&mut self.sent, moved_selection);
+        for k in &mut self.recent {
+            if let Some(to) = moved(k) {
+                *k = to;
             }
         }
         if let Some(f) = &mut self.in_flight
-            && let Some(to) = f.key.as_ref().and_then(|k| k.moved(root, old, new))
+            && let Some(to) = moved_selection(&f.key)
         {
-            f.key = Some(to);
+            f.key = to;
         }
-        if let Some(to) = self
-            .selection
-            .as_ref()
-            .and_then(|k| k.moved(root, old, new))
-        {
-            self.selection = Some(to);
+        if let Some(to) = moved_selection(&self.selection) {
+            self.selection = to;
         }
-        let moved: Vec<_> = self
-            .conflicts
-            .keys()
-            .filter_map(|k| Some((k.clone(), k.moved(root, old, new)?)))
-            .collect();
-        for (from, to) in moved {
-            if let Some(v) = self.conflicts.remove(&from) {
-                self.conflicts.insert(to, v);
-            }
-        }
+        self.remap_past(moved_selection);
     }
 
     /// Drops state of deleted or closed items (`prefix` "" = the whole collection).
     fn forget(&mut self, root: &Path, prefix: &Path) {
         let gone = |k: &ItemKey| k.root == root && k.path.starts_with(prefix);
+        let gone_selection = |k: &Selection| k.as_ref().is_some_and(gone);
         self.drafts.retain(|k, _| !gone(k));
         self.conflicts.retain(|k, _| !gone(k));
-        self.outcomes.retain(|k, _| !k.as_ref().is_some_and(gone));
-        self.tabs.retain(|k| !k.as_ref().is_some_and(gone));
+        self.unchecked_bases.retain(|k, _| !gone(k));
+        self.sent.retain(|k, _| !gone_selection(k));
+        self.recent.retain(|k| !gone(k));
+        self.tabs.retain(|k| !gone_selection(k));
+        self.forget_past_if(gone_selection);
         if self.selection.as_ref().is_some_and(gone) {
             // Not `select`: the request is gone, so its edits are not kept.
             let next = self.tabs.fallback().unwrap_or_default();
@@ -1262,163 +931,6 @@ impl TortugaUi {
             self.state.remember_selection(next.as_ref());
             self.selection = next;
             self.load(request);
-        }
-    }
-
-    /// The selection whose request is being sent, if any.
-    fn sending(&self) -> Option<&Selection> {
-        self.in_flight.as_ref().map(|f| &f.key)
-    }
-
-    fn send(&mut self, egui_ctx: &egui::Context) {
-        if let Some(f) = self.in_flight.take() {
-            f.abort.abort();
-        }
-        let key = self.selection.clone();
-        let ctx = self.state.request_context(key.as_ref());
-        self.response.reset();
-        self.forget_past(&key);
-        self.test_results.remove(&key);
-        // Undefined variables etc. show at once, unless a pre-request script may define them.
-        if self.current.scripts.pre_request.trim().is_empty()
-            && let Err(e) = vars::prepare(&self.current, &ctx)
-        {
-            self.outcomes
-                .insert(key, Outcome::Error(sentence(&e.to_string())));
-            return;
-        }
-        self.next_send_id += 1;
-        let id = self.next_send_id;
-        let client = self.state.client.clone();
-        let jar = self
-            .state
-            .cookie_jar(key.as_ref().map(|k| k.root.as_path()));
-        let tx = self.finished_tx.clone();
-        let repaint = egui_ctx.clone();
-        // For the history (R-HIST-1): the request as in the editor, not as resolved.
-        let sent_at = tortuga_core::history::now_ms();
-        let entry_id = tortuga_core::history::new_id(sent_at, id);
-        let path = key.as_ref().map(|k| k.path.clone());
-        let request = self.current.clone();
-        let environment = ctx.environment.clone();
-        let (task, abort) = abortable(async move {
-            // The pre-request script, sending, captures and tests (R-TEST-1..4).
-            let mut step = tortuga_core::runner::run_step(
-                &client,
-                Some(&jar),
-                &request,
-                &ctx,
-                tortuga_core::runner::Extra::default(),
-            )
-            .await;
-            // Off the UI thread: copying up to 1 MB of body for the history.
-            let for_history = match &step.response {
-                Some(Ok(r)) => Ok(r),
-                Some(Err(e)) => Err(e.clone()),
-                None => Err(step.errors.first().cloned().unwrap_or_default()),
-            };
-            let entry = tortuga_core::history::Entry::new(
-                entry_id,
-                sent_at,
-                path,
-                &request,
-                environment,
-                for_history,
-            );
-            let tests = TestsView::from_step(&step);
-            // Prepared here, off the UI thread: pretty-printing big bodies takes a while (R-NF-2).
-            let outcome = Outcome::from_step(step.response.take(), &step.errors);
-            // The receiver only goes away with the app.
-            let _ = tx.send(Finished {
-                id,
-                outcome,
-                entry: Some(entry),
-                tests,
-            });
-            repaint.request_repaint();
-        });
-        self.state.host.spawn(Box::pin(async move {
-            // `Err` means it was cancelled (R-HTTP-7); dropping the future closed the connection.
-            let _ = task.await;
-        }));
-        self.in_flight = Some(InFlight { key, id, abort });
-    }
-
-    fn cancel(&mut self) {
-        if let Some(f) = self.in_flight.take() {
-            f.abort.abort();
-            // A redirect may already have set cookies.
-            self.state
-                .save_cookies(f.key.as_ref().map(|k| k.root.as_path()));
-            self.outcomes.insert(f.key, Outcome::Cancelled);
-        }
-    }
-
-    /// Filters the shown JSON response in the background whenever the response or the
-    /// filter changes (R-HTTP-13). A result that arrives for an older filter is dropped.
-    fn update_filter(&mut self, view: Option<&Arc<ResponseView>>, expr: &str, ctx: &egui::Context) {
-        while let Ok(done) = self.filter_rx.try_recv() {
-            if let Some(job) = self.filter_job.as_mut().filter(|j| j.id == done.id) {
-                job.result = Some(done.result);
-            }
-        }
-        let Some(view) = view.filter(|_| !expr.is_empty()) else {
-            if let Some(job) = self.filter_job.take() {
-                job.abort.abort();
-            }
-            return;
-        };
-        if self
-            .filter_job
-            .as_ref()
-            .is_some_and(|j| Arc::ptr_eq(&j.view, view) && j.expr == expr)
-        {
-            return;
-        }
-        if let Some(job) = self.filter_job.take() {
-            job.abort.abort();
-        }
-        self.next_send_id += 1;
-        let id = self.next_send_id;
-        let (task_view, task_expr) = (view.clone(), expr.to_owned());
-        let tx = self.filter_tx.clone();
-        let repaint = ctx.clone();
-        let (task, abort) = abortable(async move {
-            let result = crate::components::filter_body(&task_view, &task_expr);
-            // The receiver only goes away with the app.
-            let _ = tx.send(FilterDone { id, result });
-            repaint.request_repaint();
-        });
-        self.state.host.spawn(Box::pin(async move {
-            let _ = task.await;
-        }));
-        self.filter_job = Some(FilterJob {
-            view: view.clone(),
-            expr: expr.to_owned(),
-            id,
-            result: None,
-            abort,
-        });
-    }
-
-    fn collect_finished(&mut self) {
-        while let Ok(done) = self.finished_rx.try_recv() {
-            if let Some(f) = self.in_flight.take_if(|f| f.id == done.id) {
-                if f.key == self.selection {
-                    self.response.reset();
-                }
-                self.state
-                    .save_cookies(f.key.as_ref().map(|k| k.root.as_path()));
-                if let Some(entry) = done.entry {
-                    self.record_history(f.key.as_ref().map(|k| k.root.as_path()), entry);
-                }
-                if let Some(tests) = done.tests {
-                    self.state
-                        .apply_runtime(f.key.as_ref().map(|k| k.root.as_path()), &tests.vars);
-                    self.test_results.insert(f.key.clone(), tests);
-                }
-                self.outcomes.insert(f.key, done.outcome);
-            }
         }
     }
 
@@ -1447,639 +959,6 @@ impl TortugaUi {
             self.drafts.remove(&key);
             self.load(self.state.saved_request(&key).unwrap_or_default());
         }
-    }
-
-    // ---------------------------------------------------------------- changes on disk (M6)
-
-    /// A collection changed on disk (git pull, branch switch, another editor): reload
-    /// it and bring open requests up to date (R-GIT-10). Requests with unsaved edits
-    /// are not overwritten; the user chooses in a banner (R-GIT-11).
-    fn on_disk_change(&mut self, root: &Path) {
-        let in_root = |k: &ItemKey| k.root == root;
-        let mut watched: Vec<ItemKey> =
-            self.drafts.keys().filter(|k| in_root(k)).cloned().collect();
-        if let Some(k) = self.selection.as_ref().filter(|k| in_root(k))
-            && !watched.contains(k)
-        {
-            watched.push(k.clone());
-        }
-        let before: Vec<(ItemKey, Option<Request>, bool)> = watched
-            .into_iter()
-            .map(|k| {
-                let saved = self.state.saved_request(&k);
-                let dirty = self.drafts.contains_key(&k)
-                    || (self.selection.as_ref() == Some(&k)
-                        && saved.as_ref() != Some(&self.current));
-                (k, saved, dirty)
-            })
-            .collect();
-
-        self.state.reload(root);
-        self.state.refresh_git(root);
-
-        for (key, old, dirty) in before {
-            let new = self.state.saved_request(&key);
-            if new == old {
-                continue;
-            }
-            if dirty {
-                let change = if new.is_some() {
-                    DiskChange::Changed
-                } else {
-                    DiskChange::Deleted
-                };
-                self.conflicts.insert(key, change);
-            } else if self.selection.as_ref() == Some(&key) {
-                match new {
-                    Some(request) => self.load(request),
-                    None => self.forget(&key.root, &key.path),
-                }
-            }
-        }
-    }
-
-    /// Answers the conflict banner of the selected request (R-GIT-11, D9).
-    fn resolve_conflict(&mut self, key: &ItemKey, choice: ConflictChoice) {
-        let Some(change) = self.conflicts.remove(key) else {
-            return;
-        };
-        match (change, choice) {
-            // Keep the edits; saving will write them over the new version.
-            (DiskChange::Changed, ConflictChoice::KeepMine) => {}
-            (DiskChange::Changed, ConflictChoice::TakeTheirs) => {
-                self.drafts.remove(key);
-                if self.selection.as_ref() == Some(key) {
-                    self.load(self.state.saved_request(key).unwrap_or_default());
-                }
-            }
-            // The file is gone: restore it, with the edits, where it was.
-            (DiskChange::Deleted, ConflictChoice::KeepMine) => {
-                let request = if self.selection.as_ref() == Some(key) {
-                    self.current.clone()
-                } else {
-                    self.drafts.get(key).cloned().unwrap_or_default()
-                };
-                let parent = key.path.parent().map(Path::to_path_buf).unwrap_or_default();
-                if let Some(path) = self
-                    .state
-                    .run(&key.root, |c, s| c.new_request(s, &parent, &request))
-                {
-                    self.drafts.remove(key);
-                    let restored = ItemKey::new(&key.root, path);
-                    if self.selection.as_ref() == Some(key) {
-                        self.selection = Some(restored);
-                        self.current = request;
-                    }
-                }
-            }
-            (DiskChange::Deleted, ConflictChoice::TakeTheirs) => self.forget(&key.root, &key.path),
-        }
-    }
-
-    /// The banner shown above a request with a pending conflict.
-    fn conflict_banner(&mut self, ui: &mut Ui, key: &ItemKey) {
-        let Some(change) = self.conflicts.get(key).copied() else {
-            return;
-        };
-        let p = theme::palette(ui);
-        let (message, keep, take) = match change {
-            DiskChange::Changed => (
-                "This request changed on disk (for example after git pull) while you had unsaved edits.",
-                "Keep mine",
-                "Take theirs",
-            ),
-            DiskChange::Deleted => (
-                "This request was deleted on disk while you had unsaved edits.",
-                "Restore with my edits",
-                "Discard my edits",
-            ),
-        };
-        let mut choice = None;
-        theme::banner_frame(ui, false)
-            .corner_radius(egui::CornerRadius::same(8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("⚠").color(p.warning_text));
-                    ui.label(RichText::new(message).color(p.warning_text));
-                    if ui.button(keep).clicked() {
-                        choice = Some(ConflictChoice::KeepMine);
-                    }
-                    if ui.button(take).clicked() {
-                        choice = Some(ConflictChoice::TakeTheirs);
-                    }
-                });
-            });
-        ui.add_space(8.0);
-        if let Some(choice) = choice {
-            self.resolve_conflict(key, choice);
-        }
-    }
-
-    // ---------------------------------------------------------------- sidebar
-
-    fn on_sidebar(&mut self, action: SidebarAction, ctx: &egui::Context) {
-        match action {
-            SidebarAction::Select(key) => self.select(key),
-            SidebarAction::Keep(key) => self.open_tab(key, true),
-            SidebarAction::NewRequest { root, parent } => {
-                let request = Request {
-                    name: "New request".into(),
-                    ..Request::default()
-                };
-                if let Some(path) = self
-                    .state
-                    .run(&root, |c, s| c.new_request(s, &parent, &request))
-                {
-                    self.open_tab(Some(ItemKey::new(&root, path)), true);
-                }
-            }
-            SidebarAction::NewFolder { root, parent } => {
-                if let Some(path) = self
-                    .state
-                    .run(&root, |c, s| c.new_folder(s, &parent, "New folder"))
-                {
-                    let key = ItemKey::new(&root, path);
-                    let name = self
-                        .state
-                        .collection(&root)
-                        .and_then(|c| c.find(&key.path).map(Item::name))
-                        .unwrap_or_default();
-                    self.sidebar.start_rename(key, name);
-                }
-            }
-            SidebarAction::Rename { key, name } => self.rename(&key, name),
-            SidebarAction::RenameCollection { root, name } => self.rename_project(&root, &name),
-            SidebarAction::Duplicate(key) => {
-                if let Some(path) = self.state.run(&key.root, |c, s| c.duplicate(s, &key.path))
-                    && path.extension().is_some_and(|e| e == "toml")
-                {
-                    self.open_tab(Some(ItemKey::new(&key.root, path)), true);
-                }
-            }
-            SidebarAction::MoveBy(key, direction) => {
-                self.state
-                    .run(&key.root, |c, s| c.move_by(s, &key.path, direction));
-            }
-            SidebarAction::MoveTo(key) => self.modal = Some(Modal::MoveTo(MoveDialog::new(key))),
-            SidebarAction::Delete(key) => {
-                let dialog = self.confirm_delete(&key);
-                self.modal = Some(Modal::ConfirmDelete(key, dialog));
-            }
-            SidebarAction::ShowError(message) => self.state.notify(message),
-            SidebarAction::EditEnvironments(root) => {
-                self.modal = Some(Modal::Environments(EnvironmentsDialog::new(
-                    &self.state,
-                    root,
-                )));
-            }
-            SidebarAction::EditDefaults(root) => {
-                self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
-            }
-            SidebarAction::Place {
-                key,
-                parent,
-                before,
-            } => self.place(&key, &parent, before.as_deref()),
-            action @ (SidebarAction::NewWorkflow(_)
-            | SidebarAction::SelectWorkflow(_)
-            | SidebarAction::RunWorkflow(_)
-            | SidebarAction::RenameWorkflow(_)
-            | SidebarAction::DeleteWorkflow(_)
-            | SidebarAction::RuntimeVariables(_)) => self.on_workflow_sidebar(action, ctx),
-            SidebarAction::EditFolderDefaults(key) => {
-                self.modal = Some(Modal::Defaults(DefaultsDialog::for_folder(
-                    &self.state,
-                    key.root,
-                    key.path,
-                )));
-            }
-            SidebarAction::Reload(root) => self.on_disk_change(&root),
-            SidebarAction::OpenInFileManager(root) => {
-                if let Err(e) = self.state.host.open_in_file_manager(&root) {
-                    self.state.notify(e);
-                }
-            }
-            SidebarAction::OpenInTerminal(root) => {
-                if let Err(e) = self.state.host.open_in_terminal(&root) {
-                    self.state.notify(e);
-                }
-            }
-            SidebarAction::ShowCookies(root) => self.show_cookies(root),
-            SidebarAction::Close(root) => {
-                self.forget(&root, Path::new(""));
-                self.state.close_collection(&root);
-            }
-            SidebarAction::SetProjectEnvironment { root, id } => {
-                self.state.set_project_environment(&root, &id);
-            }
-            SidebarAction::NewProject => self.new_project(),
-            SidebarAction::AddProjects => self.add_projects(),
-            SidebarAction::Import(kind) => self.import_file(kind),
-            SidebarAction::LocateMissing(path) => self.locate_missing(&path),
-            SidebarAction::RemoveMissing(path) => self.state.remove_missing(&path),
-        }
-    }
-
-    fn rename_project(&mut self, root: &Path, name: &str) {
-        self.state.run(root, |c, s| {
-            let manifest = tortuga_core::Manifest {
-                name: name.to_owned(),
-                ..c.manifest.clone()
-            };
-            c.save_config(s, &manifest, &c.environments)
-        });
-    }
-
-    /// A dropped tree row (R-COL-12): edits and selection follow it if it moved folder.
-    fn place(&mut self, key: &ItemKey, parent: &Path, before: Option<&Path>) {
-        if let Some(new_path) = self
-            .state
-            .run(&key.root, |c, s| c.place(s, &key.path, parent, before))
-        {
-            self.remap(&key.root, &key.path, &new_path);
-        }
-    }
-
-    fn rename(&mut self, key: &ItemKey, name: String) {
-        let is_folder = self
-            .state
-            .collection(&key.root)
-            .is_some_and(|c| matches!(c.find(&key.path), Some(Item::Folder(_))));
-        let new_path = if is_folder {
-            self.state
-                .run(&key.root, |c, s| c.rename_folder(s, &key.path, &name))
-        } else {
-            let Some(saved) = self.state.saved_request(key) else {
-                return;
-            };
-            let renamed = Request {
-                name: name.clone(),
-                ..saved
-            };
-            self.state
-                .run(&key.root, |c, s| c.save_request(s, &key.path, &renamed))
-        };
-        let Some(new_path) = new_path else {
-            return;
-        };
-        if !is_folder {
-            if let Some(d) = self.drafts.get_mut(key) {
-                d.name.clone_from(&name);
-            }
-            if self.selection.as_ref() == Some(key) {
-                self.current.name = name;
-            }
-        }
-        self.remap(&key.root, &key.path, &new_path);
-    }
-
-    fn confirm_delete(&self, key: &ItemKey) -> ConfirmDialog {
-        let item = self
-            .state
-            .collection(&key.root)
-            .and_then(|c| c.find(&key.path));
-        let name = item.map(Item::name).unwrap_or_default();
-        let message = if matches!(item, Some(Item::Folder(_))) {
-            format!("“{name}” and everything in it will be deleted from disk.")
-        } else {
-            format!("“{name}” will be deleted from disk.")
-        };
-        ConfirmDialog {
-            title: "Delete?".into(),
-            message,
-            confirm_label: "Delete".into(),
-        }
-    }
-
-    /// R-WS-7: pick (or make) a folder, then name the project there.
-    fn new_project(&mut self) {
-        let Some(dir) = self
-            .state
-            .host
-            .pick_folder("Choose or create a folder for the new project")
-        else {
-            return;
-        };
-        self.create_project_in(dir);
-    }
-
-    fn create_project_in(&mut self, dir: PathBuf) {
-        let manifest = dir.join(tortuga_core::collection::MANIFEST_FILE);
-        if self.state.storage().exists(&manifest) {
-            // Already a project: just add it.
-            if let Err(e) = self.state.open_collection(&dir) {
-                self.state.notify(e.to_string());
-            }
-            return;
-        }
-        let repository = self.state.host.repository_of(&dir);
-        let can_init = self.state.host.can_init_git();
-        self.modal = Some(Modal::CreateProject(CreateProjectDialog::new(
-            dir, repository, can_init,
-        )));
-    }
-
-    /// R-WS-3: pick a folder or repository and list the projects in it.
-    fn add_projects(&mut self) {
-        let Some(dir) = self
-            .state
-            .host
-            .pick_folder("Add the projects in a folder or repository")
-        else {
-            return;
-        };
-        let (tx, rx) = channel();
-        let wake = self.state.waker();
-        self.state.host.find_projects(
-            &dir,
-            Box::new(move |result| {
-                let _ = tx.send(result);
-                wake();
-            }),
-        );
-        self.modal = Some(Modal::AddProjects(AddProjectsDialog::new(dir, rx)));
-    }
-
-    /// R-WS-5: the user points at the folder where a missing project is now.
-    fn locate_missing(&mut self, old: &Path) {
-        let name = old
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let Some(dir) = self.state.host.pick_folder(&format!("Locate “{name}”")) else {
-            return;
-        };
-        if !self
-            .state
-            .storage()
-            .exists(&dir.join(tortuga_core::collection::MANIFEST_FILE))
-        {
-            self.state.notify(format!(
-                "{} is not a Tortuga project (it has no tortuga.toml).",
-                dir.display()
-            ));
-            return;
-        }
-        if let Err(e) = self.state.locate_missing(old, &dir) {
-            self.state.notify(e.to_string());
-        }
-    }
-
-    // ---------------------------------------------------------------- dialogs
-
-    fn show_modal(&mut self, ctx: &egui::Context) {
-        let Some(mut modal) = self.modal.take() else {
-            return;
-        };
-        let keep = match &mut modal {
-            Modal::Settings(d) => self.show_settings(ctx, d),
-            Modal::Environments(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(saved) => !self.save_environments(d, saved),
-                result => result == DialogResult::Open,
-            },
-            Modal::Defaults(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(defaults) => !self.save_defaults(&d.target.clone(), defaults),
-                result => result == DialogResult::Open,
-            },
-            Modal::ConfirmDelete(key, d) => match d.show(ctx) {
-                DialogResult::Done(()) => {
-                    if self
-                        .state
-                        .run(&key.root, |c, s| c.delete(s, &key.path))
-                        .is_some()
-                    {
-                        self.forget(&key.root, &key.path);
-                    }
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::MoveTo(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(dest) => {
-                    let key = d.item.clone();
-                    if let Some(new_path) = self
-                        .state
-                        .run(&key.root, |c, s| c.move_to(s, &key.path, &dest))
-                    {
-                        self.remap(&key.root, &key.path, &new_path);
-                    }
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::SaveToCollection(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done((folder, name)) => {
-                    let request = Request {
-                        name,
-                        ..self.current.clone()
-                    };
-                    if let Some(path) = self.state.run(&folder.root, |c, s| {
-                        c.new_request(s, &folder.path, &request)
-                    }) {
-                        // The scratch request starts over; the saved copy takes its tab.
-                        self.current = Request::default();
-                        self.tabs.close(&None);
-                        self.open_tab(Some(ItemKey::new(&folder.root, path)), true);
-                    }
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::CopyCurl(d) => match d.show(ctx) {
-                DialogResult::Done(text) => {
-                    ctx.copy_text(text);
-                    self.copied_at = Some(ctx.input(|i| i.time));
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::Palette(palette) => self.show_palette(ctx, palette),
-            Modal::NewWorkflow(..)
-            | Modal::RenameWorkflow(..)
-            | Modal::DeleteWorkflow(..)
-            | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
-            Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
-            Modal::Import(open) => self.show_import_dialog(ctx, open),
-            Modal::ClearHistory(target, d) => match d.show(ctx) {
-                DialogResult::Done(()) => {
-                    self.clear_history(target);
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::CreateProject(_)
-            | Modal::AddProjects(_)
-            | Modal::NewWorkspace(_)
-            | Modal::RenameWorkspace(_)
-            | Modal::RemoveWorkspace(_)
-            | Modal::WorkspaceVars(_) => self.show_workspace_modal(ctx, &mut modal),
-        };
-        // A dialog may have opened another one ("Create a project there…"); never overwrite it.
-        if keep && self.modal.is_none() {
-            self.modal = Some(modal);
-        }
-    }
-}
-
-impl TortugaUi {
-    /// Dialogs about projects and workspaces (R-WS-1, 3, 5, 7). Returns whether it stays open.
-    fn show_workspace_modal(&mut self, ctx: &egui::Context, modal: &mut Modal) -> bool {
-        match modal {
-            Modal::CreateProject(d) => match d.show(ctx) {
-                DialogResult::Done((name, init_git)) => {
-                    if init_git && let Err(e) = self.state.host.init_git(&d.dir) {
-                        self.state.notify(e);
-                    }
-                    if let Err(e) = self.state.create_collection(&d.dir, &name) {
-                        self.state.notify(e.to_string());
-                    }
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::AddProjects(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(AddProjects::Add(paths)) => {
-                    for path in paths {
-                        if let Err(e) = self.state.open_collection(&path) {
-                            self.state.notify(e.to_string());
-                        }
-                    }
-                    false
-                }
-                DialogResult::Done(AddProjects::CreateHere(dir)) => {
-                    self.create_project_in(dir);
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::NewWorkspace(d) => match d.show(ctx) {
-                DialogResult::Done(name) => {
-                    self.switch_workspace(|state| state.new_workspace(&name));
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::RenameWorkspace(d) => match d.show(ctx) {
-                DialogResult::Done(name) => {
-                    self.state.rename_workspace(&name);
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::RemoveWorkspace(d) => match d.show(ctx) {
-                DialogResult::Done(()) => {
-                    self.switch_workspace(AppState::delete_workspace);
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::WorkspaceVars(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(WorkspaceVarsAction::ClearCaptured) => {
-                    self.state.clear_workspace_runtime();
-                    true
-                }
-                DialogResult::Done(WorkspaceVarsAction::Save(vars, secrets)) => {
-                    match self.state.save_workspace_variables(vars, &secrets) {
-                        Ok(()) => false,
-                        Err(e) => {
-                            d.error = Some(e);
-                            true
-                        }
-                    }
-                }
-                result => result == DialogResult::Open,
-            },
-            _ => false,
-        }
-    }
-
-    /// Saves the environments dialog. Secrets first: if the credential store fails,
-    /// nothing changes on disk and the dialog stays open with the error. Returns success.
-    /// The settings dialog, with "Add…" for CA certificates (R-HTTP-16). Returns whether
-    /// it stays open.
-    fn show_settings(&mut self, ctx: &egui::Context, d: &mut SettingsDialog) -> bool {
-        let result = d.show(ctx, self.state.host.can_pick_folders());
-        if std::mem::take(&mut d.add_ca_requested)
-            && let Some(path) = self
-                .state
-                .host
-                .pick_any_file("Choose a CA certificate (PEM)")
-        {
-            d.add_ca(path);
-        }
-        match result {
-            DialogResult::Done(settings) => match self.state.apply_settings(&settings) {
-                Ok(()) => {
-                    self.trim_loaded_history();
-                    false
-                }
-                Err(e) => {
-                    d.error = Some(e);
-                    true
-                }
-            },
-            result => result == DialogResult::Open,
-        }
-    }
-
-    /// Saves the defaults dialog: workspace (R-SET-1, R-SET-2), project (R-COL-4,
-    /// R-SET-1) or folder (R-COL-11) defaults. Returns success.
-    fn save_defaults(
-        &mut self,
-        target: &crate::components::DefaultsTarget,
-        d: crate::components::EditedDefaults,
-    ) -> bool {
-        use crate::components::DefaultsTarget;
-        match target {
-            DefaultsTarget::Workspace => {
-                self.state
-                    .save_workspace_defaults(tortuga_core::workspace::WorkspaceDefaults {
-                        settings: d.settings,
-                        headers: d.headers,
-                        auth: d.auth,
-                    });
-                true
-            }
-            DefaultsTarget::Folder(root, folder) => {
-                let defaults = tortuga_core::format::FolderDefaults {
-                    headers: d.headers,
-                    auth: d.auth,
-                    variables: d.variables,
-                };
-                self.state
-                    .run(root, |c, s| c.save_folder_defaults(s, folder, &defaults))
-                    .is_some()
-            }
-            DefaultsTarget::Project(root) => self
-                .state
-                .run(root, |c, s| {
-                    let manifest = tortuga_core::Manifest {
-                        headers: d.headers.clone(),
-                        auth: d.auth.clone(),
-                        settings: d.settings,
-                        ..c.manifest.clone()
-                    };
-                    c.save_config(s, &manifest, &c.environments)
-                })
-                .is_some(),
-        }
-    }
-
-    fn save_environments(
-        &mut self,
-        d: &mut EnvironmentsDialog,
-        saved: crate::components::SavedConfig,
-    ) -> bool {
-        if let Err(e) = self.state.save_secrets(&d.root, saved.secrets) {
-            d.error = Some(e);
-            return false;
-        }
-        self.state
-            .run(&d.root, |c, s| {
-                c.save_config(s, &saved.manifest, &saved.environments)
-            })
-            .is_some()
     }
 }
 
@@ -2130,8 +1009,8 @@ fn breadcrumb(state: &AppState, key: &ItemKey) -> String {
 
 #[cfg(test)]
 mod tests {
-    use tortuga_core::Collection;
     use tortuga_core::storage::FsStorage;
+    use tortuga_core::{Collection, Item};
 
     use super::*;
     use crate::components::TabAction;
@@ -2167,7 +1046,10 @@ mod tests {
             open: vec![root.clone()],
             ..TestHost::default()
         };
-        let (local, drafts) = (host.local.clone(), host.drafts.clone());
+        let (local, drafts) = (
+            std::rc::Rc::clone(&host.local),
+            std::rc::Rc::clone(&host.drafts),
+        );
         let mut ui = TortugaUi::new(Box::new(host));
         let key = ItemKey::new(&root, path);
         ui.select(Some(key.clone()));
@@ -2232,7 +1114,7 @@ mod tests {
 
         let mut again = TortugaUi::new(Box::new(TestHost {
             local,
-            drafts: drafts.clone(),
+            drafts: std::rc::Rc::clone(&drafts),
             ..TestHost::default()
         }));
         assert_eq!(again.selection, Some(key.clone()), "selection restored");
@@ -2372,7 +1254,7 @@ mod tests {
 
         // The request shown after each frame.
         let shown: Shared<Selection> = Shared::default();
-        let seen = shown.clone();
+        let seen = std::rc::Rc::clone(&shown);
         let mut harness = crate::test_host::harness(move |egui_ui| {
             ui.ui(egui_ui);
             *seen.borrow_mut() = ui.selection.clone();
@@ -2411,6 +1293,38 @@ mod tests {
             [(Some(first), false)],
             "deleted in git: tab closed"
         );
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-HTTP-13, R-TEST-1: a request's filter and test results follow a rename, and
+    /// are gone with the request.
+    #[test]
+    fn last_send_follows_renames_and_deletes() {
+        let (mut ui, root, first) = setup("sent-disk");
+        let second = add_request(&mut ui, &root, "List users");
+        ui.select(Some(second.clone()));
+        ui.sent.insert(
+            Some(second.clone()),
+            Sent {
+                filter: "$.id".into(),
+                tests: Some(TestsView::default()),
+                ..Sent::default()
+            },
+        );
+
+        ui.rename(&second, "All users".into());
+        let renamed = ui.selection.clone();
+        assert_ne!(renamed, Some(second.clone()));
+        let sent = ui.sent.get(&renamed).expect("moved with the request");
+        assert_eq!(sent.filter, "$.id");
+        assert!(sent.tests.is_some());
+        assert!(!ui.sent.contains_key(&Some(second.clone())));
+
+        let renamed = renamed.expect("a request");
+        std::fs::remove_file(root.join(&renamed.path)).expect("delete");
+        ui.select(Some(first));
+        ui.on_disk_change(&root);
+        assert!(!ui.sent.contains_key(&Some(renamed)), "nothing left of it");
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
@@ -2546,7 +1460,7 @@ mod tests {
     fn pasting_curl_fills_the_request() {
         let (ui, root, key) = setup("paste-curl");
         let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
-        let shared = ui.clone();
+        let shared = std::rc::Rc::clone(&ui);
         let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
         harness.run();
         // The URL field has focus when a request is opened.
@@ -2579,7 +1493,7 @@ mod tests {
         let (mut ui, root, key) = setup("quick-open");
         ui.select(None);
         let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
-        let shared = ui.clone();
+        let shared = std::rc::Rc::clone(&ui);
         let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
         harness.run();
         harness.key_press_modifiers(Modifiers::COMMAND, Key::P);
@@ -2617,7 +1531,7 @@ mod tests {
             Some(&root),
             &[("workspace.token".to_owned(), Some("t-1".to_owned()))].into(),
         );
-        let shared = ui.clone();
+        let shared = std::rc::Rc::clone(&ui);
         let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
         harness.run();
         harness.get_by_label_contains("My workspace").click();
@@ -2669,7 +1583,7 @@ mod tests {
 
         let (ui, root, _) = setup("ws-defaults-dialog");
         let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
-        let shared = ui.clone();
+        let shared = std::rc::Rc::clone(&ui);
         let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
         harness.run();
         harness.get_by_label_contains("My workspace").click();
@@ -2735,7 +1649,7 @@ mod tests {
 
         let (ui, root, key) = setup("history");
         let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
-        let shared = ui.clone();
+        let shared = std::rc::Rc::clone(&ui);
         let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
         harness.run();
 
@@ -2762,7 +1676,8 @@ mod tests {
                 None,
                 Ok(&response),
             );
-            ui.finished_tx
+            ui.finished
+                .sender()
                 .send(Finished {
                     id,
                     outcome: Outcome::from_result(Ok(response)),
@@ -2903,7 +1818,7 @@ mod tests {
                 ..TestHost::default()
             },
         ))));
-        let shared = ui.clone();
+        let shared = std::rc::Rc::clone(&ui);
         let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
         harness.run();
 

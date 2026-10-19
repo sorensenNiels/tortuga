@@ -1,6 +1,12 @@
 //! `tortuga-cli`: runs a workflow, a folder or a request of a Tortuga project from a
 //! terminal or CI, with the same files the app uses (R-CLI-1..3, D5).
 
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "a CLI reports to the terminal"
+)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
