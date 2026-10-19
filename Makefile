@@ -34,7 +34,7 @@ RUN_ENV := $(if $(IS_WSL),GALLIUM_DRIVER=$${GALLIUM_DRIVER:-d3d12} ,)
 
 .DEFAULT_GOAL := help
 .PHONY: help setup run run-web build release cli package startup-time icons test test-core test-ui \
-        lint lint-desktop lint-web fmt fmt-check deny verify doc clean
+        lint lint-desktop lint-web fmt fmt-check deny verify doc clean outdated update upgrade
 
 help:
 	@echo "Tortuga - make targets ($(PLATFORM), desktop deps: $(if $(DESKTOP_DEPS),found,MISSING - run 'make setup'))"
@@ -52,6 +52,12 @@ help:
 	@echo "    lint          Clippy with warnings as errors (desktop + web targets)"
 	@echo "    fmt           Format all code"
 	@echo "    deny          Check dependency licences and security advisories"
+	@echo ""
+	@echo "  Dependencies"
+	@echo "    outdated      List dependencies with newer versions, compatible and breaking"
+	@echo "    update        Update Cargo.lock within the versions Cargo.toml allows, then verify"
+	@echo "    upgrade       Bump Cargo.toml to the latest versions, breaking ones too, then verify"
+	@echo "                  (needs cargo-edit; upgrade egui, eframe and egui_kittest together)"
 	@echo ""
 	@echo "  Building"
 	@echo "    build         Debug build of the desktop app"
@@ -155,6 +161,20 @@ deny:
 	cargo deny check
 
 verify: fmt-check lint test deny
+
+# ---------------------------------------------------------------- dependencies
+
+outdated:
+	cargo update --dry-run --verbose
+
+update:
+	cargo update
+	$(MAKE) verify
+
+upgrade:
+	cargo upgrade --incompatible
+	cargo update
+	$(MAKE) verify
 
 # ---------------------------------------------------------------- helpers
 

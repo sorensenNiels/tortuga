@@ -6,7 +6,7 @@ default-members = ["crates/tortuga-core"]
 [workspace.package]
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 authors = ["Niels P. Sørensen <niels.p.sorensen@softdesign.dk>"]
 
@@ -23,7 +23,7 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 percent-encoding = "2"
-base64 = "0.22"
+base64 = "0.23"
 # Cookie jars (R-CK-1); the same version reqwest uses.
 cookie_store = "0.22"
 thiserror = "2"
