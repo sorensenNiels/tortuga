@@ -124,7 +124,8 @@ struct BaseUrl {
 
 /// What the Postman (R-COL-16) and `.http` (R-COL-17) importers collect while they
 /// read: variables, servers for base URL variables (D36), secret variables with the
-/// values found for them (D35), scripts kept as comments, and warnings.
+/// values found for them (D35), counts of scripts translated (R-COL-19) and kept as
+/// comments, and warnings.
 #[derive(Default)]
 pub(crate) struct Collected {
     /// The project's variables.
@@ -134,6 +135,8 @@ pub(crate) struct Collected {
     pub secret_values: BTreeMap<String, String>,
     /// Scripts kept as comments.
     pub scripts: usize,
+    /// Scripts translated to Tortuga's script API (R-COL-19).
+    pub translated: usize,
     pub warnings: Vec<String>,
 }
 
@@ -298,6 +301,16 @@ impl Collected {
             ));
         }
         let api = kind.script_api().replace('`', "");
+        match self.translated {
+            0 => {}
+            1 => self.warn(format!(
+                "1 script was translated from {api} to Tortuga's: check that it tests what it did."
+            )),
+            n => self.warn(format!(
+                "{n} scripts were translated from {api} to Tortuga's: check that they test what \
+                 they did."
+            )),
+        }
         match self.scripts {
             0 => {}
             1 => self.warn(format!(

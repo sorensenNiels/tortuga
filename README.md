@@ -183,8 +183,9 @@ converted to OpenAPI 3 first.
 collection…**: folders, requests, bodies and variables come along, folder auth and variables become folder defaults,
 and a variable such as `{{baseUrl}}` at the start of the URLs becomes a server whose base URL you set per environment.
 Credentials become secret variables: values found in the collection are kept on your machine only, never in the
-project files. Postman scripts use the `pm` API, so they are kept as comments for you to port to Tortuga's `vars`,
-`test` and `expect`.
+project files. Postman scripts are translated to Tortuga's `vars`, `test` and `expect` when they only use common
+`pm` calls (`pm.test`, `pm.expect(…)`, `pm.response…`, `pm.environment.set`, …); a script that uses more of the
+`pm` API is kept as comments, translated as far as it went, for you to finish.
 
 **From a .http file.** **+ Add → Import .http file…** turns a REST Client / JetBrains HTTP Client file into a project:
 a request per `###` block, named by its `###` title, with `@variables` as project variables and `{{baseUrl}}` as a

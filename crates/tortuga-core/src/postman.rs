@@ -11,8 +11,9 @@
 //!   request auth. Credentials become secret variables (D35): values written in the
 //!   collection go to [`Import::secret_values`], for this machine's secret store, and
 //!   never into the project;
-//! - scripts as comments to port by hand, since Postman's `pm` API is not Tortuga's
-//!   (D28).
+//! - scripts translated to Tortuga's script API (R-COL-19, [`script`]); one that uses
+//!   more of Postman's `pm` API than the translation knows is kept as comments to port
+//!   by hand (D28, D36).
 //!
 //! What can't be imported as written is reported in [`Import::warnings`].
 //! [`crate::import::create_project`] writes the result.
@@ -29,6 +30,8 @@ use crate::model::{
     Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts, is_json_content_type,
 };
 use crate::{Error, Result};
+
+mod script;
 
 /// Reads a Postman collection (v2.0 or v2.1 JSON) into a project (R-COL-16).
 pub fn parse(text: &str) -> Result<Import> {
@@ -498,7 +501,15 @@ impl<'a> Importer<'a> {
                 Some("test") => &mut scripts.tests,
                 _ => continue,
             };
-            *slot = self.c.commented_script(&code, ImportKind::Postman);
+            *slot = match script::translate(&code) {
+                script::Translation::Complete(code) => {
+                    self.c.translated += 1;
+                    format!("{}{}\n", script::NOTE, code.trim_end())
+                }
+                script::Translation::Partial(code) => {
+                    self.c.commented_script(&code, ImportKind::Postman)
+                }
+            };
         }
         scripts
     }
@@ -690,7 +701,11 @@ mod tests {
               "raw": "{{baseUrl}}/users/:id",
               "variable": [{ "key": "id", "value": "{{userId}}" }]
             }
-          }
+          },
+          "event": [{
+            "listen": "prerequest",
+            "script": { "exec": ["pm.variables.set(\"n\", 1);", "pm.sendRequest(\"https://shop.test\");"] }
+          }]
         },
         {
           "name": "Create user",
@@ -938,7 +953,8 @@ mod tests {
         assert_eq!(find(&import, "List users").auth, None);
     }
 
-    /// R-COL-16: raw, form, multipart and GraphQL bodies; scripts kept as comments.
+    /// R-COL-16: raw, form, multipart and GraphQL bodies. R-COL-19: scripts translated, or
+    /// kept as comments when they use more of Postman's API.
     #[test]
     fn bodies_and_scripts() {
         let import = import();
@@ -971,9 +987,21 @@ mod tests {
         );
 
         let tests = &find(&import, "List users").scripts.tests;
-        assert!(tests.starts_with(&crate::import::script_note(ImportKind::Postman)));
-        assert!(tests.contains("// pm.test(\"ok\", () => {\n//   pm.response"));
+        assert_eq!(
+            *tests,
+            format!(
+                "{}test(\"ok\", () => {{\n  expect(res.status).toBe(200);\n}});\n",
+                script::NOTE
+            )
+        );
         assert_eq!(find(&import, "List users").scripts.pre_request, "");
+        let pre_request = &find(&import, "Get user").scripts.pre_request;
+        assert!(pre_request.starts_with(&crate::import::script_note(ImportKind::Postman)));
+        assert!(
+            pre_request
+                .ends_with("// vars.set(\"n\", 1);\n// pm.sendRequest(\"https://shop.test\");\n"),
+            "{pre_request}"
+        );
     }
 
     #[test]
@@ -986,6 +1014,7 @@ mod tests {
             "“Upload avatar” uploads files",
             "variables such as {{$guid}}",
             "1 script was kept as a comment",
+            "1 script was translated from Postman's pm API to Tortuga's",
         ];
         for text in expect {
             assert!(

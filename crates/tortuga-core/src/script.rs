@@ -161,6 +161,11 @@ pub fn run(
     }
 }
 
+/// Whether `code` is valid JavaScript, checked without running it.
+pub fn parses(code: &str) -> bool {
+    boa_engine::Script::parse(Source::from_bytes(code), None, &mut Context::default()).is_ok()
+}
+
 /// A readable message for a script error.
 fn describe(error: &str) -> String {
     let first = error.lines().next().unwrap_or(error).trim();
