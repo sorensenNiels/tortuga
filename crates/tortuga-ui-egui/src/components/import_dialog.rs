@@ -253,7 +253,8 @@ mod tests {
             h.run();
             h.get_by_label("2 requests in 1 folder");
             h.get_by_label("token");
-            h.get_by_label("/repo/pet-store");
+            // As displayed: `join` writes `/repo\pet-store` on Windows.
+            h.get_by_label(&dialog.dir.display().to_string());
             h.get_by_label("Not imported as written (1)".to_uppercase().as_str());
             h.get_by_label("Choose…").click();
             h.run();
