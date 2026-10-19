@@ -11,6 +11,18 @@ use crate::{format, theme};
 /// minified multi-megabyte body never becomes one giant text layout.
 const MAX_ROW_CHARS: usize = 2000;
 
+/// Longest side of an image as drawn; bigger images are scaled down to it once, when
+/// the response arrives (R-HTTP-17).
+const MAX_IMAGE_SIDE: u32 = 4096;
+
+/// Images with a longer side are not decoded at all, nor more than this many bytes of
+/// pixels, so a hostile response cannot exhaust memory (R-HTTP-17).
+const MAX_DECODED_SIDE: u32 = 16_384;
+const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Bytes of a binary body shown in the raw (hex) view (R-HTTP-18).
+const MAX_HEX_BYTES: usize = 256 * 1024;
+
 /// What the response panel shows after a send.
 #[derive(Debug, Clone)]
 pub enum Outcome {
@@ -79,6 +91,9 @@ impl TestsView {
 pub struct ResponseView {
     pub response: Response,
     body: Body,
+    /// The body as it came, when that differs from `body`: the JSON before
+    /// pretty-printing, or binary content as hex (R-HTTP-18).
+    raw: Option<TextBody>,
     /// The whole body parsed as JSON, on first use by the filter (R-HTTP-13).
     json: OnceLock<Option<serde_json::Value>>,
 }
@@ -87,7 +102,28 @@ pub struct ResponseView {
 enum Body {
     Empty,
     Binary,
+    /// A picture the panel can show (R-HTTP-17).
+    Image(ImageBody),
     Text(TextBody),
+}
+
+/// A decoded image, ready to upload as a texture.
+pub struct ImageBody {
+    /// Scaled down to at most [`MAX_IMAGE_SIDE`].
+    pixels: Arc<egui::ColorImage>,
+    /// Width and height of the image as sent.
+    size: [u32; 2],
+    /// "PNG", "JPEG", …
+    format: &'static str,
+}
+
+impl std::fmt::Debug for ImageBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageBody")
+            .field("size", &self.size)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Text split into rows, ready to draw.
@@ -100,6 +136,8 @@ pub struct TextBody {
     truncated: bool,
     /// The response is JSON (so it can be filtered).
     json: bool,
+    /// How much of the body is shown when it is `truncated`.
+    limit: usize,
 }
 
 impl TextBody {
@@ -109,12 +147,30 @@ impl TextBody {
             text,
             truncated,
             json,
+            limit: format::MAX_DISPLAY_BYTES,
+        }
+    }
+
+    /// The start of `bytes` as a hex dump (R-HTTP-18).
+    fn hex(bytes: &[u8]) -> Self {
+        let shown = &bytes[..bytes.len().min(MAX_HEX_BYTES)];
+        Self {
+            limit: MAX_HEX_BYTES,
+            ..Self::new(hex_dump(shown), shown.len() < bytes.len(), false)
         }
     }
 }
 
 impl ResponseView {
     pub fn new(response: Response) -> Self {
+        if let Some(image) = decode_image(&response) {
+            return Self {
+                raw: Some(TextBody::hex(&response.body)),
+                body: Body::Image(image),
+                response,
+                json: OnceLock::new(),
+            };
+        }
         let body = if response.body.len() > format::MAX_DISPLAY_BYTES {
             // Pretty-printing huge bodies would take too long, and only the start is
             // shown: copy just that (R-NF-2).
@@ -134,9 +190,19 @@ impl ResponseView {
                 BodyView::Text(text) => Body::Text(shown(text, false)),
             }
         };
+        let raw = match &body {
+            Body::Binary => Some(TextBody::hex(&response.body)),
+            // Pretty-printed: the raw view shows the text as it came. A truncated body
+            // is never pretty-printed, so it is shown as it came already.
+            Body::Text(t) if t.json && !t.truncated => std::str::from_utf8(&response.body)
+                .ok()
+                .map(|text| shown(text.to_owned(), false)),
+            _ => None,
+        };
         Self {
             response,
             body,
+            raw,
             json: OnceLock::new(),
         }
     }
@@ -148,6 +214,88 @@ impl ResponseView {
             .get_or_init(|| serde_json::from_slice(&self.response.body).ok())
             .as_ref()
     }
+}
+
+/// The body as an image, if it is one in a format Tortuga can decode (R-HTTP-17).
+/// Decoding is slow for big images: call it off the UI thread.
+fn decode_image(response: &Response) -> Option<ImageBody> {
+    let said_image = response
+        .content_type()
+        .is_some_and(|ct| ct.trim_start().to_ascii_lowercase().starts_with("image/"));
+    // The content type can be missing or wrong; the first bytes tell.
+    let format = image::guess_format(&response.body).ok()?;
+    if !said_image && std::str::from_utf8(&response.body).is_ok() {
+        return None;
+    }
+    let mut reader =
+        image::ImageReader::with_format(std::io::Cursor::new(&response.body[..]), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODED_SIDE);
+    limits.max_image_height = Some(MAX_DECODED_SIDE);
+    limits.max_alloc = Some(MAX_DECODED_BYTES);
+    reader.limits(limits);
+    let decoded = reader.decode().ok()?;
+    let size = [decoded.width(), decoded.height()];
+    let decoded = if size.iter().any(|&side| side > MAX_IMAGE_SIDE) {
+        decoded.thumbnail(MAX_IMAGE_SIDE, MAX_IMAGE_SIDE)
+    } else {
+        decoded
+    };
+    let rgba = decoded.to_rgba8();
+    let pixels = egui::ColorImage::from_rgba_unmultiplied(
+        [rgba.width() as usize, rgba.height() as usize],
+        rgba.as_raw(),
+    );
+    Some(ImageBody {
+        pixels: Arc::new(pixels),
+        size,
+        format: image_format_name(format),
+    })
+}
+
+fn image_format_name(format: image::ImageFormat) -> &'static str {
+    match format {
+        image::ImageFormat::Png => "PNG",
+        image::ImageFormat::Jpeg => "JPEG",
+        image::ImageFormat::Gif => "GIF",
+        image::ImageFormat::WebP => "WebP",
+        image::ImageFormat::Bmp => "BMP",
+        image::ImageFormat::Ico => "ICO",
+        _ => "Image",
+    }
+}
+
+/// `bytes` as rows of 16: offset, hex, and the printable ASCII characters (R-HTTP-18).
+fn hex_dump(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() / 16 * 80 + 80);
+    for (n, chunk) in bytes.chunks(16).enumerate() {
+        if n > 0 {
+            out.push('\n');
+        }
+        let _ = write!(out, "{:08x} ", n * 16);
+        for i in 0..16 {
+            if i == 8 {
+                out.push(' ');
+            }
+            match chunk.get(i) {
+                Some(b) => {
+                    let _ = write!(out, " {b:02x}");
+                }
+                None => out.push_str("   "),
+            }
+        }
+        out.push_str("  |");
+        out.extend(chunk.iter().map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                char::from(b)
+            } else {
+                '.'
+            }
+        }));
+        out.push('|');
+    }
+    out
 }
 
 /// `text` cut to what the viewer shows. Pretty-printing can make it longer than the limit.
@@ -279,6 +427,26 @@ pub struct ResponseState {
     scroll_to_match: bool,
     /// The rows of the shown text wrapped at the panel's width (R-SET-7).
     wrapped: Option<WrappedRows>,
+    /// Show the body as it came instead of pretty-printed or as a picture (R-HTTP-18).
+    /// Kept for the next response.
+    raw: bool,
+    /// The shown image on the GPU (R-HTTP-17).
+    texture: Option<ImageTexture>,
+}
+
+/// An uploaded image, with the address of the pixels it was made from.
+#[derive(Clone)]
+struct ImageTexture {
+    pixels: usize,
+    handle: egui::TextureHandle,
+}
+
+impl std::fmt::Debug for ImageTexture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageTexture")
+            .field("id", &self.handle.id())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Rows of a text cut at a width, kept until the text or the width changes (R-SET-7).
@@ -290,6 +458,14 @@ struct WrappedRows {
 }
 
 impl ResponseState {
+    /// The state for a new response: everything is reset except the choice of view.
+    pub fn reset(&mut self) {
+        *self = Self {
+            raw: self.raw,
+            ..Self::default()
+        };
+    }
+
     /// Finds the matches again if the query or the shown text changed.
     fn update_matches(&mut self, text: &str) {
         let key = (self.search.clone(), text.as_ptr() as usize, text.len());
@@ -480,7 +656,7 @@ fn details(
 
     theme::card(ui).show(ui, |ui| match st.tab {
         Tab::Body => {
-            if let Some(wrap) = body(ui, &view.body, st, filter, filtered, wrap) {
+            if let Some(wrap) = body(ui, view, st, filter, filtered, wrap) {
                 action = Some(ResponseAction::SetWrap(wrap));
             }
         }
@@ -509,22 +685,44 @@ fn details(
 /// The body with its toolbar. Returns the new wrapping choice if it was changed.
 fn body(
     ui: &mut Ui,
-    body: &Body,
+    view: &ResponseView,
     st: &mut ResponseState,
     filter: &mut String,
     filtered: Filtered<'_>,
     wrap: bool,
 ) -> Option<bool> {
-    let full = match body {
-        Body::Empty => {
+    // "Preview" for content that is not text, "Pretty" for text (R-HTTP-18).
+    let modes = view.raw.as_ref().map(|_| match view.body {
+        Body::Image(_) | Body::Binary => "Preview",
+        _ => "Pretty",
+    });
+    let raw = view.raw.as_ref().filter(|_| st.raw);
+    let full = match (&view.body, raw) {
+        (_, Some(raw)) => raw,
+        (Body::Empty, None) => {
             theme::hint(ui, "No body.");
             return None;
         }
-        Body::Binary => {
-            theme::hint(ui, "Binary content. Use “Save to file” to keep it.");
+        (Body::Binary, None) => {
+            view_modes(ui, &mut st.raw, modes);
+            theme::hint(
+                ui,
+                "Binary content. Use “Save to file” to keep it, or “Raw” to see its bytes.",
+            );
             return None;
         }
-        Body::Text(text) => text,
+        (Body::Image(img), None) => {
+            view_modes(ui, &mut st.raw, modes);
+            image_view(ui, img, st);
+            return None;
+        }
+        (Body::Text(text), None) => text,
+    };
+    // The JSON filter works on the pretty view only.
+    let filtered = if raw.is_some() {
+        Filtered::Off
+    } else {
+        filtered
     };
     let shown = match filtered {
         Filtered::Off | Filtered::Failed(_) => Some(full),
@@ -535,7 +733,7 @@ fn body(
     if let Some(shown) = shown {
         st.update_matches(&shown.text);
     }
-    let wrap_changed = toolbar(ui, st, full.json.then_some(filter), wrap);
+    let wrap_changed = toolbar(ui, st, modes, full.json.then_some(filter), wrap);
     if let Filtered::Failed(message) = filtered {
         theme::warning(ui, message);
     }
@@ -547,7 +745,7 @@ fn body(
         return wrap_changed;
     };
     if shown.truncated {
-        let limit = format::size(format::MAX_DISPLAY_BYTES);
+        let limit = format::size(shown.limit);
         theme::hint(
             ui,
             format!("Showing the first {limit}. Use “Save to file” for the full body."),
@@ -555,6 +753,77 @@ fn body(
     }
     text_rows(ui, shown, st, wrap);
     wrap_changed
+}
+
+/// The "Pretty" (or "Preview") and "Raw" switch, if the body has a raw view (R-HTTP-18).
+fn view_modes(ui: &mut Ui, raw: &mut bool, modes: Option<&str>) {
+    let Some(pretty) = modes else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if ui
+            .add(egui::Button::selectable(!*raw, pretty))
+            .on_hover_text("Show the body formatted")
+            .clicked()
+        {
+            *raw = false;
+        }
+        if ui
+            .add(egui::Button::selectable(*raw, "Raw"))
+            .on_hover_text("Show the body as it came: unformatted text, or the bytes as hex")
+            .clicked()
+        {
+            *raw = true;
+        }
+    });
+}
+
+/// The image, scaled down to fit the panel, never up (R-HTTP-17).
+fn image_view(ui: &mut Ui, img: &ImageBody, st: &mut ResponseState) {
+    let p = theme::palette(ui);
+    let [w, h] = img.size;
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(format!("{} · {w} × {h} px", img.format))
+            .small()
+            .color(p.muted),
+    );
+    let max_side = ui.input(|i| i.max_texture_side);
+    if img.pixels.size.iter().any(|&side| side > max_side) {
+        theme::hint(ui, "Too large to show here. Use “Save to file” to keep it.");
+        return;
+    }
+    let key = Arc::as_ptr(&img.pixels) as usize;
+    if st.texture.as_ref().is_none_or(|t| t.pixels != key) {
+        let handle = ui.ctx().load_texture(
+            "response-image",
+            Arc::clone(&img.pixels),
+            egui::TextureOptions::LINEAR,
+        );
+        st.texture = Some(ImageTexture {
+            pixels: key,
+            handle,
+        });
+    }
+    let Some(texture) = &st.texture else {
+        return;
+    };
+    let texture = egui::load::SizedTexture::from_handle(&texture.handle);
+    ScrollArea::both()
+        .id_salt("response-image")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            let room = ui.available_size() - egui::vec2(4.0, 4.0);
+            let scale = (room.x / texture.size.x)
+                .min(room.y / texture.size.y)
+                .clamp(0.01, 1.0);
+            let size = texture.size * scale;
+            ui.vertical_centered(|ui| {
+                ui.add(egui::Image::from_texture(texture).fit_to_exact_size(size))
+                    .on_hover_text(format!("{w} × {h} px, shown at {:.0}%", scale * 100.0));
+            });
+        });
 }
 
 /// Test results, errors, variables set and console output (R-TEST-1, R-TEST-4, R-TEST-5).
@@ -632,19 +901,23 @@ pub fn tests_details(ui: &mut Ui, t: &TestsView) {
     }
 }
 
-/// The JSON filter (for JSON bodies), the search field and "Wrap", above the body.
+/// The view switch, the JSON filter (for JSON bodies), the search field and "Wrap", above
+/// the body.
 /// Returns the new wrapping choice if it was changed (R-SET-7).
 fn toolbar(
     ui: &mut Ui,
     st: &mut ResponseState,
+    modes: Option<&str>,
     filter: Option<&mut String>,
     wrap: bool,
 ) -> Option<bool> {
     let p = theme::palette(ui);
     let mut wrap_changed = None;
+    let mut raw = st.raw;
     egui::Sides::new().shrink_left().show(
         ui,
         |ui| {
+            view_modes(ui, &mut raw, modes);
             if let Some(filter) = filter {
                 ui.label(RichText::new("Filter").small().color(p.muted));
                 let edit = TextEdit::singleline(filter)
@@ -708,6 +981,7 @@ fn toolbar(
             }
         },
     );
+    st.raw = raw;
     ui.add_space(4.0);
     wrap_changed
 }
@@ -970,6 +1244,110 @@ mod tests {
         h.key_press(Key::Enter);
         h.run();
         h.get_by_label("2 of 3");
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(width, height, image::Rgba([200, 30, 30, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png)
+            .expect("encodes");
+        out.into_inner()
+    }
+
+    fn image_response(content_type: &str, body: Vec<u8>) -> Response {
+        Response {
+            headers: vec![KeyValue::new("content-type", content_type)],
+            body,
+            ..json_response()
+        }
+    }
+
+    /// R-HTTP-17: an image is shown with its format and size, also without the right
+    /// content type; "Raw" shows its bytes as hex (R-HTTP-18).
+    #[test]
+    fn images_are_shown_and_raw_shows_their_bytes() {
+        for content_type in ["image/png", "application/octet-stream"] {
+            let outcome = Outcome::from_result(Ok(image_response(content_type, png(3, 2))));
+            let Outcome::Response(view) = &outcome else {
+                panic!("expected response")
+            };
+            assert!(matches!(view.body, Body::Image(_)), "{content_type}");
+            let mut h = render(Some(outcome));
+            h.get_by_label("PNG · 3 × 2 px");
+            h.get_by_label("Raw").click();
+            h.run();
+            h.get_by_label_contains("89 50 4e 47 0d 0a 1a 0a");
+            h.get_by_label("Preview").click();
+            h.run();
+            h.get_by_label("PNG · 3 × 2 px");
+        }
+    }
+
+    /// R-HTTP-17: big images are scaled down once, when the response arrives.
+    #[test]
+    fn big_images_are_scaled_down_to_draw() {
+        let view = ResponseView::new(image_response("image/png", png(MAX_IMAGE_SIDE * 2, 4)));
+        let Body::Image(img) = &view.body else {
+            panic!("expected an image")
+        };
+        assert_eq!(img.size, [MAX_IMAGE_SIDE * 2, 4]);
+        assert_eq!(img.pixels.size[0], MAX_IMAGE_SIDE as usize);
+    }
+
+    /// Text and broken images are not images; a broken one is binary with a hex view.
+    #[test]
+    fn only_decodable_images_are_images() {
+        let svg = image_response("image/svg+xml", b"<svg xmlns='x'/>".to_vec());
+        assert!(matches!(ResponseView::new(svg).body, Body::Text(_)));
+        let mut broken = png(2, 2);
+        broken.truncate(30);
+        let view = ResponseView::new(image_response("image/png", broken));
+        assert!(matches!(view.body, Body::Binary));
+        assert!(view.raw.is_some());
+    }
+
+    /// R-HTTP-18: "Raw" shows JSON as it came, and stays chosen for the next response.
+    #[test]
+    fn raw_shows_json_as_it_came() {
+        let mut h = render(Some(Outcome::from_result(Ok(json_response()))));
+        h.get_by_label("  \"id\": 7");
+        h.get_by_label("Raw").click();
+        h.run();
+        h.get_by_label(r#"{"id":7}"#);
+        assert!(
+            h.query_by_label("Filter").is_none(),
+            "no JSON filter on raw text"
+        );
+
+        let mut st = ResponseState {
+            raw: true,
+            search: "x".into(),
+            ..ResponseState::default()
+        };
+        st.reset();
+        assert!(st.raw && st.search.is_empty());
+
+        // Plain text has nothing to switch.
+        let mut plain = json_response();
+        plain.headers.clear();
+        plain.body = b"hello".to_vec();
+        assert!(ResponseView::new(plain).raw.is_none());
+    }
+
+    #[test]
+    fn hex_dump_shows_offset_bytes_and_text() {
+        let dump = hex_dump(b"Hello, world!\n\x00\xffAB");
+        let lines: Vec<&str> = dump.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "00000000  48 65 6c 6c 6f 2c 20 77  6f 72 6c 64 21 0a 00 ff  |Hello, world!...|",
+                "00000010  41 42                                             |AB|",
+            ]
+        );
+        let big = TextBody::hex(&vec![0; MAX_HEX_BYTES + 1]);
+        assert!(big.truncated);
+        assert_eq!(big.rows.len(), MAX_HEX_BYTES / 16);
     }
 
     #[test]

@@ -1145,7 +1145,7 @@ impl TortugaUi {
     fn load(&mut self, request: Request) {
         self.editor = EditorState::new(&request);
         self.current = request;
-        self.response = ResponseState::default();
+        self.response.reset();
     }
 
     /// Opens a request in the preview tab, or switches to its tab (R-COL-13).
@@ -1276,7 +1276,7 @@ impl TortugaUi {
         }
         let key = self.selection.clone();
         let ctx = self.state.request_context(key.as_ref());
-        self.response = ResponseState::default();
+        self.response.reset();
         self.forget_past(&key);
         self.test_results.remove(&key);
         // Undefined variables etc. show at once, unless a pre-request script may define them.
@@ -1405,7 +1405,7 @@ impl TortugaUi {
         while let Ok(done) = self.finished_rx.try_recv() {
             if let Some(f) = self.in_flight.take_if(|f| f.id == done.id) {
                 if f.key == self.selection {
-                    self.response = ResponseState::default();
+                    self.response.reset();
                 }
                 self.state
                     .save_cookies(f.key.as_ref().map(|k| k.root.as_path()));

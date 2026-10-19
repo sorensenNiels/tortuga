@@ -47,6 +47,8 @@ wasm-bindgen-futures = "0.4"
 boa_engine = { version = "0.22", default-features = false }
 # OpenAPI descriptions in YAML (R-COL-15): pure Rust, read into serde_json values.
 yaml-rust2 = { version = "0.13", default-features = false }
+# Decoding image responses to show them (R-HTTP-17): pure Rust, also on wasm; the common web formats only.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 # Windows icon and version information in tortuga.exe (build script).
 winresource = { version = "0.1", default-features = false }
 

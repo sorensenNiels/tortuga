@@ -12,6 +12,7 @@ publish = false
 tortuga-core.workspace = true
 egui.workspace = true
 futures-util.workspace = true
+image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

@@ -214,7 +214,7 @@ impl TortugaUi {
             label.push_str(" · body cut to 1 MB");
         }
         let latest = self.outcomes.insert(key.clone(), outcome);
-        self.response = crate::components::ResponseState::default();
+        self.response.reset();
         self.history.past = Some(Past {
             key,
             id: id.to_owned(),

@@ -208,4 +208,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-19` · `R-WS-9` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-51` · `D40` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5` · `R-SET-8`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-19` · `R-CK-6` · `R-COL-19` · `R-WS-9` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-51` · `D40` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5` · `R-SET-8`.
