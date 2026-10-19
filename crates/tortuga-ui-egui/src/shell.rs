@@ -2442,7 +2442,7 @@ mod tests {
         assert_eq!(chips(&mut ui), [None], "one project: no chips");
 
         let second = add_request(&mut ui, &root, "List users");
-        ui.open_tab(Some(order), true);
+        ui.open_tab(Some(order.clone()), true);
         ui.open_tab(Some(second), true);
         assert_eq!(
             chips(&mut ui),
@@ -2452,6 +2452,21 @@ mod tests {
 
         ui.on_tab(TabAction::CloseGroup(other.clone()));
         assert_eq!(chips(&mut ui), [None]);
+
+        ui.open_tab(Some(order.clone()), false);
+        assert_eq!(
+            chips(&mut ui),
+            [Some(("C".into(), 2)), Some(("Orders API".into(), 1))],
+            "a preview of another project gets its own chip"
+        );
+        ui.open_tab(Some(order), true);
+        let third = add_request(&mut ui, &other, "List orders");
+        ui.open_tab(Some(third), false);
+        assert_eq!(
+            chips(&mut ui),
+            [Some(("C".into(), 2)), Some(("Orders API".into(), 1)), None],
+            "a preview right after its own group needs no chip"
+        );
         std::fs::remove_dir_all(root).expect("clean up");
         std::fs::remove_dir_all(other).expect("clean up");
     }

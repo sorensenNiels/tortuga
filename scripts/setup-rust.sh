@@ -20,6 +20,6 @@ if ! command -v cargo-binstall >/dev/null; then
 fi
 
 echo "==> Installing cargo tools"
-cargo binstall -y cargo-deny cargo-nextest cargo-packager
+cargo binstall -y cargo-deny cargo-nextest cargo-packager trunk
 
 echo "==> Done. Open a new terminal, then: make run"

@@ -80,8 +80,10 @@ setup-windows:
 run: require-desktop-deps
 	$(RUN_ENV)cargo run -p $(APP)
 
+# trunk must run from the crate directory: from the workspace root it cannot find the package.
+# Output goes to target/web so it stays out of the source tree.
 run-web:
-	trunk serve crates/$(APP)/index.html
+	cd crates/$(APP) && trunk serve --dist ../../target/web
 
 # ---------------------------------------------------------------- build
 

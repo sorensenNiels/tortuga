@@ -117,12 +117,19 @@ impl TortugaUi {
                 group.tabs.push(tab);
                 continue;
             }
-            let chip = match (root, preview, color) {
-                (Some(root), false, Some(color)) => Some(GroupChip {
+            // The preview tab gets its project's chip when it follows another
+            // project's tabs, so it does not look like part of that group.
+            let after_own_group = groups
+                .last()
+                .and_then(|g| g.tabs.last())
+                .is_some_and(|t| t.key.as_ref().map(|k| k.root.as_path()) == root);
+            let chip = match (root, color) {
+                (Some(root), Some(color)) if !preview || !after_own_group => Some(GroupChip {
                     root: root.to_owned(),
                     name: project_name(root),
                     color,
-                    collapsed: self.tabs.is_collapsed(root),
+                    // A folded chip would hide the preview tab.
+                    collapsed: !preview && self.tabs.is_collapsed(root),
                 }),
                 _ => None,
             };
