@@ -34,6 +34,9 @@ TORTUGA_VAR_token=... for {{token}}: the way to pass secrets in CI.
 Exit status: 0 when everything passed, 1 when a test or step failed, 2 for errors
 in the command or the project.";
 
+/// Stack for the thread that runs the workflow (the Linux/macOS main-thread default).
+const RUN_STACK: usize = 8 * 1024 * 1024;
+
 /// What the command line asks for.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Args {
@@ -83,7 +86,15 @@ fn main() -> ExitCode {
                 .into_iter()
                 .chain(args.vars)
                 .collect();
-            match run(&args) {
+            // Scripts run in the JS engine, which needs more stack than the 1 MB main
+            // thread Windows gives (debug builds overflow it), so run on a bigger one.
+            let outcome = std::thread::Builder::new()
+                .name("run".into())
+                .stack_size(RUN_STACK)
+                .spawn(move || run(&args))
+                .map_err(|e| e.to_string())
+                .and_then(|h| h.join().map_err(|_| "the run panicked".to_owned())?);
+            match outcome {
                 Ok(true) => ExitCode::SUCCESS,
                 Ok(false) => ExitCode::from(1),
                 Err(e) => {
