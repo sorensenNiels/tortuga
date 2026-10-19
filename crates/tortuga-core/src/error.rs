@@ -138,8 +138,8 @@ fn describe_transport(top: &str, causes: &[String]) -> String {
     if details.to_ascii_lowercase().contains("certificate") {
         format!(
             "The server's TLS certificate is not trusted. If it is signed by your company's \
-             CA, add that CA certificate in Settings; for a test server, certificate checks \
-             can be turned off there. ({details})"
+             CA, add that CA certificate in Settings; for a test server, add its host to \
+             “Don't verify certificates of these hosts” there. ({details})"
         )
     } else {
         details

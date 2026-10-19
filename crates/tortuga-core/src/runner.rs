@@ -101,7 +101,8 @@ pub async fn run_step(
     extra: Extra<'_>,
 ) -> StepOutcome {
     let mut out = StepOutcome::default();
-    let mut ctx = ctx.clone();
+    // The app's settings are the last level under the workspace's and project's (R-SET-1).
+    let mut ctx = ctx.clone().with_app_settings(client.settings());
     let mut request = request.clone();
 
     if !request.scripts.pre_request.trim().is_empty() {

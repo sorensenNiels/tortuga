@@ -3,7 +3,7 @@ use std::sync::mpsc::Receiver;
 
 use egui::{ComboBox, Context, Id, Modal, RichText, TextEdit, Ui};
 use tortuga_core::import::ImportKind;
-use tortuga_core::settings::ImporterSettings;
+use tortuga_core::settings::{Appearance, HistorySettings, ImporterSettings, Theme};
 use tortuga_core::{AppSettings, ClientSettings, CookieInfo};
 
 use super::request_editor::parse_timeout;
@@ -530,7 +530,9 @@ impl NameDialog {
 /// The tabs of the settings dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
-    General,
+    Requests,
+    Appearance,
+    History,
     Importers,
 }
 
@@ -539,6 +541,10 @@ pub struct SettingsDialog {
     draft: AppSettings,
     tab: SettingsTab,
     timeout_text: String,
+    /// Hosts not to verify, one per line (R-SET-3).
+    hosts_text: String,
+    /// History entries per project while history is on (R-SET-6).
+    history_text: String,
     /// Shown when saving failed.
     pub error: Option<String>,
     /// "Add…" was clicked for a CA certificate; the shell asks for the file (R-HTTP-16).
@@ -549,8 +555,14 @@ impl SettingsDialog {
     pub fn new(settings: &AppSettings) -> Self {
         Self {
             draft: settings.clone(),
-            tab: SettingsTab::General,
+            tab: SettingsTab::Requests,
             timeout_text: settings.client.default_timeout_ms.to_string(),
+            hosts_text: settings.client.insecure_hosts.join("\n"),
+            history_text: match settings.history.size {
+                0 => tortuga_core::history::DEFAULT_SIZE,
+                n => n,
+            }
+            .to_string(),
             error: None,
             add_ca_requested: false,
         }
@@ -571,18 +583,25 @@ impl SettingsDialog {
                 ui,
                 &mut self.tab,
                 &[
-                    (SettingsTab::General, "General", None),
+                    (SettingsTab::Requests, "Requests", None),
+                    (SettingsTab::Appearance, "Appearance", None),
+                    (SettingsTab::History, "History", None),
                     (SettingsTab::Importers, "Importers", None),
                 ],
             );
             match self.tab {
-                SettingsTab::General => {
-                    self.add_ca_requested |= general_settings(
+                SettingsTab::Requests => {
+                    self.add_ca_requested |= request_settings(
                         ui,
                         &mut self.draft.client,
                         &mut self.timeout_text,
+                        &mut self.hosts_text,
                         can_pick_files,
                     );
+                }
+                SettingsTab::Appearance => appearance_settings(ui, &mut self.draft.appearance),
+                SettingsTab::History => {
+                    history_settings(ui, &mut self.draft.history, &mut self.history_text);
                 }
                 SettingsTab::Importers => importer_settings(ui, &mut self.draft.importers),
             }
@@ -595,17 +614,21 @@ impl SettingsDialog {
     }
 }
 
-/// HTTP settings (R-HTTP-7, R-HTTP-8, R-HTTP-16). Returns whether "Add…" was clicked
-/// for a CA certificate.
-fn general_settings(
+/// HTTP settings (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-SET-3). Returns whether "Add…" was
+/// clicked for a CA certificate.
+fn request_settings(
     ui: &mut Ui,
     d: &mut ClientSettings,
     timeout_text: &mut String,
+    hosts_text: &mut String,
     can_pick_files: bool,
 ) -> bool {
     ui.checkbox(&mut d.follow_redirects, "Follow redirects");
+    ui.checkbox(&mut d.send_cookies, "Send and store cookies");
     ui.checkbox(&mut d.verify_tls, "Verify TLS certificates");
-    if !d.verify_tls {
+    if d.verify_tls {
+        insecure_hosts(ui, d, hosts_text);
+    } else {
         theme::warning(
             ui,
             "Turning this off lets anyone between you and the server read and change your traffic. Only use it for local test servers.",
@@ -622,9 +645,123 @@ fn general_settings(
             d.default_timeout_ms = ms;
         }
     });
-    theme::hint(ui, "Proxy settings are taken from the operating system.");
+    theme::hint(
+        ui,
+        "Workspaces and projects can set their own timeout, redirects and cookies (their \
+         “Defaults…”). Proxy settings are taken from the operating system.",
+    );
     ui.add_space(10.0);
     ca_certificates(ui, &mut d.ca_certificates, can_pick_files)
+}
+
+/// Hosts whose certificates are not verified, on this machine only (R-SET-3).
+fn insecure_hosts(ui: &mut Ui, d: &mut ClientSettings, text: &mut String) {
+    ui.indent("insecure-hosts", |ui| {
+        let label = ui.label("Don't verify certificates of these hosts:");
+        let edit = TextEdit::multiline(text)
+            .id_salt("insecure-hosts")
+            .font(egui::TextStyle::Monospace)
+            .hint_text("localhost\n*.dev.internal")
+            .desired_rows(2)
+            .desired_width(300.0);
+        if ui.add(edit).labelled_by(label.id).changed() {
+            d.insecure_hosts = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+        theme::hint(
+            ui,
+            "One per line; *.example.test covers its subdomains. Only for test servers with \
+             self-signed certificates. Kept on this computer: shared files can't turn \
+             verification off.",
+        );
+        if !d.insecure_hosts.is_empty() {
+            theme::warning(
+                ui,
+                "Traffic to these hosts could be read and changed by anyone in between.",
+            );
+        }
+    });
+}
+
+/// Theme, text size and wrapping (R-SET-4, R-SET-5, R-SET-7).
+fn appearance_settings(ui: &mut Ui, a: &mut Appearance) {
+    egui::Grid::new("appearance")
+        .num_columns(2)
+        .spacing([16.0, 10.0])
+        .show(ui, |ui| {
+            ui.label("Theme");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut a.theme, Theme::System, "Like the system");
+                ui.radio_value(&mut a.theme, Theme::Light, "Light");
+                ui.radio_value(&mut a.theme, Theme::Dark, "Dark");
+            });
+            ui.end_row();
+            let label = ui.label("Text size");
+            let mut sizes = vec![80, 90, 100, 110, 125, 150, 175, 200];
+            if !sizes.contains(&a.text_size) {
+                sizes.push(a.text_size);
+                sizes.sort_unstable();
+            }
+            ComboBox::from_id_salt("text-size")
+                .selected_text(format!("{} %", a.text_size))
+                .show_ui(ui, |ui| {
+                    for size in sizes {
+                        ui.selectable_value(&mut a.text_size, size, format!("{size} %"));
+                    }
+                })
+                .response
+                .labelled_by(label.id);
+            ui.end_row();
+        });
+    theme::hint(
+        ui,
+        "Ctrl+= and Ctrl+- change the text size too; Ctrl+0 resets it.",
+    );
+    ui.add_space(8.0);
+    ui.checkbox(&mut a.wrap_lines, "Wrap long lines in responses");
+}
+
+/// How many sent requests are kept per project, or none (R-SET-6).
+fn history_settings(ui: &mut Ui, h: &mut HistorySettings, text: &mut String) {
+    let mut on = h.on();
+    if ui
+        .checkbox(&mut on, "Keep a history of sent requests")
+        .changed()
+    {
+        h.size = if on {
+            text.trim()
+                .parse()
+                .ok()
+                .filter(|n| *n > 0)
+                .unwrap_or(tortuga_core::history::DEFAULT_SIZE)
+        } else {
+            0
+        };
+    }
+    if on {
+        ui.horizontal(|ui| {
+            let label = ui.label("Entries per project");
+            if ui
+                .add(TextEdit::singleline(text).desired_width(80.0))
+                .labelled_by(label.id)
+                .changed()
+                && let Some(n) = text.trim().parse().ok().filter(|n: &usize| *n > 0)
+            {
+                h.size = n;
+            }
+        });
+        theme::hint(ui, "Lowering it removes the oldest entries when you save.");
+    } else {
+        theme::hint(
+            ui,
+            "Nothing more is recorded. History that is already there stays until you clear it \
+             in the History view.",
+        );
+    }
 }
 
 /// Which importers "+ Add" and the command palette offer (R-COL-18).
@@ -970,6 +1107,46 @@ mod tests {
             dialog.draft.client.ca_certificates,
             [PathBuf::from("/etc/company-ca.pem")]
         );
+    }
+
+    /// R-SET-3..6: hosts not to verify, theme, wrapping and history are set in the
+    /// settings dialog.
+    #[test]
+    fn requests_appearance_and_history_settings() {
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        let mut result = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
+                    result = Some(r);
+                }
+            });
+            h.run();
+            h.get_by_label("Don't verify certificates of these hosts:");
+            let field = h
+                .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+                .next()
+                .expect("hosts field");
+            field.focus();
+            field.type_text("localhost\n *.dev.test ");
+            h.run();
+            h.get_by_label("Appearance").click();
+            h.run();
+            h.get_by_label("Dark").click();
+            h.get_by_label("Wrap long lines in responses").click();
+            h.run();
+            h.get_by_label("History").click();
+            h.run();
+            h.get_by_label("Keep a history of sent requests").click();
+            h.run();
+            h.get_by_label("Save").click();
+            h.run();
+        }
+        let saved = result.expect("saved");
+        assert_eq!(saved.client.insecure_hosts, ["localhost", "*.dev.test"]);
+        assert_eq!(saved.appearance.theme, Theme::Dark);
+        assert!(saved.appearance.wrap_lines);
+        assert_eq!(saved.history.size, 0, "history off");
     }
 
     /// R-COL-18: importers are turned off on the Importers tab.

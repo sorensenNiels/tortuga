@@ -205,14 +205,24 @@ sent, with secret values masked.
 **Uploads.** Choose the **Multipart** body type to send form fields and files. Keep files to upload inside the project
 (e.g. a `fixtures/` folder) and they are saved with a path relative to it, so the request works for teammates too.
 
-**Importers you don't use.** Settings → **Importers** turns importers off, so "+ Add" only offers the ones your team
-needs.
-
 **Company certificates.** If your internal APIs use certificates from your company's own CA, add its PEM file under
 **Settings → CA certificates**.
 
 **Reordering.** Drag requests and folders in the sidebar to reorder them or move them into a folder. In the
 environments dialog, drag the ☰ handle of an environment or server to change their order.
+
+**Settings.** Settings (top right) has four tabs. **Requests**: redirects, cookies, the default timeout, CA
+certificates, and hosts whose certificates aren't checked, for test servers with self-signed certificates (only on your
+machine). **Appearance**: light, dark or system theme, text size (also **Ctrl+=**, **Ctrl+-**, **Ctrl+0**) and wrapping
+long lines in responses (also the **Wrap** switch above a response). **History**: how many sent requests are kept per
+project, or none. **Importers**: which importers "+ Add" offers.
+
+**Settings for a workspace or a project.** Timeout, following redirects and cookies come from Settings, but a
+workspace (**Defaults…** in the workspace menu) or a project (**Defaults (headers, auth, requests)…** in its menu) can set
+its own on the **Requests** tab; the nearest wins, and every field shows what it inherits and from where. A workspace's
+**Defaults…** also has headers and auth that every project inherits below its own, such as one `X-Tenant` header or one
+bearer token for all your services. Project settings are saved in `tortuga.toml`, workspace ones in the workspace file,
+so the team shares them. Turning off TLS verification stays a setting of your own machine.
 
 **Folder defaults.** A folder's **…** menu has **Folder defaults…**: headers, auth and variables for every request in
 that folder. They are saved in the folder's `_folder.toml`, so they are shared through git like the requests.

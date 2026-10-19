@@ -12,8 +12,9 @@ use std::sync::{Arc, OnceLock};
 use tortuga_core::CookieJar;
 use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretValues;
+use tortuga_core::settings::{Level, ResolvedSettings};
 use tortuga_core::storage::Storage;
-use tortuga_core::workspace::{self, ProjectRef, WorkspaceVariables};
+use tortuga_core::workspace::{self, ProjectRef, WorkspaceDefaults, WorkspaceVariables};
 use tortuga_core::{AppSettings, Client, ClientSettings, Collection, Request, vars};
 
 use crate::format::sentence;
@@ -191,15 +192,37 @@ impl AppState {
         self.notice = Some(sentence(message.as_ref()));
     }
 
-    /// Applies new settings: rebuilds the client and saves them.
+    /// Applies new settings and saves them: rebuilds the client if its settings changed,
+    /// and trims the history to a new size (R-SET-6).
     pub fn apply_settings(&mut self, settings: &AppSettings) -> Result<(), String> {
-        let (client, problems) = make_client(self.host.as_ref(), &settings.client)?;
-        if !problems.is_empty() {
-            return Err(problems.join("\n"));
+        if settings.client != self.settings.client {
+            let (client, problems) = make_client(self.host.as_ref(), &settings.client)?;
+            if !problems.is_empty() {
+                return Err(problems.join("\n"));
+            }
+            self.client = client;
         }
-        self.client = client;
+        let size = settings.history.size;
+        let trim = size > 0 && size != self.settings.history.size;
         self.settings = settings.clone();
+        if trim && let Err(e) = self.host.trim_history(size) {
+            self.notify(format!("Could not trim the history: {e}"));
+        }
         self.host.save_settings(settings)
+    }
+
+    /// Changes settings that don't concern the HTTP client or the history, e.g. the
+    /// appearance (R-SET-4, R-SET-5, R-SET-7), and saves them.
+    pub fn update_settings(&mut self, change: impl FnOnce(&mut AppSettings)) {
+        let mut settings = self.settings.clone();
+        change(&mut settings);
+        if settings == self.settings {
+            return;
+        }
+        self.settings = settings;
+        if let Err(e) = self.host.save_settings(&self.settings) {
+            self.notify(e);
+        }
     }
 
     // ------------------------------------------------------------ collections
@@ -320,6 +343,7 @@ impl AppState {
                 Ok(read) => {
                     let ws = self.workspace_mut();
                     ws.variables = read.variables;
+                    ws.defaults = read.defaults;
                     let projects = read
                         .projects
                         .into_iter()
@@ -422,6 +446,7 @@ impl AppState {
             file: Some(file.to_owned()),
             projects: read.projects,
             variables: read.variables,
+            defaults: read.defaults,
             ..Workspace::default()
         });
         self.local.give_ids();
@@ -443,7 +468,7 @@ impl AppState {
         let Some(file) = &ws.file else {
             return Ok(());
         };
-        let text = workspace::write(&ws.name, &ws.projects, &ws.variables, file);
+        let text = workspace::write(&ws.name, &ws.projects, &ws.variables, &ws.defaults, file);
         if self.storage().read_to_string(file).ok().as_deref() == Some(text.as_str()) {
             return Ok(()); // unchanged: leave the file (and git) alone
         }
@@ -519,6 +544,24 @@ impl AppState {
         self.workspace_changed();
         self.load_workspace_secrets();
         Ok(())
+    }
+
+    /// Saves the settings, headers and auth every project of the workspace inherits
+    /// (R-SET-1, R-SET-2), to local data and the workspace file.
+    pub fn save_workspace_defaults(&mut self, defaults: WorkspaceDefaults) {
+        self.workspace_mut().defaults = defaults;
+        self.workspace_changed();
+    }
+
+    /// The request settings of a project's requests (`None`: the scratch request), with
+    /// the level each comes from (R-SET-1). The scratch request only has the app's.
+    pub fn resolved_settings(&self, root: Option<&Path>) -> ResolvedSettings {
+        let mut levels = Vec::new();
+        if let Some(c) = root.and_then(|r| self.collection(r)) {
+            levels.push((Level::Project, c.manifest.settings));
+            levels.push((Level::Workspace, self.workspace().defaults.settings));
+        }
+        ResolvedSettings::resolve(&levels, &self.settings.client)
     }
 
     /// Values captured or set as `workspace.<name>` in the active workspace.
@@ -729,9 +772,14 @@ impl AppState {
             .get(root)
             .map(|s| s.for_environment(env.as_deref()))
             .unwrap_or_default();
+        let defaults = &self.workspace().defaults;
         let ctx = self
             .collection(root)
-            .map(|c| vars::Context::for_request(c, env.as_deref(), path).with_secrets(secrets))
+            .map(|c| {
+                vars::Context::for_request(c, env.as_deref(), path)
+                    .with_workspace_defaults(defaults)
+                    .with_secrets(secrets)
+            })
             .unwrap_or_default();
         self.with_runtime(ctx, Some(root))
     }
@@ -1244,6 +1292,92 @@ mod tests {
             .save_workspace_variables(WorkspaceVariables::default(), &BTreeMap::new())
             .expect("remove");
         assert_eq!(state.host.secrets().get(&key).expect("store"), None);
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-SET-1, R-SET-2: the workspace's settings, headers and auth reach its projects
+    /// below their own, go into the workspace file, and say where they come from.
+    #[test]
+    fn workspace_defaults_reach_every_project() {
+        use tortuga_core::settings::RequestSettings;
+        use tortuga_core::storage::FsStorage;
+        use tortuga_core::{Auth, KeyValue};
+
+        let dir = temp("ws-defaults");
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        project(&a, "A", &[]);
+        project(&b, "B", &[]);
+        let c = Collection::open(&FsStorage, &b).expect("b");
+        let manifest = tortuga_core::Manifest {
+            settings: RequestSettings {
+                timeout_ms: Some(1_000),
+                ..RequestSettings::default()
+            },
+            auth: Auth::Bearer {
+                token: "b-own".into(),
+            },
+            ..c.manifest.clone()
+        };
+        c.save_config(&FsStorage, &manifest, &c.environments)
+            .expect("config");
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![a.clone(), b.clone()],
+            ..Default::default()
+        }));
+        let file = dir.join("acme.tortuga-workspace.toml");
+        state.save_workspace_as(&file).expect("save");
+
+        state.save_workspace_defaults(WorkspaceDefaults {
+            settings: RequestSettings {
+                timeout_ms: Some(9_000),
+                follow_redirects: Some(false),
+                ..RequestSettings::default()
+            },
+            headers: vec![KeyValue::new("X-Tenant", "acme")],
+            auth: Auth::Bearer { token: "ws".into() },
+        });
+        let ctx_a = state.context(Some(&a));
+        assert_eq!(ctx_a.settings.timeout_ms, Some(9_000));
+        assert_eq!(ctx_a.auth_origin, "the workspace");
+        assert_eq!(ctx_a.headers, [KeyValue::new("X-Tenant", "acme")]);
+        let ctx_b = state.context(Some(&b));
+        assert_eq!(ctx_b.settings.timeout_ms, Some(1_000), "B's own");
+        assert_eq!(
+            ctx_b.settings.follow_redirects,
+            Some(false),
+            "the workspace's"
+        );
+        assert_eq!(ctx_b.auth_origin, "the project");
+        let scratch = state.context(None);
+        assert!(
+            scratch.headers.is_empty() && scratch.auth.is_none(),
+            "not scratch"
+        );
+
+        let r = state.resolved_settings(Some(&b));
+        assert_eq!(
+            (r.timeout_ms.value, r.timeout_ms.from),
+            (1_000, Level::Project)
+        );
+        assert_eq!(r.follow_redirects.from, Level::Workspace);
+        assert_eq!((r.cookies.value, r.cookies.from), (true, Level::App));
+        assert_eq!(state.resolved_settings(None).timeout_ms.from, Level::App);
+
+        let text = std::fs::read_to_string(&file).expect("file");
+        assert!(text.starts_with("format = 2\n"), "{text}");
+        assert!(
+            text.contains("[settings]\ntimeout_ms = 9000\nfollow_redirects = false\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[auth]\nkind = \"bearer\"\ntoken = \"ws\""),
+            "{text}"
+        );
+
+        // A teammate opening the file gets them too.
+        let mut teammate = AppState::new(Box::new(crate::test_host::TestHost::default()));
+        teammate.open_workspace_file(&file).expect("open");
+        assert_eq!(teammate.context(Some(&a)).settings.timeout_ms, Some(9_000));
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 

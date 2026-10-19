@@ -8,9 +8,12 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts};
+use crate::settings::RequestSettings;
 
-/// Format version written by this build (R-GIT-7).
-pub const FORMAT_VERSION: u32 = 1;
+/// Newest format version this build reads (R-GIT-7). Files are written as format 1
+/// unless they use something older builds would drop when they save the file: then
+/// those builds open the project read-only instead ([`Manifest::required_format`]).
+pub const FORMAT_VERSION: u32 = 2;
 
 /// `tortuga.toml` at the collection root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,19 +36,30 @@ pub struct Manifest {
     /// Collection-level variable defaults (R-VAR-2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, String>,
+    /// How the project's requests are sent, over the workspace's and app's (R-SET-1).
+    #[serde(default, skip_serializing_if = "RequestSettings::is_empty")]
+    pub settings: RequestSettings,
 }
 
 impl Manifest {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            format: FORMAT_VERSION,
+            format: 1,
             name: name.into(),
             secrets: Vec::new(),
             servers: Vec::new(),
             headers: Vec::new(),
             auth: Auth::None,
             variables: BTreeMap::new(),
+            settings: RequestSettings::default(),
         }
+    }
+
+    /// The format version this manifest is written as: 2 with settings (R-SET-1), so
+    /// builds that don't know them open the project read-only instead of dropping
+    /// them; otherwise 1.
+    pub fn required_format(&self) -> u32 {
+        if self.settings.is_empty() { 1 } else { 2 }
     }
 }
 
@@ -284,7 +298,11 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
 }
 
 pub fn write_manifest(manifest: &Manifest) -> String {
-    to_toml(manifest)
+    let manifest = Manifest {
+        format: manifest.required_format(),
+        ..manifest.clone()
+    };
+    to_toml(&manifest)
 }
 
 pub fn parse_folder(text: &str) -> Result<FolderMeta, String> {
@@ -642,6 +660,23 @@ password = "{{token}}"
 "#
         );
         assert_eq!(parse_manifest(&text), Ok(m));
+    }
+
+    /// R-SET-1: a project's request settings; only then is the file format 2.
+    #[test]
+    fn manifest_with_request_settings() {
+        let mut m = Manifest::new("Acme API");
+        m.settings.timeout_ms = Some(5_000);
+        m.settings.cookies = Some(false);
+        let text = write_manifest(&m);
+        assert_eq!(
+            text,
+            "format = 2\nname = \"Acme API\"\n\n[settings]\ntimeout_ms = 5000\ncookies = false\n"
+        );
+        m.format = 2;
+        assert_eq!(parse_manifest(&text), Ok(m.clone()));
+        m.settings = RequestSettings::default();
+        assert!(write_manifest(&m).starts_with("format = 1\n"), "back to 1");
     }
 
     #[test]

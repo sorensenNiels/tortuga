@@ -135,6 +135,8 @@ pub struct RunOptions {
     pub overrides: BTreeMap<String, String>,
     /// The workspace's variables (R-WS-8); every value of the project wins over them.
     pub workspace: BTreeMap<String, String>,
+    /// The workspace's settings, headers and auth (R-SET-1, R-SET-2), below the project's.
+    pub workspace_defaults: crate::workspace::WorkspaceDefaults,
     /// One iteration per row; none means one iteration without a row.
     pub rows: Vec<BTreeMap<String, String>>,
 }
@@ -245,6 +247,7 @@ pub async fn run(
                         options.environment.as_deref(),
                         Some(&path),
                     )
+                    .with_workspace_defaults(&options.workspace_defaults)
                     .with_secrets(options.secrets.clone())
                     .with_workspace(&options.workspace, &std::collections::BTreeSet::new());
                     ctx.variables.extend(options.overrides.clone());

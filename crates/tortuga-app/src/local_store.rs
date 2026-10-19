@@ -233,7 +233,9 @@ mod tests {
         let store = HistoryStore::new(&PrivateStorage, dir.join("p"));
         let request = Request::new(HttpMethod::Get, "https://a.test/");
         let entry = Entry::new(new_id(1, 1), 1, None, &request, None, Err("down".into()));
-        store.add(&entry).expect("add");
+        store
+            .add(&entry, tortuga_core::history::DEFAULT_SIZE)
+            .expect("add");
         let mode = |p: &Path| std::fs::metadata(p).expect("metadata").permissions().mode() & 0o777;
         assert_eq!(mode(&dir.join("p")), 0o700);
         assert_eq!(mode(&dir.join("p/index.json")), 0o600);

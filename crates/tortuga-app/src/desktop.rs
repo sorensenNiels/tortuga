@@ -281,7 +281,7 @@ impl Host for DesktopHost {
             .map_err(|e| e.to_string())
     }
 
-    fn add_history(&self, root: Option<&std::path::Path>, entry: history::Entry) {
+    fn add_history(&self, root: Option<&std::path::Path>, entry: history::Entry, keep: usize) {
         let Some(dir) = local_store::history_dir(root) else {
             return;
         };
@@ -291,10 +291,29 @@ impl Host for DesktopHost {
             let _one_at_a_time = lock
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Err(e) = HistoryStore::new(&local_store::PrivateStorage, dir).add(&entry) {
+            if let Err(e) = HistoryStore::new(&local_store::PrivateStorage, dir).add(&entry, keep) {
                 eprintln!("tortuga: could not add to the history: {e}");
             }
         }));
+    }
+
+    fn trim_history(&self, keep: usize) -> Result<(), String> {
+        let Some(all) = local_store::all_history_dir() else {
+            return Ok(());
+        };
+        let _one_at_a_time = self
+            .history_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Ok(dirs) = std::fs::read_dir(&all) else {
+            return Ok(()); // no history yet
+        };
+        for dir in dirs.flatten().filter(|d| d.path().is_dir()) {
+            HistoryStore::new(&local_store::PrivateStorage, dir.path())
+                .trim(keep)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     fn clear_history(&self, root: Option<&std::path::Path>) -> Result<(), String> {

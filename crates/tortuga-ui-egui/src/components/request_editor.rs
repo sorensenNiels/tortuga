@@ -1,6 +1,8 @@
 use egui::{Color32, ComboBox, Key, Label, RichText, Stroke, TextEdit, Ui};
+use tortuga_core::settings::ResolvedSettings;
 use tortuga_core::{Auth, HttpMethod, KeyValue, Request, RequestBody};
 
+use super::auth_editor::EditDefaults;
 use super::{BodyDrafts, body_editor, key_value_table, request_auth};
 use crate::theme;
 
@@ -71,7 +73,12 @@ pub struct EditorContext<'a> {
     /// Variables used by the request that are not defined (R-VAR-5).
     pub undefined: &'a [String],
     pub sending: bool,
-    pub default_timeout_ms: u64,
+    /// The timeout, redirect and cookie settings the request inherits, with where each
+    /// comes from (R-SET-1).
+    pub settings: ResolvedSettings,
+    /// The request's host when its certificate is not verified because it is in the
+    /// settings' list (R-SET-3).
+    pub unverified_host: Option<&'a str>,
     /// The collection's default auth; `None` for the scratch request (R-HTTP-5).
     pub collection_auth: Option<&'a Auth>,
     /// Headers this request inherits, with where each comes from (R-COL-4, R-COL-11),
@@ -95,6 +102,8 @@ pub enum EditorAction {
     Cancel,
     /// Open the collection's default headers and auth.
     EditCollectionDefaults,
+    /// Open the workspace's default headers and auth (R-SET-2).
+    EditWorkspaceDefaults,
     /// A `curl` command was pasted into the URL field (R-HTTP-11).
     PasteCurl(String),
     /// "Choose…" for the file of multipart part `n` (R-HTTP-15).
@@ -134,6 +143,15 @@ pub fn request_editor(
             format!(
                 "Undefined: {} — define them in the project's environments or the workspace's variables.",
                 names.join(", ")
+            ),
+        );
+    }
+    if let Some(host) = cx.unverified_host {
+        theme::warning(
+            ui,
+            format!(
+                "⚠ The certificate of {host} is not verified (Settings → Requests). Use this for \
+                 test servers only."
             ),
         );
     }
@@ -200,9 +218,18 @@ fn tab_content(
             if !cx.inherited_headers.is_empty() {
                 ui.add_space(8.0);
                 inherited_headers(ui, cx.inherited_headers);
-                if ui.small_button("Edit project defaults…").clicked() {
-                    action = Some(EditorAction::EditCollectionDefaults);
-                }
+                ui.horizontal(|ui| {
+                    if ui.small_button("Edit project defaults…").clicked() {
+                        action = Some(EditorAction::EditCollectionDefaults);
+                    }
+                    let from_workspace = cx
+                        .inherited_headers
+                        .iter()
+                        .any(|(_, origin)| origin == "the workspace");
+                    if from_workspace && ui.small_button("Edit workspace defaults…").clicked() {
+                        action = Some(EditorAction::EditWorkspaceDefaults);
+                    }
+                });
             }
             theme::hint(
                 ui,
@@ -210,14 +237,18 @@ fn tab_content(
             );
         }
         Tab::Auth => {
-            if request_auth(
+            match request_auth(
                 ui,
                 &mut request.auth,
                 cx.collection_auth,
                 cx.auth_origin,
                 cx.undefined,
             ) {
-                action = Some(EditorAction::EditCollectionDefaults);
+                Some(EditDefaults::Project) => action = Some(EditorAction::EditCollectionDefaults),
+                Some(EditDefaults::Workspace) => {
+                    action = Some(EditorAction::EditWorkspaceDefaults);
+                }
+                None => {}
             }
         }
         Tab::Body => {
@@ -617,18 +648,21 @@ fn request_options(
     st: &mut EditorState,
     cx: EditorContext<'_>,
 ) {
-    let default_ms = cx.default_timeout_ms;
+    let timeout = cx.settings.timeout_ms;
     ui.horizontal(|ui| {
         ui.label("Timeout (ms)");
         let edit = TextEdit::singleline(&mut st.timeout_text)
             .id_salt("timeout")
-            .hint_text(format!("{default_ms} (default)"))
-            .desired_width(140.0);
+            .hint_text(format!("{} (from {})", timeout.value, timeout.from.label()))
+            .desired_width(220.0);
         if ui.add(edit).changed() {
             request.timeout_ms = parse_timeout(&st.timeout_text);
         }
     });
-    theme::hint(ui, "Leave empty to use the default from Settings.");
+    theme::hint(
+        ui,
+        "Leave empty to use the project's, the workspace's or the app's setting.",
+    );
 
     // R-CK-2: per request, saved in the request file.
     ui.add_space(12.0);
@@ -637,7 +671,20 @@ fn request_options(
     } else {
         "the scratch cookie jar (kept until the app closes)"
     };
-    ui.checkbox(&mut request.cookies, format!("Use cookies from {jar}"));
+    // Off for the project or workspace: a request can only turn cookies off (R-SET-1).
+    let cookies = cx.settings.cookies;
+    ui.add_enabled_ui(cookies.value, |ui| {
+        ui.checkbox(&mut request.cookies, format!("Use cookies from {jar}"));
+    });
+    if !cookies.value {
+        theme::hint(
+            ui,
+            format!(
+                "Cookies are turned off in {}, so this request sends and stores none.",
+                cookies.from.label()
+            ),
+        );
+    }
     let stored = match cx.cookie_count {
         1 => "1 cookie stored".to_owned(),
         n => format!("{n} cookies stored"),
@@ -662,6 +709,10 @@ mod tests {
 
     use super::*;
 
+    fn test_settings() -> ResolvedSettings {
+        ResolvedSettings::resolve(&[], &tortuga_core::ClientSettings::default())
+    }
+
     #[test]
     fn path_variables_get_a_value_row() {
         let mut request = Request::new(HttpMethod::Get, "https://a.test/users/:id");
@@ -678,7 +729,8 @@ mod tests {
                         server_base: None,
                         undefined: &[],
                         sending: false,
-                        default_timeout_ms: 1000,
+                        settings: test_settings(),
+                        unverified_host: None,
                         collection_auth: None,
                         inherited_headers: &[],
                         auth_origin: "the project",
@@ -729,7 +781,8 @@ mod tests {
                     server_base: None,
                     undefined: &[],
                     sending: false,
-                    default_timeout_ms: 1000,
+                    settings: test_settings(),
+                    unverified_host: None,
                     collection_auth: None,
                     inherited_headers: &[],
                     auth_origin: "the project",
@@ -766,7 +819,8 @@ mod tests {
                         server_base: None,
                         undefined: &[],
                         sending: false,
-                        default_timeout_ms: 1000,
+                        settings: test_settings(),
+                        unverified_host: None,
                         collection_auth: None,
                         inherited_headers: &[],
                         auth_origin: "the project",

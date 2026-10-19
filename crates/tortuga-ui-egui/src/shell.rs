@@ -1,6 +1,7 @@
 //! Top-level layout and the request workflow: selection, unsaved drafts,
 //! sending, saving, and the dialogs.
 
+mod appearance;
 mod commands;
 mod cookies;
 mod history;
@@ -86,6 +87,7 @@ enum WorkspaceAction {
     New,
     Rename,
     Variables,
+    Defaults,
     SaveAsFile,
     OpenFile,
     Remove,
@@ -154,6 +156,8 @@ pub struct TortugaUi {
     finished_rx: Receiver<Finished>,
     /// Fonts and style are installed on the first frame.
     styled: bool,
+    /// The theme and text size last given to egui (R-SET-4, R-SET-5).
+    applied_appearance: Option<tortuga_core::settings::Appearance>,
     /// Requests with unsaved edits whose file changed on disk (R-GIT-11).
     conflicts: HashMap<ItemKey, DiskChange>,
     /// When a request was last copied as curl (egui time), for the "Copied" feedback.
@@ -223,6 +227,7 @@ impl TortugaUi {
             finished_tx,
             finished_rx,
             styled: false,
+            applied_appearance: None,
             conflicts: HashMap::new(),
             copied_at: None,
             drafts_saved: SavedDrafts::default(),
@@ -255,6 +260,7 @@ impl TortugaUi {
             self.state.set_repaint(ui.ctx());
             self.styled = true;
         }
+        self.apply_appearance(ui.ctx());
         self.collect_finished();
         self.collect_workflow_events();
         self.drop_missing_workflows();
@@ -635,6 +641,16 @@ impl TortugaUi {
                 {
                     action = Some(WorkspaceAction::Variables);
                 }
+                if ui
+                    .button("Defaults…")
+                    .on_hover_text(
+                        "Headers, auth, timeout, redirects and cookies every project in this \
+                         workspace inherits",
+                    )
+                    .clicked()
+                {
+                    action = Some(WorkspaceAction::Defaults);
+                }
                 if self.state.host.can_save_files() {
                     let hover = match &current.file {
                         Some(file) => format!(
@@ -698,6 +714,9 @@ impl TortugaUi {
                 self.modal = Some(Modal::WorkspaceVars(
                     crate::components::WorkspaceVarsDialog::new(&self.state),
                 ));
+            }
+            WorkspaceAction::Defaults => {
+                self.modal = Some(Modal::Defaults(DefaultsDialog::for_workspace(&self.state)));
             }
             WorkspaceAction::SaveAsFile => {
                 let name = tortuga_core::workspace::file_name(&self.state.workspace().name);
@@ -842,7 +861,10 @@ impl TortugaUi {
             .collect();
         let cookie_count = self.state.cookie_jar(root.as_deref()).len();
         let sending = self.sending() == Some(&key);
-        let default_timeout_ms = self.state.settings.client.default_timeout_ms;
+        let settings = self.state.resolved_settings(root.as_deref());
+        let app = &self.state.settings.client;
+        let unverified_host =
+            vars::host(&self.current, &ctx).filter(|h| app.verify_tls && app.is_insecure_host(h));
         let preview = self
             .editor
             .shows_preview()
@@ -868,7 +890,8 @@ impl TortugaUi {
                         server_base: server_base.as_deref(),
                         undefined: &undefined,
                         sending,
-                        default_timeout_ms,
+                        settings,
+                        unverified_host: unverified_host.as_deref(),
                         collection_auth: collection_auth.as_ref(),
                         inherited_headers: &inherited_headers,
                         auth_origin: &ctx.auth_origin,
@@ -891,6 +914,11 @@ impl TortugaUi {
                         DefaultsDialog::new(&self.state, root).on_auth(),
                     ));
                 }
+            }
+            Some(EditorAction::EditWorkspaceDefaults) => {
+                self.modal = Some(Modal::Defaults(
+                    DefaultsDialog::for_workspace(&self.state).on_auth(),
+                ));
             }
             None => {}
         }
@@ -928,17 +956,25 @@ impl TortugaUi {
             filter: self.filters.entry(key.clone()).or_default(),
             filtered,
             tests: self.test_results.get(key),
+            wrap: self.state.settings.appearance.wrap_lines,
         };
-        if let Some(ResponseAction::SaveBody) = response_panel(ui, outcome, &mut self.response, cx)
-            && let Some(Outcome::Response(view)) = outcome
-        {
-            let r = &view.response;
-            self.response.save_status =
-                match self.state.host.save_file(&r.suggested_file_name(), &r.body) {
-                    Some(Ok(path)) => Some(format!("Saved to {}", path.display())),
-                    Some(Err(e)) => Some(format!("Could not save: {e}")),
-                    None => self.response.save_status.take(),
-                };
+        match response_panel(ui, outcome, &mut self.response, cx) {
+            Some(ResponseAction::SaveBody) => {
+                if let Some(Outcome::Response(view)) = outcome {
+                    let r = &view.response;
+                    self.response.save_status =
+                        match self.state.host.save_file(&r.suggested_file_name(), &r.body) {
+                            Some(Ok(path)) => Some(format!("Saved to {}", path.display())),
+                            Some(Err(e)) => Some(format!("Could not save: {e}")),
+                            None => self.response.save_status.take(),
+                        };
+                }
+            }
+            Some(ResponseAction::SetWrap(wrap)) => {
+                self.state
+                    .update_settings(|s| s.appearance.wrap_lines = wrap);
+            }
+            None => {}
         }
     }
 
@@ -1803,9 +1839,7 @@ impl TortugaUi {
                 result => result == DialogResult::Open,
             },
             Modal::Defaults(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(defaults) => {
-                    !self.save_defaults(&d.root.clone(), d.folder.clone().as_deref(), &defaults)
-                }
+                DialogResult::Done(defaults) => !self.save_defaults(&d.target.clone(), defaults),
                 result => result == DialogResult::Open,
             },
             Modal::ConfirmDelete(key, d) => match d.show(ctx) {
@@ -1976,7 +2010,10 @@ impl TortugaUi {
         }
         match result {
             DialogResult::Done(settings) => match self.state.apply_settings(&settings) {
-                Ok(()) => false,
+                Ok(()) => {
+                    self.trim_loaded_history();
+                    false
+                }
                 Err(e) => {
                     d.error = Some(e);
                     true
@@ -1986,26 +2023,47 @@ impl TortugaUi {
         }
     }
 
-    /// Saves project defaults (R-COL-4) or folder defaults (R-COL-11). Returns whether it worked.
+    /// Saves the defaults dialog: workspace (R-SET-1, R-SET-2), project (R-COL-4,
+    /// R-SET-1) or folder (R-COL-11) defaults. Returns success.
     fn save_defaults(
         &mut self,
-        root: &Path,
-        folder: Option<&Path>,
-        defaults: &tortuga_core::format::FolderDefaults,
+        target: &crate::components::DefaultsTarget,
+        d: crate::components::EditedDefaults,
     ) -> bool {
-        self.state
-            .run(root, |c, s| {
-                if let Some(folder) = folder {
-                    return c.save_folder_defaults(s, folder, defaults);
-                }
-                let manifest = tortuga_core::Manifest {
-                    headers: defaults.headers.clone(),
-                    auth: defaults.auth.clone(),
-                    ..c.manifest.clone()
+        use crate::components::DefaultsTarget;
+        match target {
+            DefaultsTarget::Workspace => {
+                self.state
+                    .save_workspace_defaults(tortuga_core::workspace::WorkspaceDefaults {
+                        settings: d.settings,
+                        headers: d.headers,
+                        auth: d.auth,
+                    });
+                true
+            }
+            DefaultsTarget::Folder(root, folder) => {
+                let defaults = tortuga_core::format::FolderDefaults {
+                    headers: d.headers,
+                    auth: d.auth,
+                    variables: d.variables,
                 };
-                c.save_config(s, &manifest, &c.environments)
-            })
-            .is_some()
+                self.state
+                    .run(root, |c, s| c.save_folder_defaults(s, folder, &defaults))
+                    .is_some()
+            }
+            DefaultsTarget::Project(root) => self
+                .state
+                .run(root, |c, s| {
+                    let manifest = tortuga_core::Manifest {
+                        headers: d.headers.clone(),
+                        auth: d.auth.clone(),
+                        settings: d.settings,
+                        ..c.manifest.clone()
+                    };
+                    c.save_config(s, &manifest, &c.environments)
+                })
+                .is_some(),
+        }
     }
 
     fn save_environments(
@@ -2585,6 +2643,71 @@ mod tests {
             Some("acme")
         );
         drop(harness);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-SET-1, R-SET-2: "Defaults…" in the workspace menu edits the workspace's
+    /// headers, auth and request settings.
+    #[test]
+    fn workspace_defaults_from_the_menu() {
+        use egui_kittest::kittest::Queryable;
+
+        let (ui, root, _) = setup("ws-defaults-dialog");
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
+        let shared = ui.clone();
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+        harness.get_by_label_contains("My workspace").click();
+        harness.run();
+        harness.get_by_label("Defaults…").click();
+        harness.run();
+        harness.get_by_label_contains("Workspace defaults — My workspace");
+        harness.get_by_label("Requests").click();
+        harness.run();
+        harness.get_by_label("Timeout (ms)");
+        assert!(matches!(
+            &ui.borrow().modal,
+            Some(Modal::Defaults(d)) if d.target == crate::components::DefaultsTarget::Workspace
+        ));
+        drop(harness);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-SET-6: with history off nothing is recorded; a smaller size trims what is kept.
+    #[test]
+    fn history_size_and_off() {
+        use tortuga_core::history::{Entry, new_id};
+
+        let (mut ui, root, key) = setup("history-size");
+        let entry = |ui: &TortugaUi, n: u64| {
+            Entry::new(
+                new_id(n, 1),
+                n,
+                Some(key.path.clone()),
+                &ui.current,
+                None,
+                Err("down".to_owned()),
+            )
+        };
+        let count = |ui: &TortugaUi| ui.state.host.history_list(Some(&root)).expect("list").len();
+        let mut settings = ui.state.settings.clone();
+        settings.history.size = 0;
+        ui.state.apply_settings(&settings).expect("off");
+        let e = entry(&ui, 1);
+        ui.record_history(Some(&root), e);
+        assert_eq!(count(&ui), 0, "nothing recorded");
+
+        settings.history.size = 200;
+        ui.state.apply_settings(&settings).expect("on");
+        for n in 2..6 {
+            let e = entry(&ui, n);
+            ui.record_history(Some(&root), e);
+        }
+        assert_eq!(count(&ui), 4);
+        settings.history.size = 2;
+        ui.state.apply_settings(&settings).expect("smaller");
+        ui.trim_loaded_history();
+        assert_eq!(count(&ui), 2, "trimmed");
         std::fs::remove_dir_all(root).expect("clean up");
     }
 

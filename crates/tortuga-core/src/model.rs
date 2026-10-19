@@ -256,6 +256,11 @@ pub struct Request {
     /// Use the collection's cookie jar: send its cookies and store new ones (R-CK-2).
     #[serde(default = "enabled_by_default", skip_serializing_if = "is_true")]
     pub cookies: bool,
+    /// Follow redirects, as worked out from the project's, workspace's and app's
+    /// settings when the request is prepared (R-SET-1); `None`: the client's setting.
+    /// Not saved: requests don't set it themselves.
+    #[serde(skip)]
+    pub follow_redirects: Option<bool>,
     /// Pre-request and test scripts (R-TEST-1, R-TEST-2).
     #[serde(default, skip_serializing_if = "Scripts::is_empty")]
     pub scripts: Scripts,
@@ -304,6 +309,7 @@ impl Request {
             timeout_ms: None,
             auth: None,
             cookies: true,
+            follow_redirects: None,
             scripts: Scripts::default(),
             capture: std::collections::BTreeMap::new(),
         };

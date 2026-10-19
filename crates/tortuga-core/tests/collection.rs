@@ -289,7 +289,7 @@ fn newer_format_is_read_only() {
             err,
             Error::ReadOnly {
                 found: 99,
-                supported: 1
+                supported: tortuga_core::format::FORMAT_VERSION
             }
         ),
         "{err}"

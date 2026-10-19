@@ -3,7 +3,8 @@
 //! One folder per project (and one for the scratch request), kept by the app in its
 //! data folder, never in the project (§6.7). It holds `index.json`, a list of
 //! [`Summary`]s newest first, and one `<id>.json` per [`Entry`], read only when an
-//! entry is opened. The newest [`MAX_ENTRIES`] are kept.
+//! entry is opened. The newest entries are kept, as many as the settings say
+//! ([`DEFAULT_SIZE`] unless changed, R-SET-6).
 
 use std::path::{Path, PathBuf};
 
@@ -13,8 +14,8 @@ use crate::model::{HttpMethod, KeyValue, Request, Response};
 use crate::storage::Storage;
 use crate::{Error, Result};
 
-/// Entries kept per project.
-pub const MAX_ENTRIES: usize = 200;
+/// Entries kept per project unless the settings say otherwise (R-SET-6).
+pub const DEFAULT_SIZE: usize = 200;
 /// Response bodies are cut to this many bytes.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
@@ -217,8 +218,8 @@ impl<'a> HistoryStore<'a> {
         })
     }
 
-    /// Adds `entry`, then removes the oldest beyond [`MAX_ENTRIES`].
-    pub fn add(&self, entry: &Entry) -> Result<()> {
+    /// Adds `entry`, then removes the oldest beyond `keep` (at least the new one stays).
+    pub fn add(&self, entry: &Entry, keep: usize) -> Result<()> {
         self.storage
             .create_dir_all(&self.dir)
             .map_err(|e| io(&self.dir, e))?;
@@ -231,9 +232,23 @@ impl<'a> HistoryStore<'a> {
         index.entries.retain(|s| s.id != entry.summary.id);
         index.entries.insert(0, entry.summary.clone());
         index.entries.sort_by(|a, b| b.id.cmp(&a.id));
-        let dropped = index
-            .entries
-            .split_off(index.entries.len().min(MAX_ENTRIES));
+        self.keep_newest(index, keep.max(1))
+    }
+
+    /// Removes the oldest entries beyond `keep` (R-SET-6).
+    pub fn trim(&self, keep: usize) -> Result<()> {
+        if !self.storage.exists(&self.dir.join(INDEX)) {
+            return Ok(());
+        }
+        let index = self.index()?;
+        if index.entries.len() <= keep {
+            return Ok(());
+        }
+        self.keep_newest(index, keep)
+    }
+
+    fn keep_newest(&self, mut index: Index, keep: usize) -> Result<()> {
+        let dropped = index.entries.split_off(index.entries.len().min(keep));
         self.write_index(&index)?;
         for old in dropped {
             if let Ok(path) = self.entry_path(&old.id) {
@@ -331,14 +346,14 @@ mod tests {
         let store = HistoryStore::new(&FsStorage, dir.path().join("p"));
         assert_eq!(store.list().expect("empty"), []);
 
-        for n in 0..(MAX_ENTRIES as u64 + 5) {
-            store.add(&entry(n)).expect("add");
+        for n in 0..(DEFAULT_SIZE as u64 + 5) {
+            store.add(&entry(n), DEFAULT_SIZE).expect("add");
         }
         let list = store.list().expect("list");
-        assert_eq!(list.len(), MAX_ENTRIES);
+        assert_eq!(list.len(), DEFAULT_SIZE);
         assert_eq!(
             list[0].name,
-            format!("Request {}", MAX_ENTRIES + 4),
+            format!("Request {}", DEFAULT_SIZE + 4),
             "newest first"
         );
         assert_eq!(list[0].url, "https://{{host}}/users?page=2");
@@ -346,7 +361,7 @@ mod tests {
         assert_eq!(list[0].environment.as_deref(), Some("Staging"));
 
         let newest = store.load(&list[0].id).expect("load");
-        assert_eq!(newest, entry(MAX_ENTRIES as u64 + 4));
+        assert_eq!(newest, entry(DEFAULT_SIZE as u64 + 4));
         assert_eq!(
             newest.response.expect("response").to_response().body,
             br#"{"id":1}"#
@@ -355,11 +370,24 @@ mod tests {
         let files = std::fs::read_dir(dir.path().join("p"))
             .expect("dir")
             .count();
-        assert_eq!(files, MAX_ENTRIES + 1, "entries and the index");
+        assert_eq!(files, DEFAULT_SIZE + 1, "entries and the index");
+
+        // R-SET-6: a smaller size trims what is there.
+        store.trim(3).expect("trim");
+        let list = store.list().expect("list");
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].name, format!("Request {}", DEFAULT_SIZE + 4));
+        let files = std::fs::read_dir(dir.path().join("p"))
+            .expect("dir")
+            .count();
+        assert_eq!(files, 4, "trimmed entries' files are removed");
+        store.add(&entry(999), 0).expect("add");
+        assert_eq!(store.list().expect("list").len(), 1, "the new one stays");
 
         store.clear().expect("clear");
         assert_eq!(store.list().expect("cleared"), []);
         store.clear().expect("clearing twice is fine");
+        store.trim(1).expect("trimming nothing is fine");
     }
 
     #[test]

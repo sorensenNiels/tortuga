@@ -1,4 +1,5 @@
-//! Custom CA certificates (R-HTTP-16), against a real HTTPS server on localhost.
+//! Custom CA certificates (R-HTTP-16) and hosts that skip verification (R-SET-3),
+//! against a real HTTPS server on localhost.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,6 +17,14 @@ const KEY: &[u8] = include_bytes!("fixtures/localhost.key");
 
 /// An HTTPS server with a certificate signed by the test CA. Answers every request with 200.
 async fn https_server() -> String {
+    https_server_answering(|_| {
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok".to_vec()
+    })
+    .await
+}
+
+/// Like [`https_server`], answering with what `reply` makes of the server's port.
+async fn https_server_answering(reply: fn(u16) -> Vec<u8>) -> String {
     let certs = CertificateDer::pem_slice_iter(CERT)
         .collect::<Result<Vec<_>, _>>()
         .expect("certificate");
@@ -48,11 +57,7 @@ async fn https_server() -> String {
                         Ok(n) => request.extend_from_slice(&buf[..n]),
                     }
                 }
-                let _ = tls
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok",
-                    )
-                    .await;
+                let _ = tls.write_all(&reply(port)).await;
                 let _ = tls.shutdown().await;
             });
         }
@@ -103,4 +108,45 @@ async fn files_without_certificates_are_reported_and_the_rest_apply() {
         .execute(&Request::new(HttpMethod::Get, &url))
         .await
         .expect("the good file still applies");
+}
+
+/// R-SET-3: hosts in the list are sent to without verifying their certificate; others
+/// still are, also when a listed host redirects to them.
+#[tokio::test]
+async fn listed_hosts_skip_verification() {
+    let url = https_server().await;
+    let settings = ClientSettings {
+        insecure_hosts: vec!["LOCALHOST".into()],
+        ..ClientSettings::default()
+    };
+    let client = Client::new(settings.clone()).expect("client");
+    let response = client
+        .execute(&Request::new(HttpMethod::Get, &url))
+        .await
+        .expect("listed host");
+    assert_eq!(response.status, 200);
+    let other = url.replace("localhost", "127.0.0.1");
+    let err = client
+        .execute(&Request::new(HttpMethod::Get, &other))
+        .await
+        .expect_err("not listed");
+    assert!(
+        err.to_string().to_lowercase().contains("certificate"),
+        "{err}"
+    );
+
+    // localhost redirects to 127.0.0.1: the redirect is not followed.
+    let redirecting = https_server_answering(|port| {
+        format!(
+            "HTTP/1.1 302 Found\r\nlocation: https://127.0.0.1:{port}/\r\n\
+             content-length: 0\r\nconnection: close\r\n\r\n"
+        )
+        .into_bytes()
+    })
+    .await;
+    let response = client
+        .execute(&Request::new(HttpMethod::Get, &redirecting))
+        .await
+        .expect("listed host");
+    assert_eq!(response.status, 302, "stopped before the unlisted host");
 }

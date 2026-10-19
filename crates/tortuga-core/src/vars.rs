@@ -4,7 +4,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::collection::Collection;
+use crate::http::ClientSettings;
 use crate::model::{Auth, KeyValue, Request, RequestBody};
+use crate::settings::RequestSettings;
+use crate::workspace::WorkspaceDefaults;
 use crate::{Error, Result, query};
 
 /// Everything needed to turn a stored request into one that can be sent.
@@ -32,6 +35,10 @@ pub struct Context {
     pub auth_origin: String,
     /// The project folder, which relative paths of files to upload start from (R-HTTP-15, D21).
     pub base_dir: Option<std::path::PathBuf>,
+    /// How requests are sent: the project's settings, then the workspace's, then the
+    /// app's, as far as they have been added (R-SET-1). What is still unset falls
+    /// back to the client's settings.
+    pub settings: RequestSettings,
 }
 
 impl Context {
@@ -122,7 +129,38 @@ impl Context {
             auth,
             auth_origin,
             base_dir: Some(collection.root.clone()),
+            settings: collection.manifest.settings,
         }
+    }
+
+    /// Adds what the workspace gives every project below its own (R-SET-1, R-SET-2):
+    /// settings the project leaves unset, headers no level below names, and auth when
+    /// neither the folders nor the project set any.
+    #[must_use]
+    pub fn with_workspace_defaults(mut self, defaults: &WorkspaceDefaults) -> Self {
+        self.settings = self.settings.or(defaults.settings);
+        let inherited: Vec<KeyValue> = defaults
+            .headers
+            .iter()
+            .filter(|h| !self.headers.iter().any(|own| same_name(own, h)))
+            .cloned()
+            .collect();
+        let origins = vec!["the workspace".to_owned(); inherited.len()];
+        self.headers.splice(0..0, inherited);
+        self.header_origins.splice(0..0, origins);
+        if self.auth.is_none() && !defaults.auth.is_none() {
+            self.auth = defaults.auth.clone();
+            "the workspace".clone_into(&mut self.auth_origin);
+        }
+        self
+    }
+
+    /// Fills what no workspace or project sets from the app's settings, the last
+    /// level (R-SET-1).
+    #[must_use]
+    pub fn with_app_settings(mut self, app: &ClientSettings) -> Self {
+        self.settings = self.settings.or(RequestSettings::from_app(app));
+        self
     }
 
     /// Adds this machine's secret values; they win over everything else (R-VAR-4).
@@ -263,6 +301,10 @@ fn same_name(a: &KeyValue, b: &KeyValue) -> bool {
 pub fn prepare(request: &Request, ctx: &Context) -> Result<Request> {
     let mut out = request.clone();
     let mut undefined = BTreeSet::new();
+    // The request's own timeout and "no cookies" win over the settings (R-SET-1).
+    out.timeout_ms = request.timeout_ms.or(ctx.settings.timeout_ms);
+    out.follow_redirects = ctx.settings.follow_redirects;
+    out.cookies = request.cookies && ctx.settings.cookies.unwrap_or(true);
 
     // Path variables first, on the request's own URL (R-HTTP-10): their values may
     // use {{variables}}, and a server's base URL may contain `host:port`.
@@ -452,6 +494,18 @@ fn scan<'a>(text: &'a str, mut emit: impl FnMut(Part<'a>)) {
 }
 
 /// `https://api.test/v1/` + `/users` → `https://api.test/v1/users`.
+/// The host `request` is sent to in `ctx`, as far as it can be worked out from its server
+/// and URL: `None` while the URL is incomplete (R-SET-3).
+pub fn host(request: &Request, ctx: &Context) -> Option<String> {
+    let url = match &request.server {
+        Some(id) => join_base(ctx.server_urls.get(id)?, &request.url),
+        None => request.url.clone(),
+    };
+    let url = substitute(&url, &ctx.variables, &mut BTreeSet::new());
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    parsed.host_str().map(str::to_owned)
+}
+
 fn join_base(base: &str, path: &str) -> String {
     let base = base.trim().trim_end_matches('/');
     let path = path.trim();
@@ -651,6 +705,85 @@ mod tests {
         );
     }
 
+    /// R-SET-1: the project's settings, then the workspace's, then the app's; the
+    /// request's own timeout and "no cookies" win.
+    #[test]
+    fn settings_are_applied_when_prepared() {
+        let mut ctx = ctx();
+        ctx.settings.timeout_ms = Some(5_000);
+        let workspace = WorkspaceDefaults {
+            settings: RequestSettings {
+                timeout_ms: Some(9_000),
+                cookies: Some(false),
+                ..RequestSettings::default()
+            },
+            ..WorkspaceDefaults::default()
+        };
+        let app = ClientSettings {
+            follow_redirects: false,
+            ..ClientSettings::default()
+        };
+        let ctx = ctx
+            .with_workspace_defaults(&workspace)
+            .with_app_settings(&app);
+        let mut req = Request::new(HttpMethod::Get, "https://a.test/");
+        let out = prepare(&req, &ctx).expect("prepared");
+        assert_eq!(out.timeout_ms, Some(5_000), "the project's");
+        assert_eq!(out.follow_redirects, Some(false), "the app's");
+        assert!(!out.cookies, "the workspace's");
+        req.timeout_ms = Some(100);
+        assert_eq!(prepare(&req, &ctx).expect("prepared").timeout_ms, Some(100));
+    }
+
+    /// R-SET-2: workspace headers and auth come below the project's.
+    #[test]
+    fn workspace_headers_and_auth() {
+        let workspace = WorkspaceDefaults {
+            headers: vec![
+                KeyValue::new("X-Tenant", "acme"),
+                KeyValue::new("Accept", "text/plain"),
+            ],
+            auth: Auth::Bearer { token: "ws".into() },
+            ..WorkspaceDefaults::default()
+        };
+        let mut ctx = ctx();
+        ctx.headers = vec![KeyValue::new("accept", "application/json")];
+        ctx.header_origins = vec!["the project".into()];
+        let ctx = ctx.with_workspace_defaults(&workspace);
+        let req = Request::new(HttpMethod::Get, "https://a.test/");
+        let inherited: Vec<(String, String)> = ctx
+            .inherited_headers_with_origins(&req)
+            .map(|(h, o)| (format!("{}: {}", h.name, h.value), o.to_owned()))
+            .collect();
+        assert_eq!(
+            inherited,
+            [
+                ("X-Tenant: acme".to_owned(), "the workspace".to_owned()),
+                (
+                    "accept: application/json".to_owned(),
+                    "the project".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(ctx.auth_origin, "the workspace");
+        let out = prepare(&req, &ctx).expect("prepared");
+        assert!(
+            out.headers
+                .contains(&KeyValue::new("Authorization", "Bearer ws"))
+        );
+
+        // The project's own auth wins.
+        let mut own = super::tests::ctx();
+        own.auth = Auth::Bearer {
+            token: "project".into(),
+        };
+        own.auth_origin = "the project".into();
+        assert_eq!(
+            own.with_workspace_defaults(&workspace).auth_origin,
+            "the project"
+        );
+    }
+
     #[test]
     fn path_variables_are_filled_before_the_server_base() {
         let mut req = Request::new(HttpMethod::Get, "/users/:user/orders/:order");
@@ -666,6 +799,20 @@ mod tests {
             prepare(&req, &ctx()).expect_err("empty").to_string(),
             "path variable without a value: order"
         );
+    }
+
+    /// R-SET-3: the host comes from the server's base URL and variables.
+    #[test]
+    fn host_of_a_request() {
+        let ctx = ctx();
+        let mut req = Request::new(HttpMethod::Get, "/users/{{id}}");
+        assert_eq!(host(&req, &ctx), None, "no server");
+        req.server = Some("users".into());
+        assert_eq!(host(&req, &ctx).as_deref(), Some("localhost"));
+        req.server = Some("auth".into());
+        assert_eq!(host(&req, &ctx), None, "no base URL in this environment");
+        let req = Request::new(HttpMethod::Get, "https://Api.{{id}}.test:8443/x");
+        assert_eq!(host(&req, &ctx).as_deref(), Some("api.42.test"));
     }
 
     #[test]

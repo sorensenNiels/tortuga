@@ -15,7 +15,7 @@ use tortuga_core::history;
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
 use tortuga_core::workflow::Workflow;
-use tortuga_core::workspace::{ProjectRef, WorkspaceVariables};
+use tortuga_core::workspace::{ProjectRef, WorkspaceDefaults, WorkspaceVariables};
 use tortuga_core::{AppSettings, Request};
 
 /// What is remembered on this machine only, never in a project (R-LOC-1): the
@@ -100,6 +100,10 @@ pub struct Workspace {
     /// Variables every project can use (R-WS-8); kept in the workspace file too, if any.
     #[serde(skip_serializing_if = "WorkspaceVariables::is_empty")]
     pub variables: WorkspaceVariables,
+    /// Settings, headers and auth every project inherits (R-SET-1, R-SET-2); kept in
+    /// the workspace file too, if any.
+    #[serde(skip_serializing_if = "WorkspaceDefaults::is_empty")]
+    pub defaults: WorkspaceDefaults,
     /// Project root (as text) → environment id, for projects without an environment
     /// named like the workspace's (R-WS-6).
     pub project_environments: BTreeMap<String, String>,
@@ -287,9 +291,15 @@ pub trait Host {
         Err("History is not kept here.".into())
     }
 
-    /// Adds an entry to the history. Writing can take a moment, so it may happen in the
+    /// Removes the oldest entries beyond `keep` from every project's history (R-SET-6).
+    fn trim_history(&self, _keep: usize) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Adds an entry to the history, keeping the newest `keep` (R-SET-6). Writing can
+    /// take a moment, so it may happen in the
     /// background.
-    fn add_history(&self, _root: Option<&Path>, _entry: history::Entry) {}
+    fn add_history(&self, _root: Option<&Path>, _entry: history::Entry, _keep: usize) {}
 
     /// Removes the history of a project (`None`: the scratch request) (R-HIST-3).
     fn clear_history(&self, _root: Option<&Path>) -> Result<(), String> {

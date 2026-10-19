@@ -886,7 +886,7 @@ fn collection_menu(
     item(ui, environments, &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
     });
-    item(ui, "Defaults (headers, auth)…".into(), &|| {
+    item(ui, "Defaults (headers, auth, requests)…".into(), &|| {
         MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
     });
     if !c.read_only {

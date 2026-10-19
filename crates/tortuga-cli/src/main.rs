@@ -19,8 +19,8 @@ Options:
   --env NAME            Use this environment (by name or id)
   --data FILE           Run once per row of a CSV or JSON data file
   --var NAME=VALUE      Set a variable (repeatable); wins over the project's values
-  --workspace FILE      Use the variables of this .tortuga-workspace.toml; the
-                        project's own values win over them
+  --workspace FILE      Use the variables, settings, headers and auth of this
+                        .tortuga-workspace.toml; the project's own win over them
   --insecure            Do not verify TLS certificates
   --cacert FILE         Also trust the CA certificates in this PEM file (repeatable)
   --report junit|json   Write a report ...
@@ -163,12 +163,12 @@ fn env_vars(env: impl Iterator<Item = (String, String)>) -> BTreeMap<String, Str
     .collect()
 }
 
-/// The shared variables of a workspace file (R-WS-8). Secret ones have no value in the
-/// file; pass them with `--var` or `TORTUGA_VAR_<name>`.
-fn workspace_values(path: &Path) -> Result<BTreeMap<String, String>, String> {
+/// A workspace file: its shared variables (R-WS-8), settings, headers and auth
+/// (R-SET-1, R-SET-2). Secret variables have no value in the file; pass them with
+/// `--var` or `TORTUGA_VAR_<name>`.
+fn read_workspace(path: &Path) -> Result<tortuga_core::workspace::WorkspaceFile, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let file = tortuga_core::workspace::read(&text, path).map_err(|e| e.to_string())?;
-    Ok(file.variables.values)
+    tortuga_core::workspace::read(&text, path).map_err(|e| e.to_string())
 }
 
 /// Runs what `args` asks for. `Ok(passed)`, or an error in the command or the project.
@@ -210,15 +210,16 @@ fn run(args: &Args) -> Result<bool, String> {
         }
     };
     let workspace = match &args.workspace {
-        None => BTreeMap::new(),
-        Some(path) => workspace_values(path)?,
+        None => tortuga_core::workspace::WorkspaceFile::default(),
+        Some(path) => read_workspace(path)?,
     };
     let client = client(args)?;
     let options = RunOptions {
         environment,
         secrets: BTreeMap::new(),
         overrides: args.vars.clone(),
-        workspace,
+        workspace: workspace.variables.values,
+        workspace_defaults: workspace.defaults,
         rows,
     };
 

@@ -210,6 +210,22 @@ fn rows(text: &str) -> Vec<Range<usize>> {
     }
 }
 
+/// `rows` of `text` cut into pieces of at most `width` characters (R-SET-7).
+fn wrap_rows(text: &str, rows: &[Range<usize>], width: usize) -> Vec<Range<usize>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut from = row.start;
+        for (chars, (i, _)) in text[row.clone()].char_indices().enumerate() {
+            if chars > 0 && chars % width == 0 {
+                out.push(from..row.start + i);
+                from = row.start + i;
+            }
+        }
+        out.push(from..row.end);
+    }
+    out
+}
+
 /// Every match of `query` in `text`, ignoring case, as byte ranges (R-HTTP-12).
 fn find_all(text: &str, query: &str) -> Vec<Range<usize>> {
     if query.is_empty() {
@@ -261,6 +277,16 @@ pub struct ResponseState {
     /// Ctrl+F: put the cursor in the search field.
     pub focus_search: bool,
     scroll_to_match: bool,
+    /// The rows of the shown text wrapped at the panel's width (R-SET-7).
+    wrapped: Option<WrappedRows>,
+}
+
+/// Rows of a text cut at a width, kept until the text or the width changes (R-SET-7).
+#[derive(Debug, Clone)]
+struct WrappedRows {
+    /// The text's address and length, and the width in characters.
+    key: (usize, usize, usize),
+    rows: Vec<Range<usize>>,
 }
 
 impl ResponseState {
@@ -309,11 +335,15 @@ pub struct PanelContext<'a> {
     pub filtered: Filtered<'a>,
     /// What the request's scripts and captures did, if it has any (R-TEST-1).
     pub tests: Option<&'a TestsView>,
+    /// Wrap long lines of the body (R-SET-7).
+    pub wrap: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseAction {
     SaveBody,
+    /// Turn wrapping long lines on or off (R-SET-7).
+    SetWrap(bool),
 }
 
 /// Response status, timing, size, headers and body (R-HTTP-6).
@@ -389,6 +419,7 @@ fn details(
         filter,
         filtered,
         tests,
+        wrap,
         ..
     } = cx;
     let response = &view.response;
@@ -448,7 +479,11 @@ fn details(
     theme::tabs(ui, &mut st.tab, &tabs);
 
     theme::card(ui).show(ui, |ui| match st.tab {
-        Tab::Body => body(ui, &view.body, st, filter, filtered),
+        Tab::Body => {
+            if let Some(wrap) = body(ui, &view.body, st, filter, filtered, wrap) {
+                action = Some(ResponseAction::SetWrap(wrap));
+            }
+        }
         Tab::Tests => tests_tab(ui, tests),
         Tab::Headers => {
             ScrollArea::vertical()
@@ -471,16 +506,24 @@ fn details(
     action
 }
 
+/// The body with its toolbar. Returns the new wrapping choice if it was changed.
 fn body(
     ui: &mut Ui,
     body: &Body,
     st: &mut ResponseState,
     filter: &mut String,
     filtered: Filtered<'_>,
-) {
+    wrap: bool,
+) -> Option<bool> {
     let full = match body {
-        Body::Empty => return theme::hint(ui, "No body."),
-        Body::Binary => return theme::hint(ui, "Binary content. Use “Save to file” to keep it."),
+        Body::Empty => {
+            theme::hint(ui, "No body.");
+            return None;
+        }
+        Body::Binary => {
+            theme::hint(ui, "Binary content. Use “Save to file” to keep it.");
+            return None;
+        }
         Body::Text(text) => text,
     };
     let shown = match filtered {
@@ -492,7 +535,7 @@ fn body(
     if let Some(shown) = shown {
         st.update_matches(&shown.text);
     }
-    toolbar(ui, st, full.json.then_some(filter));
+    let wrap_changed = toolbar(ui, st, full.json.then_some(filter), wrap);
     if let Filtered::Failed(message) = filtered {
         theme::warning(ui, message);
     }
@@ -501,7 +544,7 @@ fn body(
             ui.spinner();
             theme::hint(ui, "Filtering…");
         });
-        return;
+        return wrap_changed;
     };
     if shown.truncated {
         let limit = format::size(format::MAX_DISPLAY_BYTES);
@@ -510,7 +553,8 @@ fn body(
             format!("Showing the first {limit}. Use “Save to file” for the full body."),
         );
     }
-    text_rows(ui, shown, st);
+    text_rows(ui, shown, st, wrap);
+    wrap_changed
 }
 
 /// Test results, errors, variables set and console output (R-TEST-1, R-TEST-4, R-TEST-5).
@@ -588,9 +632,16 @@ pub fn tests_details(ui: &mut Ui, t: &TestsView) {
     }
 }
 
-/// The JSON filter (for JSON bodies) and the search field, above the body.
-fn toolbar(ui: &mut Ui, st: &mut ResponseState, filter: Option<&mut String>) {
+/// The JSON filter (for JSON bodies), the search field and "Wrap", above the body.
+/// Returns the new wrapping choice if it was changed (R-SET-7).
+fn toolbar(
+    ui: &mut Ui,
+    st: &mut ResponseState,
+    filter: Option<&mut String>,
+    wrap: bool,
+) -> Option<bool> {
     let p = theme::palette(ui);
+    let mut wrap_changed = None;
     egui::Sides::new().shrink_left().show(
         ui,
         |ui| {
@@ -607,6 +658,13 @@ fn toolbar(ui: &mut Ui, st: &mut ResponseState, filter: Option<&mut String>) {
             }
         },
         |ui| {
+            if ui
+                .add(egui::Button::selectable(wrap, "Wrap"))
+                .on_hover_text("Wrap long lines (also in Settings → Appearance)")
+                .clicked()
+            {
+                wrap_changed = Some(!wrap);
+            }
             let n = st.matches.len();
             if !st.search.is_empty() {
                 if ui
@@ -651,30 +709,55 @@ fn toolbar(ui: &mut Ui, st: &mut ResponseState, filter: Option<&mut String>) {
         },
     );
     ui.add_space(4.0);
+    wrap_changed
 }
 
 /// The text, one row per line; only the visible rows are laid out, so big bodies
 /// scroll smoothly (R-NF-2). Matches of the search are highlighted (R-HTTP-12).
-fn text_rows(ui: &mut Ui, body: &TextBody, st: &mut ResponseState) {
+fn text_rows(ui: &mut Ui, body: &TextBody, st: &mut ResponseState, wrap: bool) {
     let row_height = ui.text_style_height(&TextStyle::Monospace);
     ui.spacing_mut().item_spacing.y = 3.0;
+    let char_width =
+        ui.fonts_mut(|f| f.glyph_width(&TextStyle::Monospace.resolve(ui.style()), 'x'));
+    // Wrapped: rows as wide as the panel, worked out from the monospace character width
+    // and kept until the text or the width changes (R-SET-7).
+    let rows: &[Range<usize>] = if wrap {
+        // Leave room for the scroll bar.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a panel is a few thousand points wide at most"
+        )]
+        let width = ((ui.available_width() - 16.0) / char_width.max(1.0)).max(10.0) as usize;
+        let key = (body.text.as_ptr() as usize, body.text.len(), width);
+        if st.wrapped.as_ref().is_none_or(|w| w.key != key) {
+            st.wrapped = Some(WrappedRows {
+                key,
+                rows: wrap_rows(&body.text, &body.rows, width),
+            });
+        }
+        st.wrapped.as_ref().map_or(&body.rows, |w| &w.rows)
+    } else {
+        &body.rows
+    };
     // A new text (another response, or a filter result) starts at the top.
-    let mut area = ScrollArea::both()
-        .id_salt(("response-body", body.text.as_ptr() as usize))
-        .auto_shrink(false);
+    let mut area = if wrap {
+        ScrollArea::vertical()
+    } else {
+        ScrollArea::both()
+    }
+    .id_salt(("response-body", body.text.as_ptr() as usize, wrap))
+    .auto_shrink(false);
     if std::mem::take(&mut st.scroll_to_match)
         && let Some(m) = st.matches.get(st.current)
     {
-        let row = body.rows.partition_point(|r| r.end < m.start);
+        let row = rows.partition_point(|r| r.end < m.start);
         let stride = row_height + ui.spacing().item_spacing.y;
         #[expect(clippy::cast_precision_loss, reason = "row numbers are far below 2^23")]
         let y = (row as f32 - 3.0).max(0.0) * stride;
-        let column = body
-            .rows
+        let column = rows
             .get(row)
             .map_or(0, |r| body.text[r.start..m.start].chars().count());
-        let char_width =
-            ui.fonts_mut(|f| f.glyph_width(&TextStyle::Monospace.resolve(ui.style()), 'x'));
         #[expect(
             clippy::cast_precision_loss,
             reason = "rows are at most a few thousand characters"
@@ -685,8 +768,8 @@ fn text_rows(ui: &mut Ui, body: &TextBody, st: &mut ResponseState) {
     let p = theme::palette(ui);
     let font = TextStyle::Monospace.resolve(ui.style());
     let text_color = ui.visuals().text_color();
-    area.show_rows(ui, row_height, body.rows.len(), |ui, visible| {
-        for range in &body.rows[visible] {
+    area.show_rows(ui, row_height, rows.len(), |ui, visible| {
+        for range in &rows[visible] {
             let found = matches_in(&st.matches, range);
             if found.is_empty() {
                 ui.add(
@@ -767,6 +850,7 @@ mod tests {
                 filter: &mut filter,
                 filtered: Filtered::Off,
                 tests: None,
+                wrap: false,
             };
             response_panel(ui, outcome.as_ref(), &mut st, cx);
         });
@@ -893,6 +977,16 @@ mod tests {
         assert_eq!(text_start("aé".as_bytes(), 2), Some("a"));
         assert_eq!(text_start("aé".as_bytes(), 3), Some("aé"));
         assert_eq!(text_start(&[0xff, b'a'], 2), None);
+    }
+
+    /// R-SET-7: wrapped rows are at most `width` characters, also with multi-byte ones.
+    #[test]
+    fn wrapped_rows_are_cut_at_the_width() {
+        let text = "abcdefg\nhé";
+        let rows = rows(text);
+        let wrapped = wrap_rows(text, &rows, 3);
+        let pieces: Vec<&str> = wrapped.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(pieces, ["abc", "def", "g", "hé"]);
     }
 
     #[test]

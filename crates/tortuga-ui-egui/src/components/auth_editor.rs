@@ -46,16 +46,24 @@ pub fn describe(auth: &Auth) -> String {
     }
 }
 
-/// The request's Auth tab (R-HTTP-5). `inherited` is the collection's default auth,
-/// `None` for the scratch request. Returns true when the user asked to edit the
-/// collection's defaults.
+/// Whose defaults the user asked to edit from a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditDefaults {
+    Project,
+    /// R-SET-2.
+    Workspace,
+}
+
+/// The request's Auth tab (R-HTTP-5). `inherited` is the auth it inherits, `None` for
+/// the scratch request; `origin` says where from. Returns whose defaults the user asked
+/// to edit.
 pub fn request_auth(
     ui: &mut Ui,
     auth: &mut Option<Auth>,
     inherited: Option<&Auth>,
     origin: &str,
     undefined: &[String],
-) -> bool {
+) -> Option<EditDefaults> {
     let from_project = origin == "the project";
     let current = match auth {
         None if inherited.is_some() => Kind::Inherit,
@@ -81,7 +89,7 @@ pub fn request_auth(
     }
     ui.add_space(6.0);
 
-    let mut edit_defaults = false;
+    let mut edit_defaults = None;
     match (auth.as_mut(), inherited) {
         (None, Some(inherited)) => {
             theme::hint(
@@ -92,7 +100,15 @@ pub fn request_auth(
                 ),
             );
             if from_project {
-                edit_defaults = ui.button("Edit project defaults…").clicked();
+                edit_defaults = ui
+                    .button("Edit project defaults…")
+                    .clicked()
+                    .then_some(EditDefaults::Project);
+            } else if origin == "the workspace" {
+                edit_defaults = ui
+                    .button("Edit workspace defaults…")
+                    .clicked()
+                    .then_some(EditDefaults::Workspace);
             } else {
                 theme::hint(
                     ui,

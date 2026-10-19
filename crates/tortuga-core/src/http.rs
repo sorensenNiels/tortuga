@@ -22,10 +22,17 @@ pub struct ClientSettings {
     pub verify_tls: bool,
     /// Used when a request has no timeout of its own.
     pub default_timeout_ms: u64,
+    /// Send and store cookies (R-CK-2, R-SET-1). Applied through
+    /// [`crate::vars::Context`], where workspaces and projects can override it.
+    pub send_cookies: bool,
     /// PEM files whose certificates are trusted besides the system's (R-HTTP-16).
     /// Local to this machine (D22); read by the app, see [`Client::with_ca_certificates`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ca_certificates: Vec<std::path::PathBuf>,
+    /// Hosts whose certificates are not verified, e.g. `localhost` or `*.dev.internal`
+    /// (R-SET-3). Only ever set on this machine, never by a shared file (D39).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub insecure_hosts: Vec<String>,
 }
 
 impl Default for ClientSettings {
@@ -34,7 +41,9 @@ impl Default for ClientSettings {
             follow_redirects: true,
             verify_tls: true,
             default_timeout_ms: 30_000,
+            send_cookies: true,
             ca_certificates: Vec::new(),
+            insecure_hosts: Vec::new(),
         }
     }
 }
@@ -45,6 +54,44 @@ impl ClientSettings {
     pub fn default_timeout(&self) -> Duration {
         Duration::from_millis(self.default_timeout_ms)
     }
+
+    /// Requests to `host` are sent without verifying its certificate: verification is
+    /// off, or the host is in [`Self::insecure_hosts`] (R-SET-3).
+    pub fn skips_verification(&self, host: &str) -> bool {
+        !self.verify_tls || self.is_insecure_host(host)
+    }
+
+    /// `host` is in [`Self::insecure_hosts`]: exactly, or under a `*.domain` entry.
+    pub fn is_insecure_host(&self, host: &str) -> bool {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        self.insecure_hosts.iter().any(|pattern| {
+            let pattern = host_of_pattern(pattern);
+            match pattern.strip_prefix("*.") {
+                Some(domain) => !domain.is_empty() && host.ends_with(&format!(".{domain}")),
+                None => !pattern.is_empty() && host == pattern,
+            }
+        })
+    }
+}
+
+/// The host part of an entry in [`ClientSettings::insecure_hosts`], lower-case; a
+/// scheme, port or path typed with it is left out.
+fn host_of_pattern(pattern: &str) -> String {
+    let p = pattern.trim();
+    let p = p.split_once("://").map_or(p, |(_, rest)| rest);
+    let p = p.split('/').next().unwrap_or_default();
+    // `[::1]:8443` and `host:8443` lose the port; `::1` stays as it is.
+    let p = match p.rsplit_once(':') {
+        Some((host, port))
+            if (host.ends_with(']') || !host.contains(':'))
+                && !port.is_empty()
+                && port.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            host
+        }
+        _ => p,
+    };
+    p.trim_end_matches('.').to_ascii_lowercase()
 }
 
 /// Reads the files of multipart uploads when a request is sent (R-HTTP-15). The app
@@ -72,11 +119,12 @@ pub struct Client {
     roots: Vec<reqwest::Certificate>,
     /// Reads files to upload; `None`: uploading files is not possible here.
     files: Option<FileReader>,
-    /// One client per cookie jar, created on first use (R-CK-1). Each keeps its
-    /// jar alive, so the key (the jar's address) cannot be reused by another jar.
+    /// Clients other than `inner`, created on first use: one per cookie jar (R-CK-1),
+    /// redirect policy (R-SET-1) and host exception (R-SET-3). Each keeps its jar
+    /// alive, so the key (the jar's address) cannot be reused by another jar.
     #[cfg(not(target_arch = "wasm32"))]
-    jar_clients:
-        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, reqwest::Client>>>,
+    clients:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ClientKey, reqwest::Client>>>,
 }
 
 impl Default for Client {
@@ -107,13 +155,14 @@ impl Client {
                 reason: "not supported in the browser".into(),
             })
             .collect();
-        let inner = builder(
-            &settings,
-            #[cfg(not(target_arch = "wasm32"))]
-            &roots,
-        )
-        .build()
-        .map_err(|e| Error::ClientSetup(e.to_string()))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let inner = builder(&settings, ClientKey::plain(&settings), &roots)
+            .build()
+            .map_err(|e| Error::ClientSetup(e.to_string()))?;
+        #[cfg(target_arch = "wasm32")]
+        let inner = builder(&settings)
+            .build()
+            .map_err(|e| Error::ClientSetup(e.to_string()))?;
         let client = Self {
             inner,
             settings,
@@ -121,7 +170,7 @@ impl Client {
             roots,
             files: None,
             #[cfg(not(target_arch = "wasm32"))]
-            jar_clients: std::sync::Arc::default(),
+            clients: std::sync::Arc::default(),
         };
         Ok((client, problems))
     }
@@ -133,31 +182,52 @@ impl Client {
         self
     }
 
-    /// The client that sends `request`: with `jar` unless the request has cookies
-    /// switched off (R-CK-2). Without a jar, no cookies are sent or stored.
+    /// The client that sends `request` to `host`: with `jar` unless the request has
+    /// cookies switched off (R-CK-2), following redirects as the request says, else as
+    /// the app's settings say (R-SET-1), and without verifying the certificate of a
+    /// host in the settings' list (R-SET-3). Without a jar, no cookies are sent or stored.
     #[cfg(not(target_arch = "wasm32"))]
-    fn client_for(&self, request: &Request, jar: Option<&CookieJar>) -> Result<reqwest::Client> {
-        let Some(jar) = jar.filter(|_| request.cookies) else {
-            return Ok(self.inner.clone());
+    fn client_for(
+        &self,
+        request: &Request,
+        jar: Option<&CookieJar>,
+        host: &str,
+    ) -> Result<reqwest::Client> {
+        let jar = jar.filter(|_| request.cookies);
+        let key = ClientKey {
+            jar: jar.map(CookieJar::id),
+            follow_redirects: request
+                .follow_redirects
+                .unwrap_or(self.settings.follow_redirects),
+            insecure_host: self.settings.verify_tls && self.settings.is_insecure_host(host),
         };
+        if key == ClientKey::plain(&self.settings) {
+            return Ok(self.inner.clone());
+        }
         let mut clients = self
-            .jar_clients
+            .clients
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(client) = clients.get(&jar.id()) {
+        if let Some(client) = clients.get(&key) {
             return Ok(client.clone());
         }
-        let client = builder(&self.settings, &self.roots)
-            .cookie_provider(std::sync::Arc::new(jar.clone()))
-            .build()
-            .map_err(|e| Error::ClientSetup(e.to_string()))?;
-        clients.insert(jar.id(), client.clone());
+        let mut b = builder(&self.settings, key, &self.roots);
+        if let Some(jar) = jar {
+            b = b.cookie_provider(std::sync::Arc::new(jar.clone()));
+        }
+        let client = b.build().map_err(|e| Error::ClientSetup(e.to_string()))?;
+        clients.insert(key, client.clone());
         Ok(client)
     }
 
     #[cfg(target_arch = "wasm32")]
     #[expect(clippy::unnecessary_wraps, reason = "same signature as native")]
-    fn client_for(&self, _request: &Request, _jar: Option<&CookieJar>) -> Result<reqwest::Client> {
+    fn client_for(
+        &self,
+        _request: &Request,
+        _jar: Option<&CookieJar>,
+        _host: &str,
+    ) -> Result<reqwest::Client> {
         Ok(self.inner.clone())
     }
 
@@ -178,12 +248,12 @@ impl Client {
         request: &Request,
         jar: Option<&CookieJar>,
     ) -> Result<Response> {
-        let client = self.client_for(request, jar)?;
         let full_url = query::join_url(&request.url, &request.params);
         let url = url::Url::parse(full_url.trim()).map_err(|source| Error::InvalidUrl {
             url: full_url.clone(),
             source,
         })?;
+        let client = self.client_for(request, jar, url.host_str().unwrap_or_default())?;
 
         let timeout = request
             .timeout()
@@ -295,15 +365,56 @@ impl Client {
     }
 }
 
+/// What sets one HTTP client apart from another (see [`Client::client_for`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn builder(settings: &ClientSettings, roots: &[reqwest::Certificate]) -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
-        .redirect(if settings.follow_redirects {
-            reqwest::redirect::Policy::limited(ClientSettings::MAX_REDIRECTS)
-        } else {
-            reqwest::redirect::Policy::none()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ClientKey {
+    /// The cookie jar's address.
+    jar: Option<usize>,
+    follow_redirects: bool,
+    /// The host is in the settings' list of hosts not to verify (R-SET-3).
+    insecure_host: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ClientKey {
+    /// The client most requests use: no jar, the app's settings.
+    fn plain(settings: &ClientSettings) -> Self {
+        Self {
+            jar: None,
+            follow_redirects: settings.follow_redirects,
+            insecure_host: false,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn builder(
+    settings: &ClientSettings,
+    key: ClientKey,
+    roots: &[reqwest::Certificate],
+) -> reqwest::ClientBuilder {
+    let redirect = if !key.follow_redirects {
+        reqwest::redirect::Policy::none()
+    } else if key.insecure_host {
+        // The exception is for the listed hosts only: a redirect elsewhere is not followed,
+        // since this client doesn't verify certificates (R-SET-3).
+        let settings = settings.clone();
+        reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= ClientSettings::MAX_REDIRECTS {
+                attempt.error("too many redirects")
+            } else if settings.is_insecure_host(attempt.url().host_str().unwrap_or_default()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
         })
-        .tls_danger_accept_invalid_certs(!settings.verify_tls)
+    } else {
+        reqwest::redirect::Policy::limited(ClientSettings::MAX_REDIRECTS)
+    };
+    reqwest::Client::builder()
+        .redirect(redirect)
+        .tls_danger_accept_invalid_certs(!settings.verify_tls || key.insecure_host)
         // Besides the system's certificates, not instead of them.
         .tls_certs_merge(roots.iter().cloned())
 }
@@ -365,5 +476,55 @@ fn to_reqwest_method(method: HttpMethod) -> reqwest::Method {
         HttpMethod::Delete => reqwest::Method::DELETE,
         HttpMethod::Head => reqwest::Method::HEAD,
         HttpMethod::Options => reqwest::Method::OPTIONS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R-SET-3: exact hosts and `*.domain` entries, whatever else was typed with them.
+    #[test]
+    fn insecure_host_patterns() {
+        let settings = ClientSettings {
+            insecure_hosts: vec![
+                "localhost".into(),
+                "*.dev.internal".into(),
+                "https://Staging.Test:8443/api".into(),
+                "[::1]:8443".into(),
+                "  ".into(),
+                "*.".into(),
+            ],
+            ..ClientSettings::default()
+        };
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            "a.dev.internal",
+            "x.y.dev.internal",
+            "staging.test",
+            "[::1]",
+        ] {
+            assert!(settings.is_insecure_host(host), "{host}");
+        }
+        for host in [
+            "dev.internal",
+            "localhost.evil.test",
+            "staging.test.evil",
+            "127.0.0.1",
+            "",
+        ] {
+            assert!(!settings.is_insecure_host(host), "{host}");
+        }
+        assert!(settings.skips_verification("localhost"));
+        assert!(!settings.skips_verification("example.com"));
+        let off = ClientSettings {
+            verify_tls: false,
+            ..ClientSettings::default()
+        };
+        assert!(
+            off.skips_verification("example.com"),
+            "verification off for all"
+        );
     }
 }

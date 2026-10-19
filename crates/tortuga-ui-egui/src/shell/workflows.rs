@@ -484,6 +484,7 @@ impl TortugaUi {
             secrets,
             overrides: BTreeMap::new(),
             workspace: self.state.workspace_values(),
+            workspace_defaults: self.state.workspace().defaults.clone(),
             rows,
         };
         self.workflows.next_run += 1;

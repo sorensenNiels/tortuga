@@ -45,6 +45,8 @@ pub(super) enum Command {
     RuntimeVars(Option<PathBuf>),
     /// The workspace's variables (R-WS-8).
     WorkspaceVariables,
+    /// The workspace's headers, auth and request settings (R-SET-1, R-SET-2).
+    WorkspaceDefaults,
     AddProjects,
     NewProject,
     Import(ImportKind),
@@ -73,6 +75,19 @@ fn project_commands(importers: &ImporterSettings) -> Vec<PaletteItem<PaletteChoi
         _ => true,
     })
     .collect()
+}
+
+/// The workspace's variables (R-WS-8) and defaults (R-SET-1, R-SET-2).
+fn workspace_commands(workspace: &str) -> [PaletteItem<PaletteChoice>; 2] {
+    let run = |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+    [
+        run("Workspace variables…", Command::WorkspaceVariables)
+            .detail(workspace)
+            .keywords("shared captured secret"),
+        run("Workspace defaults…", Command::WorkspaceDefaults)
+            .detail(workspace)
+            .keywords("headers auth timeout redirects cookies settings"),
+    ]
 }
 
 impl TortugaUi {
@@ -177,7 +192,7 @@ impl TortugaUi {
                     Command::ProjectDefaults(c.root.clone()),
                 )
                 .detail(c.name())
-                .keywords("headers auth"),
+                .keywords("headers auth timeout redirects cookies settings"),
             );
         }
         let root = self.selection.as_ref().map(|k| k.root.clone());
@@ -190,11 +205,7 @@ impl TortugaUi {
                 .detail(place)
                 .keywords("captured clear"),
         );
-        items.push(
-            run("Workspace variables…", Command::WorkspaceVariables)
-                .detail(self.state.workspace().name.clone())
-                .keywords("shared captured secret"),
-        );
+        items.extend(workspace_commands(&self.state.workspace().name));
         items.push(run("Settings…", Command::Settings).keywords("preferences options"));
         if self.state.host.keeps_history() {
             items.push(run("Show history", Command::History).keywords("sent past responses"));
@@ -276,6 +287,7 @@ impl TortugaUi {
             Command::NewWorkflow(root) => self.new_workflow_dialog(root),
             Command::RuntimeVars(root) => self.show_runtime_vars(root),
             Command::WorkspaceVariables => self.on_workspace(WorkspaceAction::Variables),
+            Command::WorkspaceDefaults => self.on_workspace(WorkspaceAction::Defaults),
             Command::AddProjects => self.add_projects(),
             Command::NewProject => self.new_project(),
             Command::Import(kind) => self.import_file(kind),

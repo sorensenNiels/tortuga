@@ -66,7 +66,11 @@ pub fn write(request: &Request, settings: &ClientSettings) -> String {
         HttpMethod::Head => parts.push(format!("curl --head {}", quote(&url))),
         method => parts.push(format!("curl -X {} {}", method.as_str(), quote(&url))),
     }
-    if settings.follow_redirects {
+    // The workspace's or project's choice, else the app's (R-SET-1).
+    if request
+        .follow_redirects
+        .unwrap_or(settings.follow_redirects)
+    {
         parts.push("-L".into());
     }
     if !settings.verify_tls {

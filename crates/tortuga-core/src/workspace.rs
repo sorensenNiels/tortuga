@@ -1,5 +1,6 @@
 //! Workspaces: named sets of projects (R-WS-1), the shareable workspace file (R-WS-5),
-//! and the variables every project of a workspace can use (R-WS-8).
+//! the variables every project of a workspace can use (R-WS-8), and the request
+//! settings, headers and auth its projects inherit (R-SET-1, R-SET-2).
 //!
 //! A workspace itself is local data, kept by the app. "Save as file…" writes it as a
 //! `<name>.tortuga-workspace.toml` that can be committed, e.g. to a "platform" repo:
@@ -26,15 +27,17 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::{Auth, KeyValue};
 use crate::secrets::SecretKey;
+use crate::settings::RequestSettings;
 use crate::{Error, Result, slug};
 
 /// File name ending of a shareable workspace file.
 pub const WORKSPACE_FILE_SUFFIX: &str = ".tortuga-workspace.toml";
 
 /// Newest format version of workspace files this build reads. Files are written as
-/// format 1 unless they hold variables: older builds would drop those when they
-/// rewrite the file, so they must refuse it instead.
+/// format 1 unless they hold variables or defaults: older builds would drop those when
+/// they rewrite the file, so they must refuse it instead.
 pub const WORKSPACE_FORMAT: u32 = 2;
 
 /// Variables every project of a workspace can use (R-WS-8). They rank below the
@@ -69,6 +72,27 @@ impl WorkspaceVariables {
     }
 }
 
+/// What every project of a workspace inherits below its own (R-SET-1, R-SET-2):
+/// request settings, headers and auth.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceDefaults {
+    #[serde(skip_serializing_if = "RequestSettings::is_empty")]
+    pub settings: RequestSettings,
+    /// Headers every request inherits unless its project, folders or itself name them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<KeyValue>,
+    /// Auth for requests whose folders and project set none.
+    #[serde(skip_serializing_if = "Auth::is_none")]
+    pub auth: Auth,
+}
+
+impl WorkspaceDefaults {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Where the secret value of workspace variable `name` is kept on this machine. `id` is
 /// the workspace's local id, which stays the same when it is renamed.
 pub fn secret_key(id: &str, name: &str) -> SecretKey {
@@ -96,12 +120,13 @@ impl ProjectRef {
 }
 
 /// The contents of a workspace file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorkspaceFile {
     pub name: String,
     /// Absolute paths, resolved against the file's directory.
     pub projects: Vec<ProjectRef>,
     pub variables: WorkspaceVariables,
+    pub defaults: WorkspaceDefaults,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -110,8 +135,14 @@ struct FileText {
     name: String,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     secrets: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "RequestSettings::is_empty")]
+    settings: RequestSettings,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     variables: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Auth::is_none")]
+    auth: Auth,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    headers: Vec<KeyValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     projects: Vec<FileProject>,
 }
@@ -135,14 +166,22 @@ pub fn write(
     name: &str,
     projects: &[ProjectRef],
     variables: &WorkspaceVariables,
+    defaults: &WorkspaceDefaults,
     file: &Path,
 ) -> String {
     let dir = file.parent().unwrap_or(Path::new(""));
     let text = FileText {
-        format: if variables.is_empty() { 1 } else { 2 },
+        format: if variables.is_empty() && defaults.is_empty() {
+            1
+        } else {
+            2
+        },
         name: name.to_owned(),
         secrets: variables.secrets.clone(),
+        settings: defaults.settings,
         variables: variables.values.clone(),
+        auth: defaults.auth.clone(),
+        headers: defaults.headers.clone(),
         projects: projects
             .iter()
             .map(|p| FileProject {
@@ -181,6 +220,11 @@ pub fn read(text: &str, file: &Path) -> Result<WorkspaceFile> {
         variables: WorkspaceVariables {
             values: parsed.variables,
             secrets: parsed.secrets,
+        },
+        defaults: WorkspaceDefaults {
+            settings: parsed.settings,
+            headers: parsed.headers,
+            auth: parsed.auth,
         },
     })
 }
@@ -273,7 +317,13 @@ mod tests {
             ProjectRef::new("/src/platform/api/orders"),
             ProjectRef::new("/src/platform"),
         ];
-        let text = write("Acme", &projects, &WorkspaceVariables::default(), file);
+        let text = write(
+            "Acme",
+            &projects,
+            &WorkspaceVariables::default(),
+            &WorkspaceDefaults::default(),
+            file,
+        );
         assert_eq!(
             text,
             "format = 1\nname = \"Acme\"\n\n\
@@ -298,7 +348,13 @@ mod tests {
             "no password in a shared file"
         );
         assert_eq!(
-            write("Acme", &projects, &WorkspaceVariables::default(), file),
+            write(
+                "Acme",
+                &projects,
+                &WorkspaceVariables::default(),
+                &WorkspaceDefaults::default(),
+                file,
+            ),
             text,
             "deterministic"
         );
@@ -327,7 +383,13 @@ mod tests {
             secrets: ["api_key".to_owned()].into(),
         };
         let projects = [ProjectRef::new("/src/users-api")];
-        let text = write("Acme", &projects, &variables, file);
+        let text = write(
+            "Acme",
+            &projects,
+            &variables,
+            &WorkspaceDefaults::default(),
+            file,
+        );
         assert_eq!(
             text,
             "format = 2\nname = \"Acme\"\nsecrets = [\"api_key\"]\n\n\
@@ -337,6 +399,31 @@ mod tests {
         let back = read(&text, file).expect("read");
         assert_eq!(back.variables, variables);
         assert_eq!(back.projects, projects);
+    }
+
+    /// R-SET-1, R-SET-2: settings, auth and headers go into the file (format 2) and
+    /// come back.
+    #[test]
+    fn defaults_are_written_and_read() {
+        let file = Path::new("/src/platform/acme.tortuga-workspace.toml");
+        let defaults = WorkspaceDefaults {
+            settings: RequestSettings {
+                timeout_ms: Some(5_000),
+                ..RequestSettings::default()
+            },
+            headers: vec![KeyValue::new("X-Tenant", "{{tenant}}")],
+            auth: Auth::Bearer {
+                token: "{{token}}".into(),
+            },
+        };
+        let text = write("Acme", &[], &WorkspaceVariables::default(), &defaults, file);
+        assert_eq!(
+            text,
+            "format = 2\nname = \"Acme\"\n\n[settings]\ntimeout_ms = 5000\n\n\
+             [auth]\nkind = \"bearer\"\ntoken = \"{{token}}\"\n\n\
+             [[headers]]\nname = \"X-Tenant\"\nvalue = \"{{tenant}}\"\n"
+        );
+        assert_eq!(read(&text, file).expect("read").defaults, defaults);
     }
 
     /// R-WS-8: secret values come from this machine; a secret without one is undefined.

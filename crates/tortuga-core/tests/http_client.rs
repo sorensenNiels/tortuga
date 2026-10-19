@@ -394,6 +394,39 @@ async fn sends_filled_path_variables() {
     );
 }
 
+/// R-SET-1: a project's or workspace's redirect setting wins over the app's, through
+/// the prepared request, also with a cookie jar.
+#[tokio::test]
+async fn redirects_follow_the_project_setting() {
+    use tortuga_core::vars;
+
+    let server = MockServer::start().await;
+    Mock::given(path("/old"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/new"))
+        .mount(&server)
+        .await;
+    Mock::given(path("/new"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let req = Request::new(HttpMethod::Get, format!("{}/old", server.uri()));
+    let mut ctx = vars::Context::default();
+    ctx.settings.follow_redirects = Some(false);
+    let prepared = vars::prepare(&req, &ctx).expect("prepared");
+
+    let client = Client::default(); // follows redirects
+    let res = client.execute(&prepared).await.expect("sent");
+    assert_eq!(res.status, 302, "the project's setting");
+    let jar = tortuga_core::CookieJar::default();
+    let res = client
+        .execute_with_cookies(&prepared, Some(&jar))
+        .await
+        .expect("sent");
+    assert_eq!(res.status, 302, "also with a cookie jar");
+    let res = client.execute(&req).await.expect("sent");
+    assert_eq!(res.status, 200, "the app's setting otherwise");
+}
+
 /// A server that sets a session cookie at `/login` (via a redirect to `/home`)
 /// and answers 200 everywhere else.
 async fn server_with_login() -> MockServer {

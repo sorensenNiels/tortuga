@@ -19,7 +19,7 @@ mod workspace_vars;
 
 pub use auth_editor::request_auth;
 pub use body_editor::{BodyDrafts, body_editor};
-pub use defaults_dialog::DefaultsDialog;
+pub use defaults_dialog::{DefaultsDialog, DefaultsTarget, EditedDefaults};
 pub use environments::{EnvironmentsDialog, SavedConfig};
 pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, history_list};
 pub use import_dialog::{ImportDialog, ImportTarget};

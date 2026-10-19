@@ -138,12 +138,24 @@ pub(crate) mod test_host {
                 .and_then(|e| e.iter().find(|e| e.summary.id == id).cloned())
                 .ok_or_else(|| "no such entry".to_owned())
         }
-        fn add_history(&self, root: Option<&std::path::Path>, entry: tortuga_core::history::Entry) {
-            self.history
-                .borrow_mut()
+        fn add_history(
+            &self,
+            root: Option<&std::path::Path>,
+            entry: tortuga_core::history::Entry,
+            keep: usize,
+        ) {
+            let mut history = self.history.borrow_mut();
+            let list = history
                 .entry(root.map(std::path::Path::to_path_buf))
-                .or_default()
-                .insert(0, entry);
+                .or_default();
+            list.insert(0, entry);
+            list.truncate(keep.max(1));
+        }
+        fn trim_history(&self, keep: usize) -> Result<(), String> {
+            for list in self.history.borrow_mut().values_mut() {
+                list.truncate(keep);
+            }
+            Ok(())
         }
         fn clear_all_history(&self) -> Result<(), String> {
             self.history.borrow_mut().clear();

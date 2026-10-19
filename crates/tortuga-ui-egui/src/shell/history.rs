@@ -65,13 +65,28 @@ impl TortugaUi {
         self.history.loaded.get(&key).map_or(&[], Vec::as_slice)
     }
 
-    /// Keeps a finished send in the history (R-HIST-1).
+    /// Keeps a finished send in the history (R-HIST-1), as many entries as the settings
+    /// say; nothing when history is off (R-SET-6).
     pub(super) fn record_history(&mut self, root: Option<&Path>, entry: Entry) {
+        let size = self.state.settings.history.size;
+        if size == 0 {
+            return;
+        }
         let summary = entry.summary.clone();
-        self.state.host.add_history(root, entry);
+        self.state.host.add_history(root, entry, size);
         if let Some(list) = self.history.loaded.get_mut(&root.map(Path::to_path_buf)) {
             list.insert(0, summary);
-            list.truncate(tortuga_core::history::MAX_ENTRIES);
+            list.truncate(size);
+        }
+    }
+
+    /// Trims the history lists shown to the size in the settings (R-SET-6).
+    pub(super) fn trim_loaded_history(&mut self) {
+        let size = self.state.settings.history.size;
+        if size > 0 {
+            for list in self.history.loaded.values_mut() {
+                list.truncate(size);
+            }
         }
     }
 
@@ -120,6 +135,12 @@ impl TortugaUi {
             open: open.as_deref(),
             places: &with_history,
         };
+        if !self.state.settings.history.on() {
+            crate::theme::hint(
+                ui,
+                "History is off: new sends are not recorded (Settings → History).",
+            );
+        }
         let mut filter = std::mem::take(&mut self.history.filter);
         let action = history_list(ui, &rows, &mut filter, cx);
         drop(rows);

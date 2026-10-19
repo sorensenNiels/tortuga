@@ -218,3 +218,42 @@ fn folder_workflows() {
         "Log in"
     );
 }
+
+/// R-SET-2: a workflow run sends the workspace's headers and auth to requests whose
+/// project and folders set none.
+#[tokio::test]
+async fn runs_use_the_workspace_headers_and_auth() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/ping"))
+        .and(header("authorization", "Bearer ws-token"))
+        .and(header("x-tenant", "acme"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let col = Collection::create(&FS, dir.path(), "Ping").expect("create");
+    let mut ping = Request::new(HttpMethod::Get, format!("{}/ping", server.uri()));
+    ping.name = "Ping".into();
+    col.new_request(&FS, Path::new(""), &ping).expect("ping");
+    let col = Collection::open(&FS, dir.path()).expect("open");
+    let wf = Workflow {
+        name: "Ping".into(),
+        steps: vec![Step::new(Path::new("ping.toml"))],
+        ..Workflow::default()
+    };
+    let options = RunOptions {
+        workspace: row(&[("tenant", "acme")]),
+        workspace_defaults: tortuga_core::workspace::WorkspaceDefaults {
+            headers: vec![tortuga_core::KeyValue::new("X-Tenant", "{{tenant}}")],
+            auth: tortuga_core::Auth::Bearer {
+                token: "ws-token".into(),
+            },
+            ..Default::default()
+        },
+        ..RunOptions::default()
+    };
+    let result = workflow::run(&Client::default(), &col, &wf, &options, |_| {}).await;
+    let step = &result.iterations[0].steps[0];
+    assert!(!step.outcome.failed(), "{:?}", step.outcome.failure());
+}
