@@ -2,11 +2,12 @@
 //! repository however many of its projects are open (R-WS-4).
 //!
 //! Events are debounced, so a `git pull` or branch switch that touches many files
-//! results in one reload. Reading a file is not a change: otherwise every reload
-//! (and every git status) would trigger the next one. The repository's `.git` folder
-//! is watched too (not recursively), so a commit or checkout refreshes the git status
-//! of every project in it even when no project file changed. Where the OS gives no
-//! change events (Windows drives under WSL), the files are polled instead.
+//! results in one reload. Reading a file or listing a folder is not a change:
+//! otherwise every reload (and every git status) would trigger the next one. The
+//! repository's `.git` folder is watched too (not recursively), so a commit or checkout
+//! refreshes the git status of every project in it even when no project file changed.
+//! Where the OS gives no change events (Windows drives under WSL), the files are
+//! polled instead.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use notify::event::{AccessKind, AccessMode};
+use notify::event::{AccessKind, AccessMode, ModifyKind};
 use notify::{EventKind, RecursiveMode, Watcher as _};
 
 /// Quiet time before a burst of changes is reported.
@@ -124,6 +125,9 @@ fn start(root: &Path, git_dir: Option<&Path>) -> Result<Watch, String> {
             && is_change(event.kind)
         {
             for path in event.paths {
+                if is_folder_touch(event.kind, &path) {
+                    continue;
+                }
                 // Fails only when the reporting thread is gone, i.e. while stopping.
                 let _ = tx.send(path);
             }
@@ -159,6 +163,17 @@ fn is_change(kind: EventKind) -> bool {
         EventKind::Access(_) => false,
         _ => true,
     }
+}
+
+/// Windows reports listing a folder as the folder being modified (its timestamps
+/// change), and Tortuga lists folders on every reload. What really changes in a folder
+/// comes as events of its own (a file added, removed, renamed or written), and a
+/// renamed folder as a rename, so a plain "modified" on a folder is not a change.
+fn is_folder_touch(kind: EventKind, path: &Path) -> bool {
+    matches!(
+        kind,
+        EventKind::Modify(ModifyKind::Any | ModifyKind::Metadata(_))
+    ) && path.is_dir()
 }
 
 /// Collects changed paths until it has been quiet for [`DEBOUNCE`] (or [`MAX_DELAY`]
@@ -292,8 +307,7 @@ mod tests {
         let (count, on_change) = counter();
         let watchers = Watchers::default();
         watchers.watch(&dir, on_change).expect("watch");
-        // Windows may report the setup write late (NTFS flushes file metadata lazily);
-        // start counting after it.
+        // Events from creating the files may still arrive; start counting after them.
         std::thread::sleep(DEBOUNCE * 3);
         count.store(0, Ordering::SeqCst);
         // What a reload does: list the folders and read every file.
@@ -308,6 +322,24 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1, "a write is");
         watchers.unwatch(&dir);
         std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// Listing a folder is reported as the folder being modified on Windows; renames are
+    /// still changes.
+    #[test]
+    fn folder_touches_are_not_changes() {
+        let dir = std::env::temp_dir();
+        let file = Path::new("tortuga-surely-not-there.toml");
+        assert!(is_folder_touch(EventKind::Modify(ModifyKind::Any), &dir));
+        assert!(!is_folder_touch(EventKind::Modify(ModifyKind::Any), file));
+        assert!(!is_folder_touch(
+            EventKind::Modify(ModifyKind::Name(notify::event::RenameMode::To)),
+            &dir
+        ));
+        assert!(!is_folder_touch(
+            EventKind::Create(notify::event::CreateKind::Folder),
+            &dir
+        ));
     }
 
     #[test]
