@@ -205,6 +205,9 @@ sent, with secret values masked.
 **Uploads.** Choose the **Multipart** body type to send form fields and files. Keep files to upload inside the project
 (e.g. a `fixtures/` folder) and they are saved with a path relative to it, so the request works for teammates too.
 
+**Importers you don't use.** Settings → **Importers** turns importers off, so "+ Add" only offers the ones your team
+needs.
+
 **Company certificates.** If your internal APIs use certificates from your company's own CA, add its PEM file under
 **Settings → CA certificates**.
 

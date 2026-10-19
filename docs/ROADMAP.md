@@ -85,6 +85,7 @@ Picked by demand, not in a fixed order:
 - Client certificates / mTLS (IDEA-20).
 - Code snippets for other languages (IDEA-22).
 - Web version (IDEA-11): the code keeps compiling for wasm, but nothing is built for it until a team asks (D6).
+- Settings on three levels (D39): R-SET-1 to R-SET-7.
 - In-app commit/pull/push (IDEA-21) — only if working outside the app proves to be a real pain point.
 
 ### Not on the roadmap
@@ -104,6 +105,13 @@ Requirements still open: not built yet, or implemented but not yet verified ever
 | R-HTTP-8 | Settings: follow redirects (on/off), verify TLS certificates (on/off, with a visible warning when off), proxy from system settings. |
 | R-LOC-2 | Secret values are stored in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service). If none is available, they fall back to a file in the app-data directory readable only by the current user, and the app shows a warning. |
 | R-NF-4 | Installable packages: `.msi` (Windows), `.dmg` (macOS), `.deb` and `.AppImage` (Linux). |
+| R-SET-1 | **Settings that cascade** (D39): default timeout (30 s), follow redirects (on) and send and store cookies (on) can be set in the app's settings, for a workspace and for a project. The nearest level wins: request (timeout and cookies, as today) → project → workspace → app. Each level is edited where it lives (Settings, the workspace menu, the project's menu) and shows the inherited value and where it comes from until it is overridden; "Use inherited" removes an override. Workspace values are kept like workspace variables (R-WS-8: local data, and the workspace file when there is one); project values in `tortuga.toml`. Only overrides are written. `tortuga-cli` applies the project's and (with `--workspace`) the workspace's values. *(IDEA-50)* |
+| R-SET-2 | **Workspace headers and auth** (D39): a workspace can define default headers and auth, inherited by every project below its own (R-COL-4, R-COL-11): request → folder → project → workspace. Secret values in them use secret variables (R-VAR-3, R-WS-8). The editor shows "from the workspace" for inherited ones. *(IDEA-50)* |
+| R-SET-3 | **TLS verification is only turned off on this machine** (D39): shared files (workspace file, `tortuga.toml`) cannot turn it off. The app's settings keep the global switch (R-HTTP-8) and a list of hosts to skip verification for (e.g. `localhost`, `*.dev.internal`), with the existing warning; requests to those hosts show that verification is off. *(IDEA-50)* |
+| R-SET-4 | **Theme**: system (default), light or dark, in the app's settings. *(IDEA-50)* |
+| R-SET-5 | **Text size**: zoom the whole UI, 100 % by default (also Ctrl+= / Ctrl+-, Ctrl+0 to reset). *(IDEA-50)* |
+| R-SET-6 | **History size**: how many entries per project are kept, 200 by default, or off (nothing is recorded). Lowering it trims existing history. *(IDEA-50, R-HIST-1)* |
+| R-SET-7 | **Wrap long lines** in the response body, off by default. *(IDEA-50)* |
 | R-CLI-4 | Each release has a `tortuga-cli` archive per OS next to the installers, for CI: the binary with the README and licences, `.zip` on Windows, `.tar.gz` elsewhere. *(IDEA-43)* |
 
 ## 7. Ideas
@@ -194,6 +202,8 @@ Not decided. Needs a real user need before it moves up.
 
 | D38 | How do workspace variables work (IDEA-38)? | **Shared through the workspace file, secrets local; below every project value; captures opt in with a `workspace.` name** (2026-10-18). Shared, because the point is collaboration; lowest, so existing projects behave as before and a project can always override; opt-in, so runtime values stay per project by default (D26). | Local only; ranked above project variables; every captured value shared; static values only. |
 
+| D39 | How do settings work across app, workspace and project (IDEA-50)? | **Three levels; nearest wins** (request → folder → project → workspace → app). Timeout, follow redirects, cookies (R-SET-1) and default headers and auth (R-SET-2) cascade. **TLS verification is only turned off on this machine**, per host (R-SET-3). No per-machine project layer: app settings cover "just me". App-only next: theme, text size, history size, wrapping (R-SET-4..7). Every setting has a default that matches today's behaviour (2026-10-18). | Turning TLS off in shared files with a warning, or for local hosts only; a fourth, per-machine project layer; one settings dialog with a level picker. |
+
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
 ## 9. How to change this roadmap
@@ -205,4 +215,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-18` · `R-WS-9` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-50` · `D39` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-17` · `R-CK-6` · `R-COL-19` · `R-WS-9` · `R-VAR-8` · `R-SRV-7` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-51` · `D40` · `R-TEST-6` · `R-FLOW-6` · `R-CLI-5` · `R-SET-8`.

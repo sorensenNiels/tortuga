@@ -4,7 +4,8 @@
 use std::path::PathBuf;
 
 use tortuga_core::collection::MANIFEST_FILE;
-use tortuga_core::import::{self, ImportKind};
+use tortuga_core::import::{self, Import, ImportKind};
+use tortuga_core::settings::ImporterSettings;
 
 use super::{Modal, TortugaUi};
 use crate::components::{DialogResult, EnvironmentsDialog, ImportDialog, ImportTarget};
@@ -16,6 +17,19 @@ pub(super) struct OpenImport {
     dialog: ImportDialog,
     taken: bool,
     repository: Option<PathBuf>,
+}
+
+/// `import`, unless it was recognised as a kind whose importer is off (R-COL-18).
+fn allowed(importers: &ImporterSettings, import: Import) -> Result<Import, String> {
+    if importers.enabled(import.kind) {
+        Ok(import)
+    } else {
+        Err(format!(
+            "it is a {}, and importing {} is turned off in Settings",
+            import.kind.label(),
+            import.kind.importer_name()
+        ))
+    }
 }
 
 impl TortugaUi {
@@ -41,7 +55,8 @@ impl TortugaUi {
             .map_err(|e| e.to_string())
             .and_then(|text| {
                 import::parse(&text, &file_name, kind).map_err(|e| tortuga_core::error::message(&e))
-            });
+            })
+            .and_then(|import| allowed(&self.state.settings.importers, import));
         match read {
             Ok(import) => {
                 let mut open = OpenImport {
@@ -147,6 +162,20 @@ impl TortugaUi {
 mod tests {
     use super::*;
     use crate::test_host::TestHost;
+
+    /// R-COL-18: a file recognised as a kind whose importer is off is refused.
+    #[test]
+    fn files_of_a_turned_off_importer_are_refused() {
+        let text = r#"{"info": {"name": "Shop"}, "item": []}"#;
+        // Picked with "Import OpenAPI…", recognised as a Postman collection.
+        let import = import::parse(text, "shop.json", ImportKind::OpenApi).expect("parse");
+        assert_eq!(import.kind, ImportKind::Postman);
+        let mut importers = ImporterSettings::default();
+        assert!(allowed(&importers, import.clone()).is_ok());
+        importers.set_enabled(ImportKind::Postman, false);
+        let err = allowed(&importers, import).expect_err("off");
+        assert!(err.contains("Postman collections is turned off"), "{err}");
+    }
 
     /// R-COL-15: importing writes the project, adds it to the workspace and opens the
     /// environments dialog for its secret values; a folder that is a project is refused.

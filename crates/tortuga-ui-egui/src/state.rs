@@ -14,7 +14,7 @@ use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretValues;
 use tortuga_core::storage::Storage;
 use tortuga_core::workspace::{self, ProjectRef, WorkspaceVariables};
-use tortuga_core::{Client, ClientSettings, Collection, Request, vars};
+use tortuga_core::{AppSettings, Client, ClientSettings, Collection, Request, vars};
 
 use crate::format::sentence;
 use crate::host::{Host, LocalState, Workspace};
@@ -63,7 +63,8 @@ impl ItemKey {
 
 pub struct AppState {
     pub host: Box<dyn Host>,
-    pub settings: ClientSettings,
+    /// The app's own settings (R-HTTP-7, R-HTTP-8, R-COL-18).
+    pub settings: AppSettings,
     /// Rebuilt whenever the settings change.
     pub client: Client,
     /// Open projects of the active workspace, in workspace order (R-COL-5, R-WS-1).
@@ -144,9 +145,9 @@ impl AppState {
         let mut problems = Vec::new();
         let settings = host.load_settings().unwrap_or_else(|e| {
             problems.push(e);
-            ClientSettings::default()
+            AppSettings::default()
         });
-        let client = match make_client(host.as_ref(), &settings) {
+        let client = match make_client(host.as_ref(), &settings.client) {
             Ok((client, ca_problems)) => {
                 problems.extend(ca_problems);
                 client
@@ -191,8 +192,8 @@ impl AppState {
     }
 
     /// Applies new settings: rebuilds the client and saves them.
-    pub fn apply_settings(&mut self, settings: &ClientSettings) -> Result<(), String> {
-        let (client, problems) = make_client(self.host.as_ref(), settings)?;
+    pub fn apply_settings(&mut self, settings: &AppSettings) -> Result<(), String> {
+        let (client, problems) = make_client(self.host.as_ref(), &settings.client)?;
         if !problems.is_empty() {
             return Err(problems.join("\n"));
         }
@@ -1311,9 +1312,12 @@ mod tests {
         std::fs::write(&bad, "not a certificate").expect("write");
         let mut state = AppState::new(Box::new(crate::test_host::TestHost::default()));
 
-        let with = |files: Vec<PathBuf>| ClientSettings {
-            ca_certificates: files,
-            ..ClientSettings::default()
+        let with = |files: Vec<PathBuf>| AppSettings {
+            client: ClientSettings {
+                ca_certificates: files,
+                ..ClientSettings::default()
+            },
+            ..AppSettings::default()
         };
         let err = state
             .apply_settings(&with(vec![good.clone(), bad.clone()]))
@@ -1326,7 +1330,7 @@ mod tests {
         state
             .apply_settings(&with(vec![good.clone()]))
             .expect("good file");
-        assert_eq!(state.settings.ca_certificates, [good]);
+        assert_eq!(state.settings.client.ca_certificates, [good]);
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 }

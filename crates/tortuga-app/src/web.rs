@@ -3,7 +3,7 @@
 
 use eframe::wasm_bindgen::JsCast;
 use eframe::web_sys;
-use tortuga_core::ClientSettings;
+use tortuga_core::AppSettings;
 use tortuga_core::secrets::{MemorySecretStore, SecretStore};
 use tortuga_core::storage::{Storage, UnsupportedStorage};
 use tortuga_ui_egui::{BoxTask, Host, LocalState, TortugaUi};
@@ -58,11 +58,11 @@ impl Host for WebHost {
         wasm_bindgen_futures::spawn_local(task);
     }
 
-    fn load_settings(&self) -> Result<ClientSettings, String> {
-        Ok(ClientSettings::default())
+    fn load_settings(&self) -> Result<AppSettings, String> {
+        Ok(AppSettings::default())
     }
 
-    fn save_settings(&self, _: &ClientSettings) -> Result<(), String> {
+    fn save_settings(&self, _: &AppSettings) -> Result<(), String> {
         Ok(())
     }
 

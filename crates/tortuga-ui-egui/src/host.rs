@@ -16,7 +16,7 @@ use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::Storage;
 use tortuga_core::workflow::Workflow;
 use tortuga_core::workspace::{ProjectRef, WorkspaceVariables};
-use tortuga_core::{ClientSettings, Request};
+use tortuga_core::{AppSettings, Request};
 
 /// What is remembered on this machine only, never in a project (R-LOC-1): the
 /// workspaces (R-WS-1) and which one is active.
@@ -325,8 +325,8 @@ pub trait Host {
     fn spawn(&self, task: BoxTask);
 
     /// Global settings (R-HTTP-8); missing settings give the defaults.
-    fn load_settings(&self) -> Result<ClientSettings, String>;
-    fn save_settings(&self, settings: &ClientSettings) -> Result<(), String>;
+    fn load_settings(&self) -> Result<AppSettings, String>;
+    fn save_settings(&self, settings: &AppSettings) -> Result<(), String>;
 
     /// Workspace state (R-LOC-1); missing state gives the default.
     fn load_local(&self) -> Result<LocalState, String>;

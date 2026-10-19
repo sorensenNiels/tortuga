@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tortuga_core::ClientSettings;
+use tortuga_core::AppSettings;
 use tortuga_ui_egui::{LocalState, SavedDrafts};
 
 fn dirs() -> Option<directories::ProjectDirs> {
@@ -191,11 +191,11 @@ pub fn save_drafts(drafts: &SavedDrafts) -> Result<(), String> {
     write_private(&path, &text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-pub fn load_settings() -> Result<ClientSettings, String> {
+pub fn load_settings() -> Result<AppSettings, String> {
     load(settings_path())
 }
 
-pub fn save_settings(settings: &ClientSettings) -> Result<(), String> {
+pub fn save_settings(settings: &AppSettings) -> Result<(), String> {
     save(settings_path(), settings)
 }
 
@@ -244,23 +244,26 @@ mod tests {
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 
-    /// R-HTTP-16: CA certificate paths are kept in the settings; older files still load.
+    /// R-HTTP-16, R-COL-18: CA certificate paths and importer choices are kept in the
+    /// settings; older files still load.
     #[test]
     fn settings_round_trip_with_ca_certificates() {
-        let settings = ClientSettings {
-            ca_certificates: vec![PathBuf::from("/etc/ssl/company-ca.pem")],
-            ..ClientSettings::default()
-        };
+        let mut settings = AppSettings::default();
+        settings.client.ca_certificates = vec![PathBuf::from("/etc/ssl/company-ca.pem")];
+        settings
+            .importers
+            .set_enabled(tortuga_core::import::ImportKind::Http, false);
         let text = toml::to_string(&settings).expect("serialize");
         assert_eq!(
-            toml::from_str::<ClientSettings>(&text).expect("parse"),
+            toml::from_str::<AppSettings>(&text).expect("parse"),
             settings
         );
-        let old: ClientSettings = toml::from_str(
+        let old: AppSettings = toml::from_str(
             "follow_redirects = true\nverify_tls = true\ndefault_timeout_ms = 500\n",
         )
         .expect("old file");
-        assert_eq!(old.ca_certificates, Vec::<PathBuf>::new());
+        assert_eq!(old.client.ca_certificates, Vec::<PathBuf>::new());
+        assert_eq!(old.client.default_timeout_ms, 500);
     }
 
     /// R-COL-8, R-FLOW-5: unsaved edits round-trip through the drafts file.

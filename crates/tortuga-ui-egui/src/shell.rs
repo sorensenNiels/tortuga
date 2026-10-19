@@ -273,7 +273,7 @@ impl TortugaUi {
         Panel::top("topbar")
             .frame(chrome)
             .show(ui, |ui| self.topbar(ui));
-        if !self.state.settings.verify_tls {
+        if !self.state.settings.client.verify_tls {
             let frame = theme::banner_frame(ui, false);
             Panel::top("tls-warning").frame(frame).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -842,7 +842,7 @@ impl TortugaUi {
             .collect();
         let cookie_count = self.state.cookie_jar(root.as_deref()).len();
         let sending = self.sending() == Some(&key);
-        let default_timeout_ms = self.state.settings.default_timeout_ms;
+        let default_timeout_ms = self.state.settings.client.default_timeout_ms;
         let preview = self
             .editor
             .shows_preview()
@@ -1035,7 +1035,7 @@ impl TortugaUi {
     /// Copies the request as curl; asks first if it contains secret values (R-HTTP-9).
     fn copy_as_curl(&mut self, egui_ctx: &egui::Context) {
         let ctx = self.state.request_context(self.selection.as_ref());
-        match tortuga_core::curl::command(&self.current, &ctx, &self.state.settings) {
+        match tortuga_core::curl::command(&self.current, &ctx, &self.state.settings.client) {
             Err(e) => {
                 self.copied_at = None;
                 self.state.notify(format!("Could not copy as curl: {e}"));

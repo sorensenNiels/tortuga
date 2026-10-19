@@ -29,7 +29,7 @@ pub use shell::TortugaUi;
 pub(crate) mod test_host {
     use std::path::PathBuf;
 
-    use tortuga_core::ClientSettings;
+    use tortuga_core::AppSettings;
     use tortuga_core::secrets::{MemorySecretStore, SecretStore};
     use tortuga_core::storage::{FsStorage, Storage};
 
@@ -86,10 +86,10 @@ pub(crate) mod test_host {
         fn spawn(&self, _task: BoxTask) {
             self.spawned.set(self.spawned.get() + 1);
         }
-        fn load_settings(&self) -> Result<ClientSettings, String> {
-            Ok(ClientSettings::default())
+        fn load_settings(&self) -> Result<AppSettings, String> {
+            Ok(AppSettings::default())
         }
-        fn save_settings(&self, _: &ClientSettings) -> Result<(), String> {
+        fn save_settings(&self, _: &AppSettings) -> Result<(), String> {
             Ok(())
         }
         fn load_local(&self) -> Result<LocalState, String> {

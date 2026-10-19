@@ -24,6 +24,7 @@ pub mod report;
 pub mod runner;
 pub mod script;
 pub mod secrets;
+pub mod settings;
 pub mod slug;
 pub mod storage;
 pub mod vars;
@@ -38,3 +39,4 @@ pub use http::{Client, ClientSettings, FileReader};
 pub use model::{
     Auth, BodyView, FormPart, HttpMethod, KeyValue, Request, RequestBody, Response, Scripts,
 };
+pub use settings::AppSettings;

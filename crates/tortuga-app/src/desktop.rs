@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use tortuga_core::ClientSettings;
+use tortuga_core::AppSettings;
 use tortuga_core::history::{self, HistoryStore};
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
@@ -330,11 +330,11 @@ impl Host for DesktopHost {
         chrono::Local::now().offset().local_minus_utc() / 60
     }
 
-    fn load_settings(&self) -> Result<ClientSettings, String> {
+    fn load_settings(&self) -> Result<AppSettings, String> {
         local_store::load_settings()
     }
 
-    fn save_settings(&self, settings: &ClientSettings) -> Result<(), String> {
+    fn save_settings(&self, settings: &AppSettings) -> Result<(), String> {
         local_store::save_settings(settings)
     }
 

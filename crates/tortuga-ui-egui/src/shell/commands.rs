@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use tortuga_core::import::ImportKind;
+use tortuga_core::settings::ImporterSettings;
 use tortuga_core::{Item, Request};
 
 use super::{Modal, Selection, TortugaUi, WorkspaceAction};
@@ -49,8 +50,9 @@ pub(super) enum Command {
     Import(ImportKind),
 }
 
-/// Adding, creating and importing projects (R-WS-3, R-COL-15, R-COL-16, R-COL-17).
-fn project_commands() -> [PaletteItem<PaletteChoice>; 5] {
+/// Adding, creating and importing projects (R-WS-3, R-COL-15, R-COL-16, R-COL-17), with
+/// only the importers that are on (R-COL-18).
+fn project_commands(importers: &ImporterSettings) -> Vec<PaletteItem<PaletteChoice>> {
     let run = |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
     [
         run("Add existing projects…", Command::AddProjects),
@@ -65,6 +67,12 @@ fn project_commands() -> [PaletteItem<PaletteChoice>; 5] {
         run("Import .http file…", Command::Import(ImportKind::Http))
             .keywords("http rest client jetbrains requests"),
     ]
+    .into_iter()
+    .filter(|item| match &item.value {
+        PaletteChoice::Run(Command::Import(kind)) => importers.enabled(*kind),
+        _ => true,
+    })
+    .collect()
 }
 
 impl TortugaUi {
@@ -192,7 +200,7 @@ impl TortugaUi {
             items.push(run("Show history", Command::History).keywords("sent past responses"));
         }
         if self.state.host.can_pick_folders() {
-            items.extend(project_commands());
+            items.extend(project_commands(&self.state.settings.importers));
         }
         items
     }
@@ -319,5 +327,30 @@ fn collect(items: &[Item], root: &Path, trail: &str, sub: &str, out: &mut Vec<(I
             }
             Item::Broken(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R-COL-18: importers that are off are not in the command palette.
+    #[test]
+    fn palette_lists_only_importers_that_are_on() {
+        let mut importers = ImporterSettings::default();
+        importers.set_enabled(ImportKind::Http, false);
+        let labels: Vec<String> = project_commands(&importers)
+            .into_iter()
+            .map(|i| i.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Add existing projects…",
+                "New project…",
+                "Import OpenAPI…",
+                "Import Postman collection…"
+            ]
+        );
     }
 }

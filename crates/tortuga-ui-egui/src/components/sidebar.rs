@@ -6,6 +6,7 @@ use egui::{Atom, AtomExt as _, Button, Key, RichText, ScrollArea, Sides, TextEdi
 use tortuga_core::collection::Direction;
 use tortuga_core::git::{FileStatus, GitStatus};
 use tortuga_core::import::ImportKind;
+use tortuga_core::settings::ImporterSettings;
 use tortuga_core::workspace::ProjectRef;
 use tortuga_core::{Collection, Item};
 
@@ -154,8 +155,9 @@ pub struct Marks<'a> {
     pub dirty_workflows: &'a HashSet<WorkflowKey>,
 }
 
-/// The "+ Add" menu: new, existing and imported projects.
-fn add_menu(ui: &mut Ui) -> Option<SidebarAction> {
+/// The "+ Add" menu: new, existing and imported projects; only the importers that are
+/// on (R-COL-18).
+fn add_menu(ui: &mut Ui, importers: &ImporterSettings) -> Option<SidebarAction> {
     let entries = [
         (
             "New project…",
@@ -184,7 +186,11 @@ fn add_menu(ui: &mut Ui) -> Option<SidebarAction> {
         ),
     ];
     let mut action = None;
-    for (label, hover, entry) in entries {
+    let shown = entries.into_iter().filter(|(_, _, entry)| match entry {
+        SidebarAction::Import(kind) => importers.enabled(*kind),
+        _ => true,
+    });
+    for (label, hover, entry) in shown {
         if ui.button(label).on_hover_text(hover).clicked() {
             action = Some(entry);
         }
@@ -226,7 +232,7 @@ pub fn sidebar(
             if state.host.can_pick_folders() {
                 let (response, inner) =
                     egui::containers::menu::MenuButton::from_button(theme::ghost_button("+ Add"))
-                        .ui(ui, add_menu);
+                        .ui(ui, |ui| add_menu(ui, &state.settings.importers));
                 response.on_hover_text("Add a project to this workspace");
                 tree.actions.extend(inner.and_then(|i| i.inner));
             }
@@ -1245,6 +1251,22 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+
+    /// R-COL-18: importers that are off are not in "+ Add".
+    #[test]
+    fn add_menu_lists_only_importers_that_are_on() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut importers = ImporterSettings::default();
+        importers.set_enabled(ImportKind::Postman, false);
+        let mut h = crate::test_host::harness(|ui| {
+            add_menu(ui, &importers);
+        });
+        h.run();
+        h.get_by_label("Import OpenAPI…");
+        h.get_by_label("Import .http file…");
+        assert!(h.query_by_label("Import Postman collection…").is_none());
+    }
 
     /// R-NF-1: a skipped row takes exactly the space of a drawn one, so the scroll bar doesn't jump.
     #[test]

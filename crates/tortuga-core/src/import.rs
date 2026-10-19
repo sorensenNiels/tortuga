@@ -23,6 +23,27 @@ pub enum ImportKind {
 }
 
 impl ImportKind {
+    /// Every importer, in the order menus list them.
+    pub const ALL: [Self; 3] = [Self::OpenApi, Self::Postman, Self::Http];
+
+    /// Stable id, used in the settings file (R-COL-18).
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::OpenApi => "openapi",
+            Self::Postman => "postman",
+            Self::Http => "http",
+        }
+    }
+
+    /// The importer's name in settings, e.g. "Postman collections".
+    pub fn importer_name(self) -> &'static str {
+        match self {
+            Self::OpenApi => "OpenAPI descriptions",
+            Self::Postman => "Postman collections",
+            Self::Http => ".http files",
+        }
+    }
+
     /// "OpenAPI description", "Postman collection" or "HTTP file".
     pub fn label(self) -> &'static str {
         match self {

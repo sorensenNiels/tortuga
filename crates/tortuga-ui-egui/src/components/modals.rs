@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
 use egui::{ComboBox, Context, Id, Modal, RichText, TextEdit, Ui};
-use tortuga_core::{ClientSettings, CookieInfo};
+use tortuga_core::import::ImportKind;
+use tortuga_core::settings::ImporterSettings;
+use tortuga_core::{AppSettings, ClientSettings, CookieInfo};
 
 use super::request_editor::parse_timeout;
 use crate::state::{AppState, ItemKey};
@@ -525,9 +527,17 @@ impl NameDialog {
 // ---------------------------------------------------------------- settings
 
 /// Global HTTP settings (R-HTTP-7, R-HTTP-8).
+/// The tabs of the settings dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    General,
+    Importers,
+}
+
 #[derive(Debug, Clone)]
 pub struct SettingsDialog {
-    draft: ClientSettings,
+    draft: AppSettings,
+    tab: SettingsTab,
     timeout_text: String,
     /// Shown when saving failed.
     pub error: Option<String>,
@@ -536,10 +546,11 @@ pub struct SettingsDialog {
 }
 
 impl SettingsDialog {
-    pub fn new(settings: &ClientSettings) -> Self {
+    pub fn new(settings: &AppSettings) -> Self {
         Self {
             draft: settings.clone(),
-            timeout_text: settings.default_timeout_ms.to_string(),
+            tab: SettingsTab::General,
+            timeout_text: settings.client.default_timeout_ms.to_string(),
             error: None,
             add_ca_requested: false,
         }
@@ -547,44 +558,88 @@ impl SettingsDialog {
 
     /// Adds a CA certificate file chosen after "Add…" (R-HTTP-16).
     pub fn add_ca(&mut self, path: PathBuf) {
-        if !self.draft.ca_certificates.contains(&path) {
-            self.draft.ca_certificates.push(path);
+        let files = &mut self.draft.client.ca_certificates;
+        if !files.contains(&path) {
+            files.push(path);
         }
     }
 
     /// Done with the settings to apply. `can_pick_files`: offer "Add…" for CA certificates.
-    pub fn show(&mut self, ctx: &Context, can_pick_files: bool) -> DialogResult<ClientSettings> {
+    pub fn show(&mut self, ctx: &Context, can_pick_files: bool) -> DialogResult<AppSettings> {
         dialog(ctx, "settings", "Settings", 460.0, true, |ui| {
-            let d = &mut self.draft;
-            ui.checkbox(&mut d.follow_redirects, "Follow redirects");
-            ui.checkbox(&mut d.verify_tls, "Verify TLS certificates");
-            if !d.verify_tls {
-                theme::warning(
-                    ui,
-                    "Turning this off lets anyone between you and the server read and change your traffic. Only use it for local test servers.",
-                );
-            }
-            ui.horizontal(|ui| {
-                let label = ui.label("Default timeout (ms)");
-                if ui
-                    .add(TextEdit::singleline(&mut self.timeout_text).desired_width(120.0))
-                    .labelled_by(label.id)
-                    .changed()
-                    && let Some(ms) = parse_timeout(&self.timeout_text)
-                {
-                    d.default_timeout_ms = ms;
+            theme::tabs(
+                ui,
+                &mut self.tab,
+                &[
+                    (SettingsTab::General, "General", None),
+                    (SettingsTab::Importers, "Importers", None),
+                ],
+            );
+            match self.tab {
+                SettingsTab::General => {
+                    self.add_ca_requested |= general_settings(
+                        ui,
+                        &mut self.draft.client,
+                        &mut self.timeout_text,
+                        can_pick_files,
+                    );
                 }
-            });
-            theme::hint(ui, "Proxy settings are taken from the operating system.");
-            ui.add_space(10.0);
-            self.add_ca_requested |=
-                ca_certificates(ui, &mut self.draft.ca_certificates, can_pick_files);
+                SettingsTab::Importers => importer_settings(ui, &mut self.draft.importers),
+            }
             if let Some(err) = &self.error {
                 theme::error(ui, err);
             }
             let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Save"), true);
             finish(cancel, confirm.then(|| self.draft.clone()))
         })
+    }
+}
+
+/// HTTP settings (R-HTTP-7, R-HTTP-8, R-HTTP-16). Returns whether "Add…" was clicked
+/// for a CA certificate.
+fn general_settings(
+    ui: &mut Ui,
+    d: &mut ClientSettings,
+    timeout_text: &mut String,
+    can_pick_files: bool,
+) -> bool {
+    ui.checkbox(&mut d.follow_redirects, "Follow redirects");
+    ui.checkbox(&mut d.verify_tls, "Verify TLS certificates");
+    if !d.verify_tls {
+        theme::warning(
+            ui,
+            "Turning this off lets anyone between you and the server read and change your traffic. Only use it for local test servers.",
+        );
+    }
+    ui.horizontal(|ui| {
+        let label = ui.label("Default timeout (ms)");
+        if ui
+            .add(TextEdit::singleline(timeout_text).desired_width(120.0))
+            .labelled_by(label.id)
+            .changed()
+            && let Some(ms) = parse_timeout(timeout_text)
+        {
+            d.default_timeout_ms = ms;
+        }
+    });
+    theme::hint(ui, "Proxy settings are taken from the operating system.");
+    ui.add_space(10.0);
+    ca_certificates(ui, &mut d.ca_certificates, can_pick_files)
+}
+
+/// Which importers "+ Add" and the command palette offer (R-COL-18).
+fn importer_settings(ui: &mut Ui, importers: &mut ImporterSettings) {
+    theme::hint(
+        ui,
+        "Turn off the importers you don't use; they disappear from “+ Add” and the command \
+         palette. Projects you imported earlier are not affected.",
+    );
+    ui.add_space(6.0);
+    for kind in ImportKind::ALL {
+        let mut on = importers.enabled(kind);
+        if ui.checkbox(&mut on, kind.importer_name()).changed() {
+            importers.set_enabled(kind, on);
+        }
     }
 }
 
@@ -885,10 +940,9 @@ mod tests {
     /// R-HTTP-16: CA certificates are listed, added and removed in the settings.
     #[test]
     fn ca_certificates_in_settings() {
-        let mut dialog = SettingsDialog::new(&ClientSettings {
-            ca_certificates: vec![PathBuf::from("/etc/old-ca.pem")],
-            ..ClientSettings::default()
-        });
+        let mut settings = AppSettings::default();
+        settings.client.ca_certificates = vec![PathBuf::from("/etc/old-ca.pem")];
+        let mut dialog = SettingsDialog::new(&settings);
         let mut result = None;
         {
             let mut h = crate::test_host::harness(|ui| {
@@ -907,15 +961,40 @@ mod tests {
         }
         assert!(dialog.add_ca_requested);
         assert_eq!(
-            result.expect("saved").ca_certificates,
+            result.expect("saved").client.ca_certificates,
             Vec::<PathBuf>::new()
         );
         dialog.add_ca(PathBuf::from("/etc/company-ca.pem"));
         dialog.add_ca(PathBuf::from("/etc/company-ca.pem"));
         assert_eq!(
-            dialog.draft.ca_certificates,
+            dialog.draft.client.ca_certificates,
             [PathBuf::from("/etc/company-ca.pem")]
         );
+    }
+
+    /// R-COL-18: importers are turned off on the Importers tab.
+    #[test]
+    fn importers_are_turned_off_in_settings() {
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        let mut result = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
+                    result = Some(r);
+                }
+            });
+            h.run();
+            h.get_by_label("Importers").click();
+            h.run();
+            h.get_by_label("Postman collections").click();
+            h.run();
+            h.get_by_label("Save").click();
+            h.run();
+        }
+        let saved = result.expect("saved");
+        assert!(!saved.importers.enabled(ImportKind::Postman));
+        assert!(saved.importers.enabled(ImportKind::OpenApi));
+        assert!(saved.importers.enabled(ImportKind::Http));
     }
 
     /// R-WS-3: found projects are a checklist; projects already open can't be added twice.
