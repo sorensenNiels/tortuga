@@ -34,7 +34,8 @@ RUN_ENV := $(if $(IS_WSL),GALLIUM_DRIVER=$${GALLIUM_DRIVER:-d3d12} ,)
 
 .DEFAULT_GOAL := help
 .PHONY: help setup run run-web build release cli package startup-time icons test test-core test-ui \
-        lint lint-desktop lint-web fmt fmt-check deny verify doc clean outdated update upgrade
+        lint lint-desktop lint-web fmt fmt-check deny verify doc clean outdated update upgrade \
+        release-patch release-minor release-major
 
 help:
 	@echo "Tortuga - make targets ($(PLATFORM), desktop deps: $(if $(DESKTOP_DEPS),found,MISSING - run 'make setup'))"
@@ -52,6 +53,11 @@ help:
 	@echo "    lint          Clippy with warnings as errors (desktop + web targets)"
 	@echo "    fmt           Format all code"
 	@echo "    deny          Check dependency licences and security advisories"
+	@echo ""
+	@echo "  Releasing (docs/RELEASING.md)"
+	@echo "    release-patch Bump x.y.Z, verify, commit, tag and push: starts the Release workflow"
+	@echo "    release-minor Same for x.Y.0"
+	@echo "    release-major Same for X.0.0"
 	@echo ""
 	@echo "  Dependencies"
 	@echo "    outdated      List dependencies with newer versions, compatible and breaking"
@@ -161,6 +167,12 @@ deny:
 	cargo deny check
 
 verify: fmt-check lint test deny
+
+# ---------------------------------------------------------------- releasing
+
+# A clean, up-to-date main only; asks before it changes anything (scripts/release.sh).
+release-patch release-minor release-major:
+	bash scripts/release.sh $(subst release-,,$@)
 
 # ---------------------------------------------------------------- dependencies
 

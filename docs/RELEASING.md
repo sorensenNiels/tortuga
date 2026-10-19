@@ -27,13 +27,20 @@ make package      # installers for this OS in target/packages/
 ## Make a release
 
 1. Make sure `main` is green in CI and `docs/FEATURES.md` is up to date.
-2. Set the version in the root `Cargo.toml` (`[workspace.package] version`), commit, and push.
-3. Tag the commit and push the tag:
+2. Run one of these on an up-to-date, clean `main`:
 
    ```sh
-   git tag v0.1.0
-   git push origin v0.1.0
+   make release-patch   # 0.3.0 → 0.3.1: fixes only
+   make release-minor   # 0.3.0 → 0.4.0: new features
+   make release-major   # 0.3.0 → 1.0.0: breaking changes (e.g. the project file format)
    ```
+
+   It asks first, then sets the version in the root `Cargo.toml` (`[workspace.package] version`) and
+   `Cargo.lock`, runs `make verify`, commits "Release vX.Y.Z", makes the tag `vX.Y.Z` and pushes the commit and the
+   tag together. If verify fails, the version is put back and nothing is committed. If only the push fails, the
+   commit and tag are local and it prints the command to push them. (It runs in Git Bash on Windows.)
+
+   By hand, the same is: set the version, commit and push, then `git tag vX.Y.Z` and `git push origin vX.Y.Z`.
 
 4. The **Release** workflow builds every installer and a `tortuga-cli` archive per OS (R-CLI-4), checks that the tag
    matches the version, and creates a **draft** GitHub release with them and `SHA256SUMS.txt` attached.
