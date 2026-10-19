@@ -133,8 +133,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          path: packages
+          path: downloads
           merge-multiple: true
+      # Each artifact keeps the folders under target/ (packages/, cli/): flatten them.
+      - name: Collect the files
+        run: mkdir packages && find downloads -type f -exec mv -t packages {} + && ls -l packages
       - name: Checksums
         run: cd packages && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Create the draft release
