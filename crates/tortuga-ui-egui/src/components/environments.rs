@@ -382,6 +382,9 @@ pub struct EnvironmentsDialog {
 /// Width of the environment list on the left.
 const LIST_WIDTH: f32 = 200.0;
 
+/// Space left of the chosen environment's view, after the list's separator line.
+const DETAIL_PADDING: i8 = 16;
+
 /// Width of the name column in the server and variable tables: a share of the room, so long
 /// names are not truncated (BUG-1), within sensible bounds.
 fn name_width(total: f32) -> f32 {
@@ -446,28 +449,35 @@ impl EnvironmentsDialog {
                         environment_list(ui, &mut self.draft, &mut self.shown, read_only);
                     });
                 CentralPanel::no_frame().show(ui, |ui| {
-                    ScrollArea::vertical()
-                        .id_salt("env-detail")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| match self.shown {
-                            Shown::Defaults => defaults_view(
-                                ui,
-                                &mut self.draft,
-                                &mut self.new_server,
-                                &mut self.new_variable,
-                            ),
-                            Shown::Environment(col) => {
-                                if let Some(left) = environment_view(
+                    // Room between the list's separator line and the names and fields.
+                    let padding = egui::Margin {
+                        left: DETAIL_PADDING,
+                        ..egui::Margin::ZERO
+                    };
+                    Frame::NONE.inner_margin(padding).show(ui, |ui| {
+                        ScrollArea::vertical()
+                            .id_salt("env-detail")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| match self.shown {
+                                Shown::Defaults => defaults_view(
                                     ui,
                                     &mut self.draft,
-                                    col,
                                     &mut self.new_server,
                                     &mut self.new_variable,
-                                ) {
-                                    self.shown = self.shown.after_remove(col, left);
+                                ),
+                                Shown::Environment(col) => {
+                                    if let Some(left) = environment_view(
+                                        ui,
+                                        &mut self.draft,
+                                        col,
+                                        &mut self.new_server,
+                                        &mut self.new_variable,
+                                    ) {
+                                        self.shown = self.shown.after_remove(col, left);
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    });
                 });
                 if save {
                     match self.draft.to_config(&c.manifest, &c.environments) {
@@ -1126,6 +1136,28 @@ mod tests {
         assert_eq!(names, ["ü😀"]);
         assert_eq!(dialog.draft.environments.len(), 2, "environments stay");
         assert_eq!(dialog.shown, Shown::Environment(1), "still on the same one");
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// R-SRV-7: the chosen environment's view keeps some room after the list's line.
+    #[test]
+    fn the_view_is_padded_from_the_list() {
+        use egui_kittest::kittest::Queryable;
+        let (root, state) = open_project("padding");
+        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+        dialog.draft = draft();
+        dialog.shown = Shown::Environment(0);
+        let mut h = harness(&mut dialog, &state);
+        h.run();
+        let list_right = h.get_by_label("Defaults").rect().right();
+        let name_left = h.get_by_label("Name").rect().left();
+        // The list's own 12 px margin up to its line, then the padding after it.
+        let gap = name_left - list_right;
+        assert!(
+            gap >= 12.0 + 16.0,
+            "{gap} px from the list to the Name label"
+        );
+        drop(h);
         std::fs::remove_dir_all(&root).expect("clean up");
     }
 
