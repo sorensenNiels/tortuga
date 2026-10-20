@@ -202,16 +202,22 @@ impl TortugaUi {
             };
             let mut picked = None;
             let mut pick_mock = false;
+            // The mock's environment keeps the default colour.
+            let color = shown
+                .as_deref()
+                .filter(|_| !in_mock)
+                .and_then(|name| self.state.environment_color(&root, name));
             ComboBox::from_id_salt("environment")
                 .selected_text((
-                    RichText::new("⏺").size(9.0).color(p.ok),
+                    theme::environment_dot(ui, color),
                     " ",
                     shown.clone().unwrap_or_default(),
                 ))
                 .show_ui(ui, |ui| {
                     for name in &names {
                         let current = !in_mock && shown.as_ref() == Some(name);
-                        if ui.selectable_label(current, name).clicked() {
+                        let color = self.state.environment_color(&root, name);
+                        if theme::environment_button(ui, current, color, name, 0.0).clicked() {
                             picked = Some(name.clone());
                         }
                     }

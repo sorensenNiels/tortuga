@@ -486,6 +486,7 @@ pub fn environment(collection: &Collection, base: &str) -> Environment {
         id: ENVIRONMENT_ID.to_owned(),
         name: "Mock".to_owned(),
         seq: None,
+        color: None,
         servers: servers
             .iter()
             .map(|s| {

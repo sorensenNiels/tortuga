@@ -38,7 +38,7 @@ pub mod xpath;
 pub use collection::{Collection, Direction, Item, NewItem};
 pub use cookies::{CookieInfo, CookieJar};
 pub use error::{Error, Result};
-pub use format::{Environment, Manifest, Server};
+pub use format::{Environment, EnvironmentColor, Manifest, Server};
 pub use http::{Client, ClientSettings, FileReader};
 pub use model::{
     Auth, BodyView, FormPart, HttpMethod, KeyValue, Request, RequestBody, Response, Scripts,

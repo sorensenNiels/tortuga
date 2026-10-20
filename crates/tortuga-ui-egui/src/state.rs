@@ -699,6 +699,26 @@ impl AppState {
         names
     }
 
+    /// The colour of the environment called `name` (R-SRV-8): the one `root` gives it,
+    /// else the first project's that gives it one, since the picker switches them all.
+    pub fn environment_color(
+        &self,
+        root: &Path,
+        name: &str,
+    ) -> Option<tortuga_core::EnvironmentColor> {
+        let own = self
+            .collection(root)
+            .and_then(|c| c.environments.iter().find(|e| e.name == name))
+            .and_then(|e| e.color);
+        own.or_else(|| {
+            self.collections
+                .iter()
+                .flat_map(|c| &c.environments)
+                .filter(|e| e.name == name)
+                .find_map(|e| e.color)
+        })
+    }
+
     /// Switches every project that has an environment called `name` (R-WS-6).
     pub fn set_workspace_environment(&mut self, name: &str) {
         self.mocks.selected = false;
@@ -1236,6 +1256,37 @@ mod tests {
         assert_eq!(state.active_environment(&b).as_deref(), Some("local"));
         assert!(state.follows_workspace_environment(&a));
         std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-SRV-8: the picker's dot takes the colour the project gives the environment,
+    /// else the one another project gives an environment of that name.
+    #[test]
+    fn environment_colours_come_from_the_project_then_the_workspace() {
+        use tortuga_core::EnvironmentColor::{Blue, Red};
+        let dir = temp("env-colour");
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        project(&a, "A", &["Prod", "Dev"]);
+        project(&b, "B", &["Prod", "Dev ü😀"]);
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![a.clone(), b.clone()],
+            ..Default::default()
+        }));
+        let paint = |state: &mut AppState, root: &Path, name: &str, color| {
+            let mut envs = state.collection(root).expect("open").environments.clone();
+            envs.iter_mut().find(|e| e.name == name).expect("env").color = Some(color);
+            state
+                .run(root, |c, s| c.save_config(s, &c.manifest, &envs))
+                .expect("saved");
+        };
+        assert_eq!(state.environment_color(&a, "Prod"), None, "the default");
+        paint(&mut state, &b, "Prod", Red);
+        assert_eq!(state.environment_color(&a, "Prod"), Some(Red), "from B");
+        paint(&mut state, &a, "Prod", Blue);
+        assert_eq!(state.environment_color(&a, "Prod"), Some(Blue), "A's own");
+        assert_eq!(state.environment_color(&b, "Prod"), Some(Red), "B's own");
+        assert_eq!(state.environment_color(&a, "Dev ü😀"), None);
+        assert_eq!(state.environment_color(&a, "Gone"), None);
+        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
     /// R-SRV-7: renaming the workspace's environment keeps every project on it.

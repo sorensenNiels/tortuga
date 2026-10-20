@@ -11,7 +11,7 @@ use egui::{
     Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin,
     Response, RichText, Role, Stroke, TextStyle, Theme, Ui, Visuals, WidgetInfo,
 };
-use tortuga_core::HttpMethod;
+use tortuga_core::{EnvironmentColor, HttpMethod};
 
 /// Named font family for headings and emphasis (Inter `SemiBold`).
 pub const SEMIBOLD: &str = "semibold";
@@ -334,6 +334,59 @@ fn project_color_index(name: &str) -> usize {
     )]
     let index = (hash % PROJECT_COLORS.len() as u64) as usize;
     index
+}
+
+/// The colour of an environment's dot (R-SRV-8); the default is the "ok" green.
+pub fn environment_color(ui: &Ui, color: Option<EnvironmentColor>) -> Color32 {
+    let rgb = |hex: u32| {
+        let [_, r, g, b] = hex.to_be_bytes();
+        Color32::from_rgb(r, g, b)
+    };
+    let (light, dark) = match color {
+        None => return palette(ui).ok,
+        Some(EnvironmentColor::Green) => (0x16_a3_4a, 0x4a_de_80),
+        Some(EnvironmentColor::Teal) => (0x0d_94_88, 0x2d_d4_bf),
+        Some(EnvironmentColor::Blue) => (0x25_63_eb, 0x60_a5_fa),
+        Some(EnvironmentColor::Purple) => (0x93_33_ea, 0xc0_84_fc),
+        Some(EnvironmentColor::Pink) => (0xdb_27_77, 0xf4_72_b6),
+        Some(EnvironmentColor::Red) => (0xdc_26_26, 0xf8_71_71),
+        Some(EnvironmentColor::Orange) => (0xea_58_0c, 0xfb_92_3c),
+        Some(EnvironmentColor::Yellow) => (0xca_8a_04, 0xfa_cc_15),
+        Some(EnvironmentColor::Grey) => (0x6b_72_80, 0x9c_a3_af),
+    };
+    rgb(if ui.visuals().dark_mode { dark } else { light })
+}
+
+/// The small "⏺" in front of an environment's name (R-SRV-8).
+pub fn environment_dot(ui: &Ui, color: Option<EnvironmentColor>) -> RichText {
+    RichText::new("⏺")
+        .size(9.0)
+        .color(environment_color(ui, color))
+}
+
+/// A selectable environment: its dot, then its name, cut short when long (R-SRV-8). Its
+/// accessible name is the environment's alone.
+pub fn environment_button(
+    ui: &mut Ui,
+    selected: bool,
+    color: Option<EnvironmentColor>,
+    name: &str,
+    min_width: f32,
+) -> Response {
+    use egui::AtomExt as _;
+    let dot = environment_dot(ui, color);
+    let button = egui::Button::selectable(
+        selected,
+        (
+            egui::Atom::from(dot),
+            egui::Atom::from(name).atom_shrink(true),
+            egui::Atom::grow(),
+        ),
+    )
+    .min_size(egui::vec2(min_width, 0.0));
+    let response = ui.add(button);
+    response.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, name));
+    response
 }
 
 /// A rounded, tinted pill (status codes, counts, "Unsaved").

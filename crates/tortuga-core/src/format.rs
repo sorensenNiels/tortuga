@@ -80,11 +80,77 @@ pub struct Environment {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<i64>,
+    /// The colour of its dot in the environment picker (R-SRV-8); `None`: the default.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "known_color"
+    )]
+    pub color: Option<EnvironmentColor>,
     /// Server id → base URL.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub servers: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, String>,
+}
+
+/// The colours an environment can be marked with (R-SRV-8), so production can be red.
+/// Named, not RGB, so each theme draws them in shades that read on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EnvironmentColor {
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+    Red,
+    Orange,
+    Yellow,
+    Grey,
+}
+
+impl EnvironmentColor {
+    pub const ALL: [Self; 9] = [
+        Self::Green,
+        Self::Teal,
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Grey,
+    ];
+
+    /// The name shown to the user.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Green => "Green",
+            Self::Teal => "Teal",
+            Self::Blue => "Blue",
+            Self::Purple => "Purple",
+            Self::Pink => "Pink",
+            Self::Red => "Red",
+            Self::Orange => "Orange",
+            Self::Yellow => "Yellow",
+            Self::Grey => "Grey",
+        }
+    }
+}
+
+/// A colour this build doesn't know (from a newer one) reads as the default rather than
+/// making the environment unreadable.
+fn known_color<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<EnvironmentColor>, D::Error> {
+    let name = Option::<String>::deserialize(deserializer)?;
+    Ok(name.and_then(|n| {
+        EnvironmentColor::deserialize(
+            serde::de::value::StrDeserializer::<serde::de::value::Error>::new(&n),
+        )
+        .ok()
+    }))
 }
 
 /// `_folder.toml`: display name and position of a folder, and the defaults its
@@ -750,6 +816,7 @@ password = "{{token}}"
             id: "dev".into(),
             name: "Development".into(),
             seq: Some(1),
+            color: None,
             servers: BTreeMap::from([("users".into(), "http://localhost:8080".into())]),
             variables: BTreeMap::from([("b".into(), "2".into()), ("a".into(), "1".into())]),
         };
@@ -759,5 +826,35 @@ password = "{{token}}"
             "name = \"Development\"\nseq = 1\n\n[servers]\nusers = \"http://localhost:8080\"\n\n[variables]\na = \"1\"\nb = \"2\"\n"
         );
         assert_eq!(parse_environment(&text, "dev"), Ok(env));
+    }
+
+    /// R-SRV-8: an environment's colour is saved by name; one a newer build added
+    /// reads as the default.
+    #[test]
+    fn environment_colors_round_trip_and_unknown_ones_are_ignored() {
+        for color in EnvironmentColor::ALL {
+            let env = Environment {
+                id: "prod".into(),
+                name: "Production ü😀".into(),
+                color: Some(color),
+                ..Environment::default()
+            };
+            let text = write_environment(&env);
+            assert_eq!(parse_environment(&text, "prod"), Ok(env), "{text}");
+        }
+        let env = Environment {
+            name: "Production".into(),
+            color: Some(EnvironmentColor::Red),
+            ..Environment::default()
+        };
+        assert_eq!(
+            write_environment(&env),
+            "name = \"Production\"\ncolor = \"red\"\n"
+        );
+        let newer = parse_environment("name = \"P\"\ncolor = \"ultraviolet\"\n", "p")
+            .expect("still readable");
+        assert_eq!(newer.color, None);
+        let older = parse_environment("name = \"P\"\n", "p").expect("readable");
+        assert_eq!(older.color, None);
     }
 }

@@ -1,11 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use egui::{
-    Atom, AtomExt as _, CentralPanel, Context, Frame, Grid, Panel, ScrollArea, TextEdit, Ui,
-};
+use egui::{Atom, CentralPanel, Context, Frame, Grid, Panel, ScrollArea, TextEdit, Ui};
 use tortuga_core::secrets::SecretValues;
-use tortuga_core::{Collection, Environment, Manifest, Server};
+use tortuga_core::{Collection, Environment, EnvironmentColor, Manifest, Server};
 
 use super::variable_row::{self, SecretHelp, new_row_input};
 use super::{DialogResult, resizable_dialog};
@@ -27,6 +25,8 @@ pub struct EnvColumn {
     /// `None` until saved for the first time.
     pub id: Option<String>,
     pub name: String,
+    /// Its dot's colour (R-SRV-8); `None`: the default.
+    pub color: Option<EnvironmentColor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -70,6 +70,7 @@ impl Draft {
                 .map(|e| EnvColumn {
                     id: Some(e.id.clone()),
                     name: e.name.clone(),
+                    color: e.color,
                 })
                 .collect(),
             servers: c
@@ -116,7 +117,11 @@ impl Draft {
 
     pub fn add_environment(&mut self) {
         let name = format!("Environment {}", self.environments.len() + 1);
-        self.environments.push(EnvColumn { id: None, name });
+        self.environments.push(EnvColumn {
+            id: None,
+            name,
+            color: None,
+        });
         self.servers
             .iter_mut()
             .for_each(|s| s.urls.push(String::new()));
@@ -271,6 +276,7 @@ impl Draft {
                 id,
                 name: e.name.trim().to_owned(),
                 seq: Some(seq),
+                color: e.color,
                 servers,
                 variables,
             });
@@ -530,17 +536,8 @@ fn environment_list(ui: &mut Ui, d: &mut Draft, shown: &mut Shown, read_only: bo
             };
             let selected = *shown == Shown::Environment(col);
             let width = ui.available_width();
-            if ui
-                .add(
-                    // Long names are cut short, left-aligned like "Defaults".
-                    egui::Button::selectable(
-                        selected,
-                        (Atom::from(name).atom_shrink(true), Atom::grow()),
-                    )
-                    .min_size(egui::vec2(width, 0.0)),
-                )
-                .clicked()
-            {
+            // Long names are cut short, left-aligned like "Defaults".
+            if theme::environment_button(ui, selected, e.color, name, width).clicked() {
                 *shown = Shown::Environment(col);
             }
         });
@@ -679,6 +676,10 @@ fn environment_view(
         d.remove_environment(col);
         return Some(d.environments.len());
     }
+    ui.horizontal(|ui| {
+        ui.label("Colour");
+        color_choice(ui, &mut env.color);
+    });
     ui.add_space(10.0);
 
     let mut remove_server = None;
@@ -761,6 +762,26 @@ const REMOVE_VARIABLE: &str = "Remove this variable from every environment";
 
 /// A server or variable name in an environment's table (renamed under Defaults), with a
 /// remove button (R-SRV-7). Returns whether remove was clicked.
+/// The colours an environment's dot can have, the default first (R-SRV-8).
+fn color_choice(ui: &mut Ui, color: &mut Option<EnvironmentColor>) {
+    let choices = std::iter::once(None).chain(EnvironmentColor::ALL.into_iter().map(Some));
+    for choice in choices {
+        let label = choice.map_or("Default", EnvironmentColor::label);
+        let button = egui::Button::selectable(
+            *color == choice,
+            theme::environment_dot(ui, choice).size(14.0),
+        );
+        let response = ui.add(button).on_hover_text(label);
+        // Named for screen readers (and tests): every swatch shows the same "⏺".
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::RadioButton, true, *color == choice, label)
+        });
+        if response.clicked() {
+            *color = choice;
+        }
+    }
+}
+
 fn name_label(ui: &mut Ui, width: f32, name: &str, secret: bool, remove_help: &str) -> bool {
     ui.horizontal(|ui| {
         ui.set_width(width);
@@ -1105,6 +1126,58 @@ mod tests {
         assert_eq!(names, ["ü😀"]);
         assert_eq!(dialog.draft.environments.len(), 2, "environments stay");
         assert_eq!(dialog.shown, Shown::Environment(1), "still on the same one");
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// R-SRV-8: a colour picked for an environment is saved in its file, read back, and
+    /// moves with it; "Default" takes it away again.
+    #[test]
+    fn an_environment_gets_a_colour() {
+        use egui_kittest::kittest::Queryable;
+        let (root, state) = open_project("colour");
+        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+        dialog.draft = draft();
+        dialog.shown = Shown::Environment(1);
+        {
+            let mut h = harness(&mut dialog, &state);
+            h.run();
+            h.get_by_label("Red").click();
+            h.run();
+        }
+        assert_eq!(
+            dialog.draft.environments[1].color,
+            Some(EnvironmentColor::Red)
+        );
+        assert_eq!(
+            dialog.draft.environments[0].color, None,
+            "only the shown one"
+        );
+
+        dialog.draft.move_environment(1, 0);
+        let config = dialog
+            .draft
+            .to_config(&Manifest::new("C"), &[])
+            .expect("valid");
+        assert_eq!(config.environments[0].name, "Staging");
+        assert_eq!(config.environments[0].color, Some(EnvironmentColor::Red));
+        let text = tortuga_core::format::write_environment(&config.environments[0]);
+        assert!(text.contains("color = \"red\""), "{text}");
+
+        let mut c = Collection::open(&tortuga_core::storage::FsStorage, &root).expect("open");
+        c.environments = config.environments;
+        let mut reopened = Draft::from_collection(&c, &SecretValues::default());
+        assert_eq!(reopened.environments[0].color, Some(EnvironmentColor::Red));
+
+        dialog.draft = reopened.clone();
+        dialog.shown = Shown::Environment(0);
+        {
+            let mut h = harness(&mut dialog, &state);
+            h.run();
+            h.get_by_label("Default").click();
+            h.run();
+        }
+        reopened.environments[0].color = None;
+        assert_eq!(dialog.draft, reopened);
         std::fs::remove_dir_all(&root).expect("clean up");
     }
 

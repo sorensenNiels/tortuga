@@ -310,6 +310,8 @@ fn environments_and_servers_round_trip() {
         id: Collection::new_environment_id("Development", &[]),
         name: "Development".into(),
         seq: Some(1),
+        // R-SRV-8: the colour is kept in the environment file.
+        color: Some(tortuga_core::EnvironmentColor::Teal),
         servers: [("users".to_owned(), "http://localhost:8080".to_owned())].into(),
         variables: [("version".to_owned(), "v2".to_owned())].into(),
     };
