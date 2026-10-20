@@ -9,9 +9,11 @@ mod environments;
 mod history_list;
 mod import_dialog;
 mod key_value_table;
+mod mock_dialog;
 mod modals;
 mod palette;
 mod request_editor;
+mod request_examples;
 mod request_scripts;
 mod response_panel;
 mod script_editing;
@@ -29,6 +31,7 @@ pub use environments::{EnvironmentsDialog, SavedConfig};
 pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, history_list};
 pub use import_dialog::{ImportDialog, ImportTarget};
 pub use key_value_table::key_value_table;
+pub use mock_dialog::{MockAction, MockDialog, MockView};
 pub use modals::{
     AddProjects, AddProjectsDialog, ConfirmDialog, CookieAction, CookiesDialog, CopyCurlDialog,
     CreateProjectDialog, DialogResult, MoveDialog, NameDialog, RuntimeVarsDialog,
@@ -39,8 +42,8 @@ pub use palette::{Palette, PaletteItem};
 pub use request_editor::{EditorAction, EditorContext, EditorState, Rerun, request_editor};
 pub use request_scripts::ScriptTab;
 pub use response_panel::{
-    Filtered, Outcome, PanelContext, ResponseAction, ResponseState, ResponseView, TestsView,
-    TextBody, filter_body, response_panel, tests_details,
+    Filtered, Outcome, PanelContext, ResponseAction, ResponseState, ResponseView, SaveExample,
+    TestsView, TextBody, filter_body, response_panel, tests_details,
 };
 pub use script_editing::insert_block;
 pub use sidebar::{Marks, SidebarAction, SidebarState, sidebar};

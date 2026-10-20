@@ -1,0 +1,50 @@
+name = "Get user"
+seq = 100
+method = "GET"
+server = "api"
+url = "/users/:id"
+
+[[params]]
+name = "fields"
+value = "name,email"
+
+[[params]]
+name = "debug"
+value = "1"
+enabled = false
+
+[[path_vars]]
+name = "id"
+value = "{{user}}"
+
+[capture]
+email = "$.email"
+
+[scripts]
+tests = """
+test("found Ann", () => {
+  expect(res.status).toBe(200);
+  expect(res.json().name).toBe("Ann Åkesson 😀");
+});
+"""
+
+[[examples]]
+name = "found"
+status = 200
+body = """
+{"id": "ann", "name": "Ann Åkesson 😀", "email": "ann@example.test"}
+"""
+
+[examples.match.query]
+fields = "name,email"
+
+[examples.match.headers]
+Authorization = "Bearer t-ann-1"
+X-Client = "tortuga-selftest"
+
+[[examples]]
+name = "unauthorized"
+status = 401
+body = """
+{"error": "no valid token, or the query was not sent"}
+"""

@@ -44,7 +44,7 @@ impl Kind {
         }
     }
 
-    /// `text` pretty-printed, for the kinds that have a "Format" button.
+    /// `text` pretty-printed, for the kinds that have a "Beautify" button.
     fn pretty(self, text: &str) -> Option<String> {
         match self {
             Self::Json => json::pretty(text),
@@ -118,24 +118,30 @@ pub fn body_editor(
     let kind = Kind::of(&request.body);
     let error = kind.check(&drafts.text);
 
-    ui.horizontal_wrapped(|ui| {
-        let mut chosen = kind;
-        for (k, label) in Kind::ALL {
-            ui.radio_value(&mut chosen, k, label);
-        }
-        if chosen != kind {
-            request.body = drafts.body(chosen);
-        }
-        if kind.formats()
-            && ui
-                .add_enabled(error.is_none(), egui::Button::new("Format").small())
-                .clicked()
-            && let Some(pretty) = kind.pretty(&drafts.text)
-        {
-            drafts.text = pretty;
-            request.body = drafts.body(kind);
-        }
-    });
+    // The body types on the left, "Beautify" at the right edge, as above scripts (R-TEST-7).
+    let (chosen, beautify) = egui::Sides::new().shrink_left().show(
+        ui,
+        |ui| {
+            let mut chosen = kind;
+            for (k, label) in Kind::ALL {
+                ui.radio_value(&mut chosen, k, label);
+            }
+            chosen
+        },
+        |ui| {
+            kind.formats()
+                && ui
+                    .add_enabled(error.is_none(), egui::Button::new("Beautify").small())
+                    .on_hover_text("Indent the body; it must be valid first")
+                    .clicked()
+        },
+    );
+    if chosen != kind {
+        request.body = drafts.body(chosen);
+    } else if beautify && let Some(pretty) = kind.pretty(&drafts.text) {
+        drafts.text = pretty;
+        request.body = drafts.body(kind);
+    }
 
     match kind {
         Kind::None => theme::hint(ui, "This request has no body."),
@@ -353,7 +359,7 @@ mod tests {
         assert_eq!(drafts.body(Kind::Xml), RequestBody::Xml("{}".into()));
     }
 
-    /// R-HTTP-19: XML is checked while typing and "Format" indents it.
+    /// R-HTTP-19: XML is checked while typing and "Beautify" indents it.
     #[test]
     fn xml_bodies_are_checked_and_formatted() {
         use egui_kittest::kittest::Queryable;
@@ -381,7 +387,12 @@ mod tests {
             });
             h.run();
             assert!(h.query_by_label_contains("Invalid XML").is_none());
-            h.get_by_label("Format").click();
+            let beautify = h.get_by_label("Beautify");
+            assert!(
+                beautify.rect().left() > h.get_by_label("Multipart").rect().right() + 50.0,
+                "Beautify sits at the right edge, apart from the body types"
+            );
+            beautify.click();
             h.run();
         }
         assert_eq!(

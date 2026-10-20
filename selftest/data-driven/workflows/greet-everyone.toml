@@ -1,0 +1,5 @@
+name = "Greet everyone"
+data = "data/people.csv"
+
+[[steps]]
+request = "greet.toml"

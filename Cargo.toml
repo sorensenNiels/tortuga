@@ -50,6 +50,11 @@ yaml-rust2 = { version = "0.13", default-features = false }
 quick-xml = "0.41"
 # Decoding image responses to show them (R-HTTP-17): pure Rust, also on wasm; the common web formats only.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+# The mock server (R-MOCK-2, D46): native only; the versions reqwest already uses.
+hyper = { version = "1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
 # Windows icon and version information in tortuga.exe (build script).
 winresource = { version = "0.1", default-features = false }
 

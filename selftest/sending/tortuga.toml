@@ -1,0 +1,19 @@
+format = 1
+name = "Sending"
+
+[[servers]]
+id = "api"
+name = "API"
+
+[[headers]]
+name = "Accept"
+value = "application/json"
+
+[auth]
+kind = "bearer"
+token = "{{token}}"
+
+[variables]
+password = "s3cret"
+token = "not-logged-in"
+user = "ann"

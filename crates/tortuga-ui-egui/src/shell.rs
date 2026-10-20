@@ -12,6 +12,7 @@ mod drafts;
 mod editor_actions;
 mod history;
 mod import;
+mod mock;
 mod projects;
 mod sending;
 mod tabs;
@@ -34,7 +35,7 @@ use crate::components::{
     AddProjectsDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
     CreateProjectDialog, DefaultsDialog, EditorContext, EditorState, EnvironmentsDialog, Filtered,
     Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext, Rerun, ResponseAction,
-    ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog, SidebarState,
+    ResponseState, ResponseView, SaveExample, SaveToCollectionDialog, SettingsDialog, SidebarState,
     TabStripState, TestsView, TextBody, request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
@@ -84,6 +85,8 @@ enum Modal {
     RuntimeVars(crate::components::RuntimeVarsDialog),
     /// The cookie viewer (R-CK-5).
     Cookies(CookiesDialog),
+    /// A project's mock server: port and log (R-MOCK-2, R-MOCK-4).
+    Mock(crate::components::MockDialog),
     /// Reviewing an OpenAPI or Postman import (R-COL-15, R-COL-16).
     Import(Box<import::OpenImport>),
 }
@@ -308,6 +311,7 @@ impl TortugaUi {
         for root in self.state.take_changes() {
             self.on_disk_change(&root);
         }
+        self.state.mocks.take_hits();
         if self.modal.is_none() {
             self.shortcuts(ui);
         }
@@ -620,6 +624,15 @@ impl TortugaUi {
             self.past_banner(ui, key);
         }
         let can_save = self.state.host.can_save_files();
+        let example = if key
+            .as_ref()
+            .and_then(|k| self.state.collection(&k.root))
+            .is_some_and(|c| !c.read_only)
+        {
+            SaveExample::Offered
+        } else {
+            SaveExample::Hidden
+        };
         let sent = self.sent.get(key);
         let view = match sent.and_then(|s| s.outcome.as_ref()) {
             Some(Outcome::Response(view)) => Some(Arc::clone(view)),
@@ -647,6 +660,7 @@ impl TortugaUi {
             filtered,
             tests: tests.as_ref(),
             wrap: self.state.settings.appearance.wrap_lines,
+            example,
         };
         match response_panel(ui, outcome, &mut self.response, cx) {
             Some(ResponseAction::SaveBody) => {
@@ -658,6 +672,18 @@ impl TortugaUi {
                             Some(Err(e)) => Some(format!("Could not save: {e}")),
                             None => self.response.save_status.take(),
                         };
+                }
+            }
+            Some(ResponseAction::SaveAsExample) => {
+                if let Some(Outcome::Response(view)) = outcome {
+                    let r = &view.response;
+                    let base = format!("{} {}", r.status, r.status_text);
+                    let examples = &mut self.current.examples;
+                    let name = tortuga_core::import::unique_name(base.trim(), |n| {
+                        examples.iter().any(|e| e.name == n)
+                    });
+                    examples.push(tortuga_core::mock::Example::from_response(name, r));
+                    self.editor.open_example(examples.len() - 1);
                 }
             }
             Some(ResponseAction::SetWrap(wrap)) => {

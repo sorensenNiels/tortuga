@@ -1,0 +1,48 @@
+name = "Greet"
+seq = 100
+method = "GET"
+server = "api"
+url = "/greet"
+
+[[params]]
+name = "user"
+value = "{{user}}"
+
+[scripts]
+tests = """
+test("greets the row's person", () => expect(res.json().greeting).toBe("Hello, " + vars.get("name")));
+"""
+
+[[examples]]
+name = "ann"
+body = """
+{"greeting": "Hello, Ann"}
+"""
+
+[examples.match.query]
+user = "ann"
+
+[[examples]]
+name = "bob"
+body = """
+{"greeting": "Hello, Bob"}
+"""
+
+[examples.match.query]
+user = "bob"
+
+[[examples]]
+name = "zoë"
+body = """
+{"greeting": "Hello, Zoë 😀"}
+"""
+
+[examples.match.query]
+user = "zoë"
+
+[[examples]]
+name = "stranger"
+status = 404
+body = """
+{"error": "no such person"}
+"""

@@ -22,10 +22,11 @@ When building something that has no requirement yet, add one to the roadmap (nex
 
 | Path | Purpose |
 |---|---|
-| `crates/tortuga-core` | UI-agnostic engine. No UI deps, ever. `model` (request/response), `http` (client), `format` (TOML file format), `collection` (tree + operations on disk), `vars` (environments, servers, `{{variables}}`, auth, defaults), `secrets` (secret values + `SecretStore` trait), `settings` (the app's own settings, e.g. importers on/off), `cookies`, `git` (status data), `workspace` (shareable workspace file), `storage` (file access trait). In code a project is still a `Collection`; the UI and docs say "project" (D12). |
+| `crates/tortuga-core` | UI-agnostic engine. No UI deps, ever. `model` (request/response), `http` (client), `format` (TOML file format), `collection` (tree + operations on disk), `vars` (environments, servers, `{{variables}}`, auth, defaults), `secrets` (secret values + `SecretStore` trait), `settings` (the app's own settings, e.g. importers on/off), `cookies`, `git` (status data), `workspace` (shareable workspace file), `storage` (file access trait), `mock` (answers from request examples; `mock::server` is the native-only listener). In code a project is still a `Collection`; the UI and docs say "project" (D12). |
 | `crates/tortuga-ui-egui` | The UI, built with egui 0.37: components, UI state (`AppState`, `TortugaUi`), display formatting. No platform code: files, dialogs, settings storage and task spawning come in through the `Host` trait. |
 | `crates/tortuga-app` | Thin eframe launcher (`tortuga` binary): window, tokio runtime, `local_store`, native dialogs (`rfd`), and the `Host` impls. Features: `desktop` (default, native), `web` (wasm32). Also the app icon (`icons/`) and the installer settings (`[package.metadata.packager]`, see `docs/RELEASING.md`). |
 | `crates/tortuga-cli` | `tortuga-cli` binary: runs a workflow, folder or request from a terminal or CI with the same project files (R-CLI-1..4). Only a thin layer over `tortuga-core`. |
+| `selftest/` | Tortuga testing itself (R-MOCK-7): a workspace whose workflows run against their projects' mocks in `cargo test` (`make selftest`). |
 | `scripts/` | One-time dev setup per OS. |
 | `deny.toml` | Dependency licence/advisory policy (`cargo deny check`). |
 
@@ -36,6 +37,7 @@ Use the Makefile (`make help` lists everything). The main ones:
 ```sh
 make verify      # fmt-check + lint + test + deny: run before calling work done (= CI)
 make test        # all tests; make test-core for the engine only
+make selftest    # the selftest/ workflows against their mocks (part of make test)
 make lint        # clippy -D warnings for desktop and web targets
 make run         # desktop app (cargo run)
 make package     # installers for this OS (docs/RELEASING.md)

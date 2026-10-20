@@ -80,6 +80,11 @@ pub enum SidebarAction {
     /// Create a project from an OpenAPI description (R-COL-15), a Postman collection
     /// (R-COL-16) or a `.http` file (R-COL-17).
     Import(ImportKind),
+    /// Start the project's mock server, or show it when it runs (R-MOCK-2).
+    StartMock(PathBuf),
+    StopMock(PathBuf),
+    /// The mock server dialog: port and log (R-MOCK-4).
+    ShowMock(PathBuf),
     /// A missing project was moved: pick its new folder (R-WS-5).
     LocateMissing(PathBuf),
     RemoveMissing(PathBuf),
@@ -138,6 +143,8 @@ struct Tree<'a> {
     show_branch: bool,
     /// Set when the project doesn't have the workspace's environment (R-WS-6).
     env_note: Option<EnvNote>,
+    /// The port of the project's running mock server (R-MOCK-2).
+    mock_port: Option<u16>,
     can_open_folders: bool,
     /// Projects show their tab-group colour when there are several (R-COL-14).
     color_dots: bool,
@@ -218,6 +225,7 @@ pub fn sidebar(
         git: None,
         show_branch: true,
         env_note: None,
+        mock_port: None,
         can_open_folders: state.host.can_open_folders(),
         color_dots: state.collections.len() > 1,
         actions: Vec::new(),
@@ -263,6 +271,7 @@ pub fn sidebar(
                         tree.git = state.git.get(&c.root);
                         tree.show_branch = shared.is_none();
                         tree.env_note = environment_note(state, c);
+                        tree.mock_port = state.mocks.port(&c.root);
                         collection(ui, c, state.cookie_jar(Some(&c.root)).len(), depth, &mut tree);
                     });
                 }
@@ -303,6 +312,24 @@ fn scratch_row(ui: &mut Ui, scratch_selected: bool, tree: &mut Tree<'_>) {
     }
 }
 
+/// What the right end of a project row shows: its running mock server (R-MOCK-2), and
+/// the environment it uses when it lacks the workspace's (R-WS-6).
+fn project_marks(ui: &Ui, tree: &Tree<'_>) -> Vec<Atom<'static>> {
+    let p = theme::palette(ui);
+    let mock = tree
+        .mock_port
+        .map(|port| RichText::new(format!("mock :{port}")).small().color(p.ok));
+    let environment = tree.env_note.as_ref().map(|note| {
+        RichText::new(format!("⚠ {}", note.used))
+            .small()
+            .color(p.redirect)
+    });
+    mock.into_iter()
+        .chain(environment)
+        .map(Atom::from)
+        .collect()
+}
+
 fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tree: &mut Tree<'_>) {
     let root = c.root.clone();
     let key = ItemKey::new(&root, "");
@@ -311,8 +338,17 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
 
     let can_open = tree.can_open_folders;
     let environments = tree.env_note.as_ref().map(|n| n.environments.clone());
-    let menu =
-        |ui: &mut Ui| collection_menu(ui, c, cookie_count, can_open, environments.as_deref());
+    let mock_port = tree.mock_port;
+    let menu = |ui: &mut Ui| {
+        collection_menu(
+            ui,
+            c,
+            cookie_count,
+            can_open,
+            environments.as_deref(),
+            mock_port,
+        )
+    };
     if is_renaming(tree, &key) {
         if let Some(name) = rename_row(ui, depth, tree, &key) {
             tree.actions.push(SidebarAction::RenameCollection {
@@ -343,14 +379,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
             ));
         }
         atoms.push(Atom::grow());
-        // R-WS-6: this project doesn't have the workspace's environment.
-        if let Some(note) = &tree.env_note {
-            atoms.push(Atom::from(
-                RichText::new(format!("⚠ {}", note.used))
-                    .small()
-                    .color(theme::palette(ui).redirect),
-            ));
-        }
+        atoms.extend(project_marks(ui, tree));
         let (row, from_button) = tree_row(ui, depth, false, atoms, |ui| menu_button(ui, menu));
         if !read_only {
             drop_on_project(ui, &row, &root, tree);
@@ -849,6 +878,8 @@ fn collection_menu(
     can_open_folders: bool,
     // Set when the project doesn't follow the workspace's environment (R-WS-6).
     environments: Option<&[(String, String)]>,
+    // The port of its running mock server (R-MOCK-2).
+    mock_port: Option<u16>,
 ) -> Option<MenuChoice> {
     let root = &c.root;
     let mut choice = None;
@@ -893,6 +924,19 @@ fn collection_menu(
         item(ui, "New workflow…".into(), &|| {
             MenuChoice::Action(SidebarAction::NewWorkflow(root.clone()))
         });
+    }
+    match mock_port {
+        None => item(ui, "Start mock server".into(), &|| {
+            MenuChoice::Action(SidebarAction::StartMock(root.clone()))
+        }),
+        Some(port) => {
+            item(ui, format!("Mock server (port {port})…"), &|| {
+                MenuChoice::Action(SidebarAction::ShowMock(root.clone()))
+            });
+            item(ui, "Stop mock server".into(), &|| {
+                MenuChoice::Action(SidebarAction::StopMock(root.clone()))
+            });
+        }
     }
     item(ui, "Runtime variables…".into(), &|| {
         MenuChoice::Action(SidebarAction::RuntimeVariables(root.clone()))

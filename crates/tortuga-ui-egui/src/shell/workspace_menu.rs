@@ -183,17 +183,25 @@ impl TortugaUi {
         };
         let p = theme::palette(ui);
         ui.label(RichText::new("Environment").color(p.muted));
-        let edit = if names.is_empty() {
+        // The mock's environment, while a mock server runs (R-MOCK-4, D45).
+        let mock = mock_label(&self.state.mocks.ports());
+        let edit = if names.is_empty() && mock.is_none() {
             ui.button("Add environments…").clicked()
         } else {
+            let in_mock = self.state.mocks.in_use();
             // A name no project has any more (renamed or removed) is not shown.
             let chosen = self.state.workspace().environment.clone();
-            let shown = chosen.filter(|n| names.contains(n)).or_else(|| {
-                let c = self.state.collection(&root)?;
-                let id = self.state.active_environment(&root)?;
-                c.environment(&id).map(|e| e.name.clone())
-            });
+            let shown = if in_mock {
+                mock.clone()
+            } else {
+                chosen.filter(|n| names.contains(n)).or_else(|| {
+                    let c = self.state.collection(&root)?;
+                    let id = self.state.active_environment(&root)?;
+                    c.environment(&id).map(|e| e.name.clone())
+                })
+            };
             let mut picked = None;
+            let mut pick_mock = false;
             ComboBox::from_id_salt("environment")
                 .selected_text((
                     RichText::new("⏺").size(9.0).color(p.ok),
@@ -202,18 +210,25 @@ impl TortugaUi {
                 ))
                 .show_ui(ui, |ui| {
                     for name in &names {
-                        if ui
-                            .selectable_label(shown.as_ref() == Some(name), name)
-                            .clicked()
-                        {
+                        let current = !in_mock && shown.as_ref() == Some(name);
+                        if ui.selectable_label(current, name).clicked() {
                             picked = Some(name.clone());
                         }
+                    }
+                    if let Some(label) = &mock {
+                        ui.separator();
+                        pick_mock = ui
+                            .selectable_label(in_mock, label)
+                            .on_hover_text("Sends the requests of projects with a running mock server to it")
+                            .clicked();
                     }
                 })
                 .response
                 .on_hover_text("Switches every project in the workspace that has an environment with this name");
             if let Some(name) = picked {
                 self.state.set_workspace_environment(&name);
+            } else if pick_mock {
+                self.state.use_mock_environment();
             }
             ui.add(theme::ghost_button("✏"))
                 .on_hover_text("Edit environments, servers and variables of this project")
@@ -225,5 +240,14 @@ impl TortugaUi {
                 root,
             )));
         }
+    }
+}
+
+/// "Mock (port 4010)", or "Mock (2 servers)"; `None` when no mock server runs.
+fn mock_label(ports: &[u16]) -> Option<String> {
+    match ports {
+        [] => None,
+        [port] => Some(format!("Mock (port {port})")),
+        more => Some(format!("Mock ({} servers)", more.len())),
     }
 }

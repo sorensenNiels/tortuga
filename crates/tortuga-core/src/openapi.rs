@@ -9,7 +9,8 @@
 //!   ones on, optional ones off) with their example values, and a body made from the
 //!   request body's example or, failing that, its schema;
 //! - security schemes as auth that uses secret variables (D35), so no credential is
-//!   ever written to the project.
+//!   ever written to the project;
+//! - responses as the request's examples for the mock server (R-MOCK-6).
 //!
 //! Only local references (`#/components/…`) are followed. What can't be imported as
 //! written is reported in [`Import::warnings`]. [`crate::import::create_project`] writes
@@ -27,6 +28,8 @@ use crate::model::{
     Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, is_json_content_type,
 };
 use crate::{Error, Result};
+
+mod responses;
 
 /// Reads an OpenAPI 3 description (JSON or YAML) into a project (R-COL-15).
 pub fn parse(text: &str) -> Result<Import> {
@@ -527,6 +530,7 @@ impl<'a> Importer<'a> {
         request.body = body;
         request.headers.extend(content_type);
         self.apply_security(&mut request, op.get("security"));
+        request.examples = self.examples(op);
         request
     }
 

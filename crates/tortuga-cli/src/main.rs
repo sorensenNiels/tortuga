@@ -11,15 +11,20 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod mock;
+
 use tortuga_core::storage::FsStorage;
 use tortuga_core::workflow::{self, Progress, RunOptions, RunResult, Workflow};
 use tortuga_core::{Client, ClientSettings, Collection, data, report};
 
 const USAGE: &str = "\
 Usage: tortuga-cli run <project> [<workflow, folder or request>] [options]
+       tortuga-cli mock <project> [--port N] [--env NAME]
 
-Runs a workflow (by name or id), the requests of a folder, or one request of the
-Tortuga project in <project>. Without a target, every request of the project runs.
+run:  Runs a workflow (by name or id), the requests of a folder, or one request of
+      the Tortuga project in <project>. Without a target, every request runs.
+mock: Serves the example responses saved with the project's requests on
+      http://127.0.0.1:<port> (default 4010) until stopped with Ctrl+C.
 
 Options:
   --env NAME            Use this environment (by name or id)
@@ -27,6 +32,9 @@ Options:
   --var NAME=VALUE      Set a variable (repeatable); wins over the project's values
   --workspace FILE      Use the variables, settings, headers and auth of this
                         .tortuga-workspace.toml; the project's own win over them
+  --mock                Run against the project's mock: start it on a free port and
+                        send every request that has a server there
+  --port N              The mock's port
   --insecure            Do not verify TLS certificates
   --cacert FILE         Also trust the CA certificates in this PEM file (repeatable)
   --report junit|json   Write a report ...
@@ -55,6 +63,9 @@ struct Args {
     insecure: bool,
     cacerts: Vec<PathBuf>,
     report: Option<(ReportKind, PathBuf)>,
+    /// Run against the project's mock (R-MOCK-5).
+    mock: bool,
+    port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +76,8 @@ enum ReportKind {
 
 enum Command {
     Run(Box<Args>),
+    /// Serve the project's mock (R-MOCK-5).
+    Mock(Box<Args>),
     Help,
     Version,
 }
@@ -86,6 +99,13 @@ fn main() -> ExitCode {
             println!("tortuga-cli {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        Command::Mock(args) => match mock::serve(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tortuga-cli: {e}");
+                ExitCode::from(2)
+            }
+        },
         Command::Run(args) => {
             let mut args = *args;
             args.vars = env_vars(std::env::vars())
@@ -114,12 +134,13 @@ fn main() -> ExitCode {
 
 fn parse(input: Vec<String>) -> Result<Command, String> {
     let mut words = input.into_iter();
-    match words.next().as_deref() {
+    let serve_mock = match words.next().as_deref() {
         None | Some("-h" | "--help" | "help") => return Ok(Command::Help),
         Some("-V" | "--version") => return Ok(Command::Version),
-        Some("run") => {}
+        Some("run") => false,
+        Some("mock") => true,
         Some(other) => return Err(format!("unknown command '{other}'")),
-    }
+    };
     let mut args = Args::default();
     let mut positional = Vec::new();
     let mut report_kind = None;
@@ -147,6 +168,14 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
                 });
             }
             "--out" => out = Some(PathBuf::from(value("--out")?)),
+            "--mock" => args.mock = true,
+            "--port" => {
+                let v = value("--port")?;
+                args.port = Some(
+                    v.parse()
+                        .map_err(|_| format!("--port needs a port number, not '{v}'"))?,
+                );
+            }
             "-h" | "--help" => return Ok(Command::Help),
             s if s.starts_with('-') => return Err(format!("unknown option '{s}'")),
             _ => positional.push(arg),
@@ -166,6 +195,12 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
     args.target = positional.next();
     if let Some(extra) = positional.next() {
         return Err(format!("unexpected '{extra}'"));
+    }
+    if serve_mock {
+        if let Some(target) = args.target {
+            return Err(format!("mock serves the whole project; remove '{target}'"));
+        }
+        return Ok(Command::Mock(Box::new(args)));
     }
     Ok(Command::Run(Box::new(args)))
 }
@@ -188,31 +223,32 @@ fn read_workspace(path: &Path) -> Result<tortuga_core::workspace::WorkspaceFile,
     tortuga_core::workspace::read(&text, path).map_err(|e| e.to_string())
 }
 
+/// The id of the environment called `name` (by name or id), if one is asked for.
+fn environment_id(collection: &Collection, name: Option<&str>) -> Result<Option<String>, String> {
+    let Some(name) = name else { return Ok(None) };
+    collection
+        .environments
+        .iter()
+        .find(|e| e.id.eq_ignore_ascii_case(name) || e.name.eq_ignore_ascii_case(name))
+        .map(|e| Some(e.id.clone()))
+        .ok_or_else(|| {
+            let names: Vec<&str> = collection
+                .environments
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect();
+            format!(
+                "no environment '{name}' in the project (it has: {})",
+                names.join(", ")
+            )
+        })
+}
+
 /// Runs what `args` asks for. `Ok(passed)`, or an error in the command or the project.
 fn run(args: &Args) -> Result<bool, String> {
     let collection = Collection::open(&FsStorage, &args.project).map_err(|e| e.to_string())?;
     let workflow = find_target(&collection, args.target.as_deref())?;
-    let environment = match &args.env {
-        None => None,
-        Some(name) => Some(
-            collection
-                .environments
-                .iter()
-                .find(|e| e.id.eq_ignore_ascii_case(name) || e.name.eq_ignore_ascii_case(name))
-                .map(|e| e.id.clone())
-                .ok_or_else(|| {
-                    let names: Vec<&str> = collection
-                        .environments
-                        .iter()
-                        .map(|e| e.name.as_str())
-                        .collect();
-                    format!(
-                        "no environment '{name}' in the project (it has: {})",
-                        names.join(", ")
-                    )
-                })?,
-        ),
-    };
+    let environment = environment_id(&collection, args.env.as_deref())?;
     let data_file = args
         .data
         .clone()
@@ -231,7 +267,7 @@ fn run(args: &Args) -> Result<bool, String> {
         Some(path) => read_workspace(path)?,
     };
     let client = client(args)?;
-    let options = RunOptions {
+    let mut options = RunOptions {
         environment,
         secrets: BTreeMap::new(),
         overrides: args.vars.clone(),
@@ -248,11 +284,29 @@ fn run(args: &Args) -> Result<bool, String> {
             || "no environment".to_owned(),
             |e| format!("environment {}", e.name),
         );
-    println!("{} — {} ({env_name})", collection.name(), workflow.name);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
+    // Requests go to the mock through its environment (R-MOCK-4, R-MOCK-5).
+    let (_mock, collection) = if args.mock {
+        let (running, with_mock) = runtime.block_on(mock::start_for_run(
+            collection,
+            options.environment.as_deref(),
+            args.port.unwrap_or(0),
+        ))?;
+        println!(
+            "{} — {} ({env_name}, mock on {})",
+            with_mock.name(),
+            workflow.name,
+            running.base_url()
+        );
+        options.environment = Some(tortuga_core::mock::ENVIRONMENT_ID.to_owned());
+        (Some(running), with_mock)
+    } else {
+        println!("{} — {} ({env_name})", collection.name(), workflow.name);
+        (None, collection)
+    };
     let multi = options.rows.len() > 1;
     let result = runtime.block_on(workflow::run(
         &client,

@@ -5,6 +5,7 @@ use tortuga_core::{Auth, HttpMethod, KeyValue, Request, RequestBody};
 
 use super::TestsView;
 use super::auth_editor::EditDefaults;
+use super::request_examples::{ExamplesState, request_examples};
 use super::request_scripts::{ScriptTab, request_scripts};
 use super::{BodyDrafts, body_editor, key_value_table, request_auth};
 use crate::theme;
@@ -18,6 +19,8 @@ enum Tab {
     Options,
     /// Pre-request script, test script and captures (R-TEST-1, R-TEST-2, R-TEST-4).
     Scripts,
+    /// Responses the mock server gives (R-MOCK-1).
+    Examples,
     /// The request as it will be sent (R-HTTP-14).
     Preview,
 }
@@ -36,6 +39,8 @@ pub struct EditorState {
     pub(super) captures: Vec<KeyValue>,
     /// The open sub-tab of the Scripts tab (R-TEST-11).
     pub(super) script_tab: ScriptTab,
+    /// The open example (R-MOCK-1).
+    examples: ExamplesState,
 }
 
 impl EditorState {
@@ -70,6 +75,12 @@ impl EditorState {
         self.captures.push(KeyValue::new(name, from));
     }
 
+    /// Opens the Examples tab on example `index` (R-MOCK-1).
+    pub fn open_example(&mut self, index: usize) {
+        self.tab = Tab::Examples;
+        self.examples.open(index);
+    }
+
     /// Whether the Preview tab is open (so the shell works out the preview).
     pub fn shows_preview(&self) -> bool {
         self.tab == Tab::Preview
@@ -91,6 +102,7 @@ impl EditorState {
                 .map(|(name, from)| KeyValue::new(name, from))
                 .collect(),
             script_tab: ScriptTab::first_for(request),
+            examples: ExamplesState::default(),
         }
     }
 }
@@ -216,28 +228,33 @@ pub fn request_editor(
     let has_auth = effective_auth.is_some_and(|a| !a.is_none());
     ui.add_space(6.0);
     let count = |n: usize| (n > 0).then(|| n.to_string());
-    theme::tabs(
-        ui,
-        &mut st.tab,
-        &[
-            (Tab::Params, "Params", count(param_count)),
-            (
-                Tab::Headers,
-                "Headers",
-                count(header_count + cx.inherited_headers.len()),
-            ),
-            (Tab::Auth, "Auth", has_auth.then(|| "⏺".to_owned())),
-            (Tab::Body, "Body", has_body.then(|| "⏺".to_owned())),
-            (Tab::Options, "Options", None),
-            (
-                Tab::Scripts,
-                "Scripts",
-                (!request.scripts.is_empty() || !request.capture.is_empty())
-                    .then(|| "⏺".to_owned()),
-            ),
-            (Tab::Preview, "Preview", None),
-        ],
-    );
+    let mut tabs = vec![
+        (Tab::Params, "Params", count(param_count)),
+        (
+            Tab::Headers,
+            "Headers",
+            count(header_count + cx.inherited_headers.len()),
+        ),
+        (Tab::Auth, "Auth", has_auth.then(|| "⏺".to_owned())),
+        (Tab::Body, "Body", has_body.then(|| "⏺".to_owned())),
+        (Tab::Options, "Options", None),
+        (
+            Tab::Scripts,
+            "Scripts",
+            (!request.scripts.is_empty() || !request.capture.is_empty()).then(|| "⏺".to_owned()),
+        ),
+        (Tab::Preview, "Preview", None),
+    ];
+    // Only a project's requests are served by its mock.
+    if cx.in_collection {
+        tabs.insert(
+            6,
+            (Tab::Examples, "Examples", count(request.examples.len())),
+        );
+    } else if st.tab == Tab::Examples {
+        st.tab = Tab::Params;
+    }
+    theme::tabs(ui, &mut st.tab, &tabs);
 
     let in_tab = egui::ScrollArea::vertical()
         .id_salt("request-tab")
@@ -314,6 +331,9 @@ fn tab_content(
             if let Some(asked) = request_scripts(ui, request, st, cx) {
                 action = Some(asked);
             }
+        }
+        Tab::Examples => {
+            request_examples(ui, &mut request.examples, &mut st.examples, cx.undefined);
         }
         Tab::Preview => request_preview(ui, cx.preview),
     }

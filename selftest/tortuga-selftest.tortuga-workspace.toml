@@ -1,0 +1,21 @@
+format = 2
+name = "Tortuga self-test"
+
+[variables]
+client = "tortuga-selftest"
+
+[[headers]]
+name = "X-Client"
+value = "{{client}}"
+
+[[projects]]
+path = "sending"
+remote = "https://github.com/sorensenNiels/tortuga.git"
+
+[[projects]]
+path = "scripts"
+remote = "https://github.com/sorensenNiels/tortuga.git"
+
+[[projects]]
+path = "data-driven"
+remote = "https://github.com/sorensenNiels/tortuga.git"

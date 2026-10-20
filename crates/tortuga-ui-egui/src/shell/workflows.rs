@@ -446,7 +446,7 @@ impl TortugaUi {
     /// Runs the open draft of a workflow in the background (R-FLOW-3, R-FLOW-4).
     pub(super) fn run_workflow(&mut self, key: &WorkflowKey, egui_ctx: &egui::Context) {
         self.open_workflow(key.clone());
-        let Some(collection) = self.state.collection(&key.root).cloned() else {
+        let Some((collection, environment)) = self.state.collection_for_run(&key.root) else {
             return;
         };
         let Some(draft) = self.workflows.editors.get(key).map(|o| o.draft.clone()) else {
@@ -472,12 +472,12 @@ impl TortugaUi {
                 }
             }
         };
-        let environment = self.state.active_environment(&key.root);
+        // Secret values are those of the project's own environment, also on the mock.
         let secrets = self
             .state
             .secrets
             .get(&key.root)
-            .map(|s| s.for_environment(environment.as_deref()))
+            .map(|s| s.for_environment(self.state.active_environment(&key.root).as_deref()))
             .unwrap_or_default();
         let options = RunOptions {
             environment,

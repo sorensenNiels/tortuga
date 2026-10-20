@@ -1,0 +1,53 @@
+name = "Report"
+seq = 200
+method = "GET"
+server = "reports"
+url = "/report"
+
+[scripts]
+tests = """
+const report = res.json();
+console.info("report for", report.owner.name);
+
+test("Jest style", () => {
+  expect(report.total).toBe(3);
+  expect(report.items).toHaveLength(3);
+  expect(report.owner).toEqual({ name: "Zoë 😀", active: true });
+  expect(report.note).toBeNull();
+  expect(report.ratio).toBeCloseTo(0.33, 2);
+  expect(report.items).toContain("b");
+  expect(report.total).not.toBe(4);
+});
+
+test("Chai style", () => {
+  expect(report).to.be.an("object").that.has.property("total", 3);
+  expect(report.items).to.include("c").and.have.lengthOf(3);
+  expect(report.owner).to.deep.equal({ name: "Zoë 😀", active: true });
+  expect(report.owner.active).to.be.true;
+  expect(report.note).to.be.null;
+  expect(report.ratio).to.be.within(0.3, 0.4);
+  expect(report.total).to.not.equal(4);
+  expect(report.tags).to.have.keys("env", "team");
+});
+
+test("the response", () => {
+  expect(res.status).toBe(200);
+  expect(res.statusText).toBe("OK");
+  expect(res.time).toBeLessThan(5000);
+  expect(res.size).toBeGreaterThan(0);
+});
+"""
+
+[[examples]]
+name = "report"
+status = 200
+body = """
+{
+  "total": 3,
+  "items": ["a", "b", "c"],
+  "owner": {"name": "Zoë 😀", "active": true},
+  "note": null,
+  "ratio": 0.333,
+  "tags": {"env": "test", "team": "core"}
+}
+"""

@@ -81,6 +81,7 @@ impl TortugaUi {
             | Modal::DeleteWorkflow(..)
             | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
             Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
+            Modal::Mock(d) => self.show_mock_dialog(ctx, d),
             Modal::Import(open) => self.show_import_dialog(ctx, open),
             Modal::ClearHistory(target, d) => match d.show(ctx) {
                 DialogResult::Done(()) => {

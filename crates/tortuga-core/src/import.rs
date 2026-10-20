@@ -436,7 +436,7 @@ pub(crate) fn variable_name(text: &str) -> String {
 }
 
 /// `base`, or `base 2`, `base 3`, … when it is taken.
-pub(crate) fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+pub fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
     if !taken(base) {
         return base.to_owned();
     }

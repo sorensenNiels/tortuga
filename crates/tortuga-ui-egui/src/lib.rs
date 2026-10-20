@@ -15,13 +15,14 @@ mod components;
 mod format;
 mod fuzzy;
 mod host;
+mod mocks;
 mod shell;
 mod state;
 mod theme;
 
 pub use host::{
-    BoxTask, DraftConflict, Host, LocalState, SavedDraft, SavedDrafts, SavedTab, SavedTabs,
-    SavedWorkflowDraft, Workspace,
+    BoxTask, DraftConflict, Host, LocalState, MockHandle, OnMockHit, SavedDraft, SavedDrafts,
+    SavedTab, SavedTabs, SavedWorkflowDraft, Workspace,
 };
 pub use shell::TortugaUi;
 
@@ -47,6 +48,26 @@ pub(crate) mod test_host {
         })
     }
 
+    /// [`harness`] for a component that edits `state`, which tests read with `state()`.
+    pub fn harness_with_state<'a, S>(
+        mut app: impl FnMut(&mut egui::Ui, &mut S) + 'a,
+        state: S,
+    ) -> egui_kittest::Harness<'a, S> {
+        let mut installed = false;
+        egui_kittest::Harness::builder()
+            .with_size(egui::vec2(900.0, 1200.0))
+            .build_ui_state(
+                move |ui, state| {
+                    if !installed {
+                        crate::theme::install(ui.ctx());
+                        installed = true;
+                    }
+                    app(ui, state);
+                },
+                state,
+            )
+    }
+
     /// A host that keeps nothing and runs no tasks (it counts them).
     #[derive(Debug, Default)]
     pub struct TestHost {
@@ -65,6 +86,22 @@ pub(crate) mod test_host {
                 std::collections::BTreeMap<Option<PathBuf>, Vec<tortuga_core::history::Entry>>,
             >,
         >,
+        /// Ports a mock server can't start on (R-MOCK-2), as if taken.
+        pub taken_ports: Vec<u16>,
+        /// The answers of the last mock started, and how to report a request to it.
+        pub mock: std::rc::Rc<std::cell::RefCell<Option<StartedMock>>>,
+    }
+
+    /// What [`TestHost::start_mock`] was given.
+    pub struct StartedMock(
+        pub std::sync::Arc<std::sync::RwLock<tortuga_core::mock::MockApi>>,
+        pub crate::host::OnMockHit,
+    );
+
+    impl std::fmt::Debug for StartedMock {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("StartedMock").finish_non_exhaustive()
+        }
     }
 
     impl Host for TestHost {
@@ -85,6 +122,18 @@ pub(crate) mod test_host {
         }
         fn spawn(&self, _task: BoxTask) {
             self.spawned.set(self.spawned.get() + 1);
+        }
+        fn start_mock(
+            &self,
+            port: u16,
+            api: std::sync::Arc<std::sync::RwLock<tortuga_core::mock::MockApi>>,
+            on_hit: crate::host::OnMockHit,
+        ) -> Result<crate::host::MockHandle, String> {
+            if self.taken_ports.contains(&port) {
+                return Err(format!("port {port} is in use"));
+            }
+            *self.mock.borrow_mut() = Some(StartedMock(api, on_hit));
+            Ok(crate::host::MockHandle::new(port, Box::new(())))
         }
         fn load_settings(&self) -> Result<AppSettings, String> {
             Ok(AppSettings::default())

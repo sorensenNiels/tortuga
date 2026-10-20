@@ -115,6 +115,18 @@ pub fn clock(ms: u64, offset_minutes: i32) -> String {
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
 }
 
+/// Local time of day with seconds, like "14:05:09".
+pub fn clock_seconds(ms: u64, offset_minutes: i32) -> String {
+    let local_ms = i64::try_from(ms).unwrap_or(i64::MAX) + i64::from(offset_minutes) * 60_000;
+    let seconds = local_ms.div_euclid(1000).rem_euclid(24 * 3600);
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +174,12 @@ mod tests {
         assert_eq!(day_label(now, now + 60_000 * 60, -13 * 60), "Yesterday");
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(-1), (1969, 12, 31));
+    }
+
+    #[test]
+    fn clock_with_seconds_in_local_time() {
+        assert_eq!(clock_seconds(3_723_000, 0), "01:02:03");
+        assert_eq!(clock_seconds(3_723_000, -120), "23:02:03", "the day before");
+        assert_eq!(clock_seconds(u64::MAX, 0).len(), 8);
     }
 }

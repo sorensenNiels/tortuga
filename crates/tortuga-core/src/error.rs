@@ -51,6 +51,13 @@ pub enum Error {
     #[error("{}: {message}", .path.display())]
     InvalidFile { path: PathBuf, message: String },
 
+    #[error("could not start the mock server on port {port}: {source}")]
+    MockServer {
+        port: u16,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("{} is not a Tortuga project (no tortuga.toml)", .0.display())]
     NotACollection(PathBuf),
 

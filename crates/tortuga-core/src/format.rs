@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::mock::Example;
 use crate::model::{Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts};
 use crate::settings::RequestSettings;
 
@@ -177,6 +178,9 @@ struct RequestFile {
     /// Pre-request and test scripts (R-TEST-1, R-TEST-2).
     #[serde(default, skip_serializing_if = "Scripts::is_empty")]
     scripts: Scripts,
+    /// Example responses for the mock server (R-MOCK-1, D44).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    examples: Vec<Example>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -220,6 +224,7 @@ pub fn parse_request(text: &str, stem: &str) -> Result<(Request, Option<i64>), S
     request.sync_path_variables();
     request.capture = file.capture;
     request.scripts = file.scripts;
+    request.examples = file.examples;
     request.body = match file.body {
         None => RequestBody::None,
         Some(BodyFile {
@@ -306,6 +311,7 @@ pub fn write_request(request: &Request, seq: Option<i64>) -> String {
         body,
         capture: request.capture.clone(),
         scripts: request.scripts.clone(),
+        examples: request.examples.clone(),
     })
 }
 

@@ -50,6 +50,12 @@ pub(super) enum Command {
     AddProjects,
     NewProject,
     Import(ImportKind),
+    /// A project's mock server (R-MOCK-2, R-MOCK-4).
+    StartMock(PathBuf),
+    StopMock(PathBuf),
+    ShowMock(PathBuf),
+    /// Send requests to the running mocks (D45).
+    MockEnvironment,
 }
 
 /// Adding, creating and importing projects (R-WS-3, R-COL-15, R-COL-16, R-COL-17), with
@@ -120,6 +126,53 @@ impl TortugaUi {
         items
     }
 
+    /// Switching the workspace's environment (R-WS-6), and to the mocks while one runs
+    /// (R-MOCK-4).
+    fn environment_items(&self) -> Vec<PaletteItem<PaletteChoice>> {
+        let run =
+            |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+        let in_mock = self.state.mocks.in_use();
+        let shown = self.state.workspace().environment.clone();
+        let mut items: Vec<_> = self
+            .state
+            .environment_names()
+            .into_iter()
+            .map(|name| {
+                let current = !in_mock && shown.as_ref() == Some(&name);
+                run(&format!("Environment: {name}"), Command::Environment(name))
+                    .hint(if current { "current" } else { "" })
+                    .keywords("switch")
+            })
+            .collect();
+        if !self.state.mocks.ports().is_empty() {
+            items.push(
+                run("Environment: Mock", Command::MockEnvironment)
+                    .hint(if in_mock { "current" } else { "" })
+                    .keywords("switch mock server"),
+            );
+        }
+        items
+    }
+
+    /// A project's mock server commands (R-MOCK-2, R-MOCK-4).
+    fn mock_items(&self, c: &tortuga_core::Collection) -> Vec<PaletteItem<PaletteChoice>> {
+        let run =
+            |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+        let root = &c.root;
+        let items = if self.state.mocks.port(root).is_some() {
+            vec![
+                run("Mock server…", Command::ShowMock(root.clone())),
+                run("Stop mock server", Command::StopMock(root.clone())),
+            ]
+        } else {
+            vec![run("Start mock server", Command::StartMock(root.clone()))]
+        };
+        items
+            .into_iter()
+            .map(|item| item.detail(c.name()).keywords("mock examples"))
+            .collect()
+    }
+
     /// The command palette's commands; those that don't apply right now are left out.
     pub(super) fn command_items(&self) -> Vec<PaletteItem<PaletteChoice>> {
         let run =
@@ -142,15 +195,7 @@ impl TortugaUi {
         if !self.state.collections.is_empty() {
             items.push(run("New request", Command::NewRequest));
         }
-        let shown = self.state.workspace().environment.clone();
-        for name in self.state.environment_names() {
-            let current = shown.as_ref() == Some(&name);
-            items.push(
-                run(&format!("Environment: {name}"), Command::Environment(name))
-                    .hint(if current { "current" } else { "" })
-                    .keywords("switch"),
-            );
-        }
+        items.extend(self.environment_items());
         for (i, ws) in self.state.local.workspaces.iter().enumerate() {
             if i != self.state.local.active_workspace {
                 items.push(
@@ -194,6 +239,7 @@ impl TortugaUi {
                 .detail(c.name())
                 .keywords("headers auth timeout redirects cookies settings"),
             );
+            items.extend(self.mock_items(c));
         }
         let root = self.selection.as_ref().map(|k| k.root.clone());
         let place = root
@@ -269,6 +315,10 @@ impl TortugaUi {
                 );
             }
             Command::Environment(name) => self.state.set_workspace_environment(&name),
+            Command::MockEnvironment => self.state.use_mock_environment(),
+            Command::StartMock(root) => self.start_mock(&root),
+            Command::StopMock(root) => self.state.stop_mock(&root),
+            Command::ShowMock(root) => self.show_mock(root),
             Command::Workspace(i) => self.on_workspace(WorkspaceAction::Switch(i)),
             Command::Environments(root) => {
                 self.modal = Some(Modal::Environments(EnvironmentsDialog::new(

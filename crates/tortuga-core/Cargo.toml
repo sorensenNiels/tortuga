@@ -27,6 +27,14 @@ yaml-rust2.workspace = true
 # XML bodies and XPath (R-HTTP-19).
 quick-xml.workspace = true
 
+# The mock server's listener (R-MOCK-2, D46); core logic stays runtime-free.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["net", "time", "sync"] }
+
 # `time` needs the browser clock on wasm32.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 cookie_store = { workspace = true, features = ["wasm-bindgen"] }

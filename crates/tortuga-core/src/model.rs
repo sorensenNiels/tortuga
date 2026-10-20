@@ -297,6 +297,9 @@ pub struct Request {
     /// `header:<name>` or `status` (R-TEST-4).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub capture: std::collections::BTreeMap<String, String>,
+    /// Responses this request is designed to give, served by the mock server (R-MOCK-1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<crate::mock::Example>,
 }
 
 /// The scripts of a request (R-TEST-1, R-TEST-2).
@@ -341,6 +344,7 @@ impl Request {
             follow_redirects: None,
             scripts: Scripts::default(),
             capture: std::collections::BTreeMap::new(),
+            examples: Vec::new(),
         };
         request.sync_path_variables();
         request

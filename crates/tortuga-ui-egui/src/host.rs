@@ -107,6 +107,9 @@ pub struct Workspace {
     /// Project root (as text) → environment id, for projects without an environment
     /// named like the workspace's (R-WS-6).
     pub project_environments: BTreeMap<String, String>,
+    /// Project root (as text) → the port its mock server last ran on (R-MOCK-2).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub mock_ports: BTreeMap<String, u16>,
 }
 
 /// The open request tabs of a workspace (R-COL-13), in strip order.
@@ -192,6 +195,33 @@ pub enum DraftConflict {
     Changed,
     Deleted,
 }
+
+/// A mock server the host started (R-MOCK-2). It stops when this is dropped.
+pub struct MockHandle {
+    pub port: u16,
+    /// Whatever keeps the server running; dropped to stop it.
+    _running: Box<dyn std::any::Any>,
+}
+
+impl MockHandle {
+    pub fn new(port: u16, running: Box<dyn std::any::Any>) -> Self {
+        Self {
+            port,
+            _running: running,
+        }
+    }
+}
+
+impl std::fmt::Debug for MockHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockHandle")
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Called with each request a mock server answers, from any thread.
+pub type OnMockHit = Box<dyn Fn(tortuga_core::mock::Hit) + Send + Sync>;
 
 /// Background work started by the UI (sending a request).
 #[cfg(not(target_arch = "wasm32"))]
@@ -329,6 +359,17 @@ pub trait Host {
     /// Minutes the local time is ahead of UTC, to show times in history.
     fn utc_offset_minutes(&self) -> i32 {
         0
+    }
+
+    /// Starts a mock server on `127.0.0.1:port` answering with `api` (R-MOCK-2), which
+    /// the UI replaces when the project changes.
+    fn start_mock(
+        &self,
+        _port: u16,
+        _api: std::sync::Arc<std::sync::RwLock<tortuga_core::mock::MockApi>>,
+        _on_hit: OnMockHit,
+    ) -> Result<MockHandle, String> {
+        Err("The mock server needs the desktop app.".into())
     }
 
     /// Runs `task` in the background. The UI cancels it by dropping it (it is abortable).

@@ -1,0 +1,66 @@
+name = "SOAP order"
+seq = 100
+method = "POST"
+server = "soap"
+url = "/orders"
+
+[[headers]]
+name = "Content-Type"
+value = "text/xml; charset=utf-8"
+
+[body]
+kind = "xml"
+content = """
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <GetOrder><OrderId>{{order_id}}</OrderId></GetOrder>
+  </soap:Body>
+</soap:Envelope>
+"""
+
+[capture]
+second_sku = "xpath://Item[2]/@sku"
+status_text = "xpath://Order/@status"
+
+[scripts]
+pre_request = """
+vars.set("order_id", String(40 + 2));
+req.setHeader("SOAPAction", "GetOrder");
+console.log("asking for order", vars.get("order_id"));
+"""
+tests = """
+test("the order came back", () => {
+  expect(res.status).to.equal(200);
+  expect(res.header("content-type")).to.match(/xml/);
+  expect(res.body).to.include("Kaffe ü😀");
+});
+test("captured from XML", () => {
+  expect(vars.get("second_sku")).to.equal("B-2");
+  expect(vars.get("status_text")).to.equal("shipped");
+});
+"""
+
+[[examples]]
+name = "order 42"
+status = 200
+body = """
+<?xml version="1.0"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><GetOrderResponse><Order id="42" status="shipped"><Item sku="A-1">Kaffe ü😀</Item><Item sku="B-2">Te</Item></Order></GetOrderResponse></soap:Body></soap:Envelope>
+"""
+
+[[examples.headers]]
+name = "Content-Type"
+value = "text/xml; charset=utf-8"
+
+[examples.match.headers]
+SOAPAction = "GetOrder"
+
+[examples.match.body]
+"xpath://OrderId" = "42"
+
+[[examples]]
+name = "fault"
+status = 500
+body = """
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><soap:Fault><faultstring>The order was not asked for as designed</faultstring></soap:Fault></soap:Body></soap:Envelope>
+"""

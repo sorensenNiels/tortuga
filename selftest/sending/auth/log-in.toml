@@ -1,0 +1,54 @@
+name = "Log in"
+seq = 100
+method = "POST"
+server = "api"
+url = "/login"
+
+[auth]
+kind = "basic"
+username = "{{user}}"
+password = "{{password}}"
+
+[body]
+kind = "json"
+content = """
+{"user": "{{user}}", "remember": true}
+"""
+
+[capture]
+session = "header:X-Session"
+token = "$.token"
+
+[scripts]
+tests = """
+test("logged in", () => expect(res.status).toBe(200));
+"""
+
+[[examples]]
+name = "ok"
+status = 200
+body = """
+{"token": "t-ann-1", "expires_in": 3600}
+"""
+
+[[examples.headers]]
+name = "X-Session"
+value = "s-42"
+
+[examples.match.headers]
+Accept = "application/json"
+Authorization = "Basic YW5uOnMzY3JldA=="
+Content-Type = "application/json"
+X-Area = "auth"
+X-Client = "tortuga-selftest"
+
+[examples.match.body]
+"$.remember" = "true"
+"$.user" = "ann"
+
+[[examples]]
+name = "rejected"
+status = 401
+body = """
+{"error": "the login was not sent as designed"}
+"""

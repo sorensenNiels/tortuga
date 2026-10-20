@@ -1,0 +1,43 @@
+name = "Create user"
+seq = 200
+method = "POST"
+server = "api"
+url = "/users"
+
+[body]
+kind = "form"
+
+[[body.fields]]
+name = "name"
+value = "Bob"
+
+[[body.fields]]
+name = "role"
+value = "admin"
+
+[capture]
+location = "header:Location"
+new_id = "$.id"
+created = "status"
+
+[[examples]]
+name = "created"
+status = 201
+body = """
+{"id": 7}
+"""
+
+[[examples.headers]]
+name = "Location"
+value = "/users/7"
+
+[examples.match.headers]
+Authorization = "Bearer t-ann-1"
+Content-Type = "application/x-www-form-urlencoded"
+
+[[examples]]
+name = "bad request"
+status = 400
+body = """
+{"error": "expected a form body"}
+"""

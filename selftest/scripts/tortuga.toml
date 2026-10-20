@@ -1,0 +1,10 @@
+format = 1
+name = "Scripts"
+
+[[servers]]
+id = "soap"
+name = "SOAP"
+
+[[servers]]
+id = "reports"
+name = "Reports"

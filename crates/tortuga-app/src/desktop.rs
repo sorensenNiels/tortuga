@@ -9,7 +9,7 @@ use tortuga_core::AppSettings;
 use tortuga_core::history::{self, HistoryStore};
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
-use tortuga_ui_egui::{BoxTask, Host, LocalState, TortugaUi};
+use tortuga_ui_egui::{BoxTask, Host, LocalState, MockHandle, OnMockHit, TortugaUi};
 
 use crate::{App, dialogs, discover, folders, git, local_store, secret_store, watch};
 
@@ -242,6 +242,20 @@ impl Host for DesktopHost {
 
     fn spawn(&self, task: BoxTask) {
         drop(self.runtime.spawn(task));
+    }
+
+    fn start_mock(
+        &self,
+        port: u16,
+        api: Arc<std::sync::RwLock<tortuga_core::mock::MockApi>>,
+        on_hit: OnMockHit,
+    ) -> Result<MockHandle, String> {
+        // Binding the port is quick; the server then runs on the runtime.
+        let running = self
+            .runtime
+            .block_on(tortuga_core::mock::server::start(port, api, on_hit))
+            .map_err(|e| tortuga_core::error::message(&e))?;
+        Ok(MockHandle::new(running.port(), Box::new(running)))
     }
 
     fn file_reader(&self) -> Option<tortuga_core::FileReader> {

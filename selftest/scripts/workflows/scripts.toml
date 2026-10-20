@@ -1,0 +1,7 @@
+name = "Scripts"
+
+[[steps]]
+request = "soap-order.toml"
+
+[[steps]]
+request = "report.toml"

@@ -17,6 +17,7 @@ pub mod import;
 pub mod js_format;
 pub mod json;
 pub mod jsonpath;
+pub mod mock;
 pub mod model;
 pub mod openapi;
 pub mod postman;

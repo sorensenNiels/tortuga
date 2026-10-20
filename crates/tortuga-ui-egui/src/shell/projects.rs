@@ -92,16 +92,15 @@ impl TortugaUi {
             }
             SidebarAction::Reload(root) => self.on_disk_change(&root),
             SidebarAction::OpenInFileManager(root) => {
-                if let Err(e) = self.state.host.open_in_file_manager(&root) {
-                    self.state.notify(e);
-                }
+                self.notify_failure(self.state.host.open_in_file_manager(&root));
             }
             SidebarAction::OpenInTerminal(root) => {
-                if let Err(e) = self.state.host.open_in_terminal(&root) {
-                    self.state.notify(e);
-                }
+                self.notify_failure(self.state.host.open_in_terminal(&root));
             }
             SidebarAction::ShowCookies(root) => self.show_cookies(root),
+            action @ (SidebarAction::StartMock(_)
+            | SidebarAction::StopMock(_)
+            | SidebarAction::ShowMock(_)) => self.on_mock_sidebar(action),
             SidebarAction::Close(root) => {
                 self.forget(&root, Path::new(""));
                 self.state.close_collection(&root);
@@ -114,6 +113,13 @@ impl TortugaUi {
             SidebarAction::Import(kind) => self.import_file(kind),
             SidebarAction::LocateMissing(path) => self.locate_missing(&path),
             SidebarAction::RemoveMissing(path) => self.state.remove_missing(&path),
+        }
+    }
+
+    /// Shows what went wrong, if anything did.
+    fn notify_failure(&mut self, result: Result<(), String>) {
+        if let Err(e) = result {
+            self.state.notify(e);
         }
     }
 

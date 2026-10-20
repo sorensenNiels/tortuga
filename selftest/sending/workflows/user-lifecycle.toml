@@ -1,0 +1,35 @@
+name = "User lifecycle"
+
+[[steps]]
+request = "auth/log-in.toml"
+tests = """
+test("captures from the body and a header", () => {
+  expect(vars.get("token")).toBe("t-ann-1");
+  expect(vars.get("session")).toBe("s-42");
+});
+"""
+
+[[steps]]
+request = "users/get-user.toml"
+tests = """
+test("captured the email", () => expect(vars.get("email")).toBe("ann@example.test"));
+"""
+
+[[steps]]
+request = "users/create-user.toml"
+tests = """
+test("created, with its id and location", () => {
+  expect(vars.get("created")).toBe("201");
+  expect(vars.get("new_id")).toBe("7");
+  expect(vars.get("location")).toBe("/users/7");
+});
+"""
+
+[[steps]]
+request = "users/delete-user.toml"
+tests = """
+test("deleted", () => expect(res.status).toBe(204));
+"""
+
+[[steps]]
+request = "users/slow-user.toml"

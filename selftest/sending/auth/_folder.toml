@@ -1,0 +1,6 @@
+name = "Auth"
+seq = 100
+
+[[headers]]
+name = "X-Area"
+value = "auth"

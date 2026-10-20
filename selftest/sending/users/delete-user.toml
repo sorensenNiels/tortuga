@@ -1,0 +1,16 @@
+name = "Delete user"
+seq = 300
+method = "DELETE"
+server = "api"
+url = "/users/{{new_id}}"
+
+[[examples]]
+name = "deleted"
+status = 204
+
+[examples.match.headers]
+Authorization = "Bearer t-ann-1"
+
+[[examples]]
+name = "forbidden"
+status = 403

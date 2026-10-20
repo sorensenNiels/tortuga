@@ -94,6 +94,8 @@ pub struct AppState {
     pub workspace_runtime: BTreeMap<String, BTreeMap<String, String>>,
     /// This machine's values of the active workspace's secret variables (R-WS-8).
     pub workspace_secrets: BTreeMap<String, String>,
+    /// The projects' running mock servers (R-MOCK-2).
+    pub mocks: crate::mocks::Mocks,
 }
 
 impl fmt::Debug for AppState {
@@ -179,6 +181,7 @@ impl AppState {
             runtime: BTreeMap::new(),
             workspace_runtime: BTreeMap::new(),
             workspace_secrets: BTreeMap::new(),
+            mocks: crate::mocks::Mocks::default(),
         };
         state.open_workspace();
         state
@@ -263,6 +266,8 @@ impl AppState {
                 if let Some(slot) = self.collections.iter_mut().find(|c| c.root == root) {
                     *slot = fresh;
                 }
+                // A saved edit or a `git pull` changes the mock's next answer (R-MOCK-2).
+                self.refresh_mock(root);
             }
             Err(e) => self.notify(format!("Could not reload the project: {e}")),
         }
@@ -294,6 +299,7 @@ impl AppState {
         let ws = self.workspace_mut();
         ws.projects.retain(|p| p.path != root);
         ws.project_environments.remove(&root_key(root));
+        ws.mock_ports.remove(&root_key(root));
         self.workspace_changed();
     }
 
@@ -316,6 +322,7 @@ impl AppState {
 
     /// Closes a project without changing the workspace.
     fn unload_project(&mut self, root: &Path) {
+        self.stop_mock(root);
         self.save_cookies(Some(root));
         self.host.unwatch(root);
         self.git.remove(root);
@@ -331,7 +338,7 @@ impl AppState {
         &self.local.workspaces[self.local.active_workspace]
     }
 
-    fn workspace_mut(&mut self) -> &mut Workspace {
+    pub(crate) fn workspace_mut(&mut self) -> &mut Workspace {
         &mut self.local.workspaces[self.local.active_workspace]
     }
 
@@ -594,6 +601,9 @@ impl AppState {
         if let Some(id) = ws.project_environments.remove(&root_key(old)) {
             ws.project_environments.entry(root_key(new)).or_insert(id);
         }
+        if let Some(port) = ws.mock_ports.remove(&root_key(old)) {
+            ws.mock_ports.entry(root_key(new)).or_insert(port);
+        }
         let already_listed = ws.projects.iter().any(|p| p.path == new);
         if already_listed {
             ws.projects.retain(|p| p.path != old);
@@ -691,6 +701,8 @@ impl AppState {
 
     /// Switches every project that has an environment called `name` (R-WS-6).
     pub fn set_workspace_environment(&mut self, name: &str) {
+        self.mocks.selected = false;
+        self.refresh_mocks();
         self.workspace_mut().environment = Some(name.to_owned());
         self.save_local();
     }
@@ -724,6 +736,7 @@ impl AppState {
         self.workspace_mut()
             .project_environments
             .insert(root_key(root), id.to_owned());
+        self.refresh_mock(root);
         self.save_local();
     }
 
@@ -797,10 +810,16 @@ impl AppState {
             .map(|s| s.for_environment(env.as_deref()))
             .unwrap_or_default();
         let defaults = &self.workspace().defaults;
+        // While the mock is chosen, its environment sends this project's requests there
+        // (R-MOCK-4); secrets keep the values of the project's own environment.
+        let mock = self.mock_environment(root);
         let ctx = self
             .collection(root)
             .map(|c| {
-                vars::Context::for_request(c, env.as_deref(), path)
+                let env = mock
+                    .as_ref()
+                    .or_else(|| env.as_deref().and_then(|id| c.environment(id)));
+                vars::Context::for_request_in(c, env, path)
                     .with_workspace_defaults(defaults)
                     .with_secrets(secrets)
             })
@@ -956,7 +975,7 @@ impl AppState {
         Ok(())
     }
 
-    fn save_local(&mut self) {
+    pub(crate) fn save_local(&mut self) {
         if let Err(e) = self.host.save_local(&self.local) {
             self.notify(e);
         }
@@ -1005,7 +1024,7 @@ fn load_jar(host: &dyn Host, root: &Path) -> (CookieJar, Option<String>) {
     }
 }
 
-fn root_key(root: &Path) -> String {
+pub(crate) fn root_key(root: &Path) -> String {
     root.to_string_lossy().into_owned()
 }
 

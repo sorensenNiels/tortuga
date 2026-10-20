@@ -34,7 +34,7 @@ RUN_ENV := $(if $(IS_WSL),GALLIUM_DRIVER=$${GALLIUM_DRIVER:-d3d12} ,)
 
 .DEFAULT_GOAL := help
 .PHONY: help setup run run-web build release cli package startup-time icons test test-core test-ui \
-        lint lint-desktop lint-web fmt fmt-check deny verify doc clean outdated update upgrade \
+        selftest lint lint-desktop lint-web fmt fmt-check deny verify doc clean outdated update upgrade \
         release-patch release-minor release-major
 
 help:
@@ -50,6 +50,7 @@ help:
 	@echo "    test          All tests (engine + UI)"
 	@echo "    test-core     Engine tests only"
 	@echo "    test-ui       UI tests only (no window needed)"
+	@echo "    selftest      Tortuga testing itself: the selftest/ workflows against their mocks"
 	@echo "    lint          Clippy with warnings as errors (desktop + web targets)"
 	@echo "    fmt           Format all code"
 	@echo "    deny          Check dependency licences and security advisories"
@@ -153,6 +154,9 @@ lint: lint-web
 	cargo clippy -p tortuga-core -p $(UI) -p $(CLI) --all-targets -- -D warnings
 	@echo "NOTE: GTK 3 not found - the desktop launcher (tortuga-app) was not linted. Run 'make setup' to fix."
 endif
+
+selftest:
+	cargo test -p $(CLI) --test selftest
 
 test-ui:
 	cargo test -p $(UI)

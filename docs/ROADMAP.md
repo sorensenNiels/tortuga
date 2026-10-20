@@ -50,13 +50,14 @@ Every roadmap item should make at least one of these faster or safer.
 | **S4 Share** with a co-developer. | Commit the request next to the code, or hand over a `curl` command. Teammates' changes appear after `git pull`. |
 | **S5 Review** an API change in a pull request. | Request files whose diff explains the change. |
 | **S6 Verify** that flows still work (login → create → read → delete). | Chained requests with checks, run in the app and in CI with the same files. |
+| **S7 Design** an API before it is built. | Define each request with the responses it should give, serve them from a local mock so the client and its tests can be written now, then point the same tests at the real implementation (D43). |
 
 ## 4. Status
 
 Milestones M1 to M9 are done: sending requests, projects on disk, environments and servers, auth and secrets,
 cookies, live git collaboration, workspaces, the v1 extras, release builds, the Phase 2 "daily driver"
 features, and Phase 3: test and pre-request scripts, captures, workflows (also data-driven) and the `tortuga-cli`
-runner. Request tabs grouped by project (R-COL-13, R-COL-14), a cookie viewer (R-CK-5), unsaved workflow edits kept across restarts (R-FLOW-5) and imports from OpenAPI, Postman and `.http` files (R-COL-15, R-COL-16, R-COL-17) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
+runner. Request tabs grouped by project (R-COL-13, R-COL-14), a cookie viewer (R-CK-5), unsaved workflow edits kept across restarts (R-FLOW-5) and imports from OpenAPI, Postman and `.http` files (R-COL-15, R-COL-16, R-COL-17), settings on three levels (R-SET-1 to R-SET-7) and mock APIs from examples (R-MOCK-1 to R-MOCK-7) came after Phase 3. See [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
 
 Open before the first release (v1):
 
@@ -87,11 +88,13 @@ Picked by demand, not in a fixed order:
 - Web version (IDEA-11): the code keeps compiling for wasm, but nothing is built for it until a team asks (D6).
 - ~~Settings on three levels~~ (done: R-SET-1 to R-SET-7, D39).
 - In-app commit/pull/push (IDEA-21) — only if working outside the app proves to be a real pain point.
+- ~~Mock APIs from examples~~ (done: R-MOCK-1 to R-MOCK-7, D43 to D46): responses saved with each request, served by a
+  local mock in the app and by `tortuga-cli`, so an API can be designed and tested before it exists (S7).
 
 ### Not on the roadmap
 
-Accounts, cloud sync, real-time co-editing (IDEA-40); mock servers, documentation generation, monitors
-(IDEA-41). They conflict with P4/P5 or are outside the purpose of an API client. See [§7](#7-ideas).
+Accounts, cloud sync, real-time co-editing (IDEA-40); documentation generation, monitors (IDEA-41). They conflict
+with P4/P5 or are outside the purpose of an API client. Mock servers were here until D43. See [§7](#7-ideas).
 
 ## 6. Requirements
 
@@ -106,7 +109,7 @@ Requirements still open: not built yet, or implemented but not yet verified ever
 | R-LOC-2 | Secret values are stored in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service). If none is available, they fall back to a file in the app-data directory readable only by the current user, and the app shows a warning. |
 | R-NF-4 | Installable packages: `.msi` (Windows), `.dmg` (macOS), `.deb` and `.AppImage` (Linux). |
 | R-CLI-4 | Each release has a `tortuga-cli` archive per OS next to the installers, for CI: the binary with the README and licences, `.zip` on Windows, `.tar.gz` elsewhere. *(IDEA-43)* |
-| R-HTTP-19 | **XML requests and responses**, on a par with JSON. An **XML body type** that sends `application/xml` unless the user sets a Content-Type, is checked as you type (what is wrong, line and column) and has a Format button; saved as `kind = "xml"`. Responses whose Content-Type says XML (`application/xml`, `text/xml`, `+xml` types such as SOAP), or that have none and parse as XML, are **pretty-printed** (two-space indents, text-only elements on one line, comments and CDATA as written), with "Raw" showing them as they came (R-HTTP-18). The response **filter takes an XPath subset** above XML bodies (D40): `/`, `//`, names (a name without a prefix matches any prefix), `*`, `@name`, `@*`, `text()`, `node()`, `.`, `..`, and predicates `[n]`, `[last()]`, `[last()-n]`, `[path]`, `[path <op> literal]` with `= != < <= > >=`; elements are shown pretty-printed, attributes and text as their values; it runs off the UI thread on the whole body. **Captures** take `xpath:<expression>`: the text of the first match (R-TEST-4). The curl, Postman and `.http` imports make XML bodies from an XML Content-Type or Postman's "xml" language. |
+| R-HTTP-19 | **XML requests and responses**, on a par with JSON. An **XML body type** that sends `application/xml` unless the user sets a Content-Type, is checked as you type (what is wrong, line and column) and has a Beautify button; saved as `kind = "xml"`. Responses whose Content-Type says XML (`application/xml`, `text/xml`, `+xml` types such as SOAP), or that have none and parse as XML, are **pretty-printed** (two-space indents, text-only elements on one line, comments and CDATA as written), with "Raw" showing them as they came (R-HTTP-18). The response **filter takes an XPath subset** above XML bodies (D40): `/`, `//`, names (a name without a prefix matches any prefix), `*`, `@name`, `@*`, `text()`, `node()`, `.`, `..`, and predicates `[n]`, `[last()]`, `[last()-n]`, `[path]`, `[path <op> literal]` with `= != < <= > >=`; elements are shown pretty-printed, attributes and text as their values; it runs off the UI thread on the whole body. **Captures** take `xpath:<expression>`: the text of the first match (R-TEST-4). The curl, Postman and `.http` imports make XML bodies from an XML Content-Type or Postman's "xml" language. |
 | R-COL-19 | **Postman scripts are translated** when a collection is imported (R-COL-16): `pm.test`, `pm.expect(…)` with Chai's common assertions (`equal`, `eql`, `deep.equal`, `true`/`false`/`null`/`undefined`/`ok`/`exist`, `include`, `property`, `lengthOf`, `match`, `above`/`below`/`least`/`most`, `a("string")` and the like, with `not`), `pm.response.to.have.status(…)`/`.header(…)`/`.be.ok`, the response's code, status, time, size, headers, `json()` and `text()`, `pm.request.method`/`url`, and getting and setting variables of every scope (`pm.globals` as workspace variables, R-WS-8; the legacy `postman.*EnvironmentVariable`). A translated script runs, under a note to check it, only when nothing of Postman's API is left and it parses; otherwise it is kept as comments, translated as far as it went (D36). The import warns how many scripts were translated and how many kept as comments. *(IDEA-48)* |
 | R-SRV-7 | **Environments are edited one at a time.** The environments dialog lists "Defaults" and the project's environments on the left (drag ☰ to reorder, R-SRV-6); the right side shows only the chosen one: an environment's name, each server's base URL and each variable's value (an empty value uses the default, shown as a hint), or under Defaults the server and variable names, the 🔒 secret flag and default values. Servers and variables can be added and removed from either; removing one removes it from every environment. The dialog opens on the active environment and can be resized by dragging its bottom-right corner; it keeps that size for the session. Renaming the environment the workspace has chosen keeps it chosen (R-WS-6). Replaces the one-table layout of R-SRV-2 and R-VAR-7 (D41). |
 | R-SET-8 | **"No auth" as a default.** A project's and a folder's Defaults… → Auth offer Inherit, No auth, Basic and Bearer token. "No auth" is saved (`[auth] kind = "none"`) and stops the auth of the levels above: a project with it sends none even when the workspace sets some, a folder with it sends none whatever the project sets. A request can still choose its own. The workspace, with nothing above it, offers No auth, Basic and Bearer token. Project files without `[auth]` inherit, as before. |
@@ -150,6 +153,10 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-45 | Import again: update a project from a changed OpenAPI description, keeping local changes. | An import always creates a new project today (D34). |
 | IDEA-46 | Import Swagger 2.0 descriptions. | Today they are refused with a hint to convert them (D33). |
 | IDEA-47 | Import Postman environment files into a project's environments (base URLs into servers, secrets into the secret store). | A Postman import makes one "Default" environment today (R-COL-16). |
+| IDEA-54 | Dynamic mock answers: templates that read the incoming request (`{{request.path.id}}`, `{{request.body.$.name}}`, a timestamp, a random id), or a response script in the script engine. | Static examples first (D46, R-MOCK-3). |
+| IDEA-55 | Stateful mocks: a `POST` that later `GET`s return, reset on restart. | Turns the mock into a fake backend; only if static examples prove too little. |
+| IDEA-56 | **Contract check:** after a real send, compare the response with the request's examples (status, Content-Type, JSON keys and value types) and flag where the implementation differs from the design. Also in `tortuga-cli run --check-examples`. | Closes the loop of S7: design → mock → real API. |
+| IDEA-57 | Fault injection in the mock: drop the connection, answer slowly, return 5xx for a share of calls. | `delay_ms` (R-MOCK-3) covers slow answers. |
 | IDEA-49 | Import `.http` environment files (`http-client.env.json` and its private twin, REST Client's `rest-client.environmentVariables`) into environments and the secret store, and several `.http` files at once as a folder each. | A `.http` import reads one file and makes one "Default" environment today (R-COL-17). |
 
 ### Not planned
@@ -157,7 +164,7 @@ Not decided. Needs a real user need before it moves up.
 | ID | Idea | Reason |
 |---|---|---|
 | IDEA-40 | Accounts, cloud sync, real-time co-editing. | Conflicts with local-first and git-based collaboration (R-P-1, R-P-2). |
-| IDEA-41 | Mock servers, API documentation generation, monitors. | Outside the purpose of an API client. |
+| IDEA-41 | API documentation generation, monitors. | Outside the purpose of an API client. Mock servers were part of this idea until D43 made them R-MOCK-1 to R-MOCK-6. |
 
 ## 8. Decisions
 
@@ -213,6 +220,10 @@ Not decided. Needs a real user need before it moves up.
 | D40 | How are XML responses filtered and captured (R-HTTP-19)? | **An XPath subset**, implemented in `tortuga-core` on `quick-xml` (already in the build), like the JSONPath subset (D18). **Names without a prefix match any prefix**, so `//Body` finds `soap:Body` without declaring namespaces; a prefixed name matches as written. Captures say `xpath:` in front, since `JSONPath` needs no prefix. Request files with an XML body say `kind = "xml"` without a new format version: older builds report such a file as unreadable rather than losing data (2026-10-20). | Full XPath 1.0 through a library (`sxd-xpath`: unmaintained, needs namespace setup for SOAP); a CSS-selector-like syntax; telling captures apart by a leading `/`. |
 | D41 | How are environments edited when a project has several (R-SRV-7)? | **One at a time**: a list of environments beside the chosen one's values, with "Defaults" for what they share (names, secret flags, defaults). A table with a column per environment got too wide to read with more than two or three (2026-10-20). | Keep the table and make the dialog wider; a tab per environment. |
 | D42 | How are scripts debugged (R-TEST-10)? | **Snapshot breakpoints**: a breakpoint records the variables in scope and the script runs on; the Console shows each hit afterwards. Works with Boa as it is, on every platform, and never holds up a send (2026-10-20). | A pausing debugger with Continue/Step (Boa has no debugger API: needs scripts on a thread, line-by-line rewriting, and the send's timeout suspended); console only. |
+| D43 | Are mock servers in scope (revisits IDEA-41)? | **Yes: mock APIs served from example responses saved with the requests** (R-MOCK-1 to R-MOCK-6), for designing an API before it exists and testing against it (S7, S6). They fit P4 and P5: plain files in git, served locally, no account. Documentation generation and monitors stay out (2026-10-20). | Keep them out and leave mocks to other tools (Prism, WireMock) fed by an OpenAPI description; a hosted mock (conflicts with P5). |
+| D44 | Where do mock responses live (R-MOCK-1)? | **In the request file as `[[examples]]`** (2026-10-20). The request is the definition, so one file's diff shows the request and its responses (S5), and a rename or move takes them along. | A `mocks/` folder per project, like `workflows/`, with a file per endpoint; only in an OpenAPI description the project points at. |
+| D45 | How do requests reach the mock (R-MOCK-4)? | **A "Mock" environment that exists while the mock runs** (2026-10-20), built from the servers: switching to it is the same one click as switching to staging (S2). | A per-request "send to mock" switch; the user adds an ordinary environment pointing at `localhost` by hand. |
+| D46 | Static or dynamic answers, and where does the listener run (R-MOCK-2, R-MOCK-3)? | **Static examples with match conditions first** (2026-10-20) (dynamic answers are IDEA-54), and **a listener in `tortuga-core` for native targets only** on `hyper`, which is already in the build through `reqwest`, so the app and `tortuga-cli` share it (P7). | Response scripts in the script engine from the start; an `axum` dependency; a listener per binary. |
 
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
@@ -225,4 +236,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-20` · `R-CK-6` · `R-COL-20` · `R-WS-9` · `R-VAR-8` · `R-SRV-8` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-54` · `D43` · `R-TEST-16` · `R-FLOW-6` · `R-CLI-5` · `R-SET-9`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-20` · `R-CK-6` · `R-COL-20` · `R-WS-9` · `R-VAR-8` · `R-SRV-8` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-58` · `D47` · `R-TEST-16` · `R-FLOW-6` · `R-CLI-5` · `R-SET-9` · `R-MOCK-8`.

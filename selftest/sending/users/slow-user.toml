@@ -1,0 +1,32 @@
+name = "Slow user"
+seq = 400
+method = "GET"
+server = "api"
+url = "/users/slow"
+
+[[headers]]
+name = "X-Tortuga-Example"
+value = "slow"
+
+[scripts]
+tests = """
+test("the example picked by header answered, after its delay", () => {
+  expect(res.json().example).toBe("slow");
+  expect(res.time).toBeGreaterThanOrEqual(100);
+});
+"""
+
+[[examples]]
+name = "fast"
+status = 200
+body = """
+{"example": "fast"}
+"""
+
+[[examples]]
+name = "slow"
+status = 200
+delay_ms = 100
+body = """
+{"example": "slow"}
+"""

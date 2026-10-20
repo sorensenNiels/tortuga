@@ -116,7 +116,11 @@ fn paint_grip(ui: &Ui, rect: egui::Rect, active: bool) {
 }
 
 /// Cancel and confirm buttons, right-aligned. Returns (cancel clicked, confirm clicked).
-fn actions(ui: &mut Ui, confirm: egui::Button<'_>, confirm_enabled: bool) -> (bool, bool) {
+pub(super) fn actions(
+    ui: &mut Ui,
+    confirm: egui::Button<'_>,
+    confirm_enabled: bool,
+) -> (bool, bool) {
     ui.add_space(16.0);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let confirm = ui.add_enabled(confirm_enabled, confirm).clicked();
@@ -126,7 +130,7 @@ fn actions(ui: &mut Ui, confirm: egui::Button<'_>, confirm_enabled: bool) -> (bo
     .inner
 }
 
-fn finish<T>(cancel: bool, done: Option<T>) -> DialogResult<T> {
+pub(super) fn finish<T>(cancel: bool, done: Option<T>) -> DialogResult<T> {
     match done {
         Some(value) => DialogResult::Done(value),
         None if cancel => DialogResult::Close,

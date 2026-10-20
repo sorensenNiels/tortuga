@@ -420,11 +420,22 @@ pub struct PanelContext<'a> {
     pub tests: Option<&'a TestsView>,
     /// Wrap long lines of the body (R-SET-7).
     pub wrap: bool,
+    /// Whether the response can become one of the request's examples (R-MOCK-1).
+    pub example: SaveExample,
+}
+
+/// "Save as example" is offered for requests of projects that can be changed (R-MOCK-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveExample {
+    Offered,
+    Hidden,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseAction {
     SaveBody,
+    /// Add the response to the request's examples for the mock server (R-MOCK-1).
+    SaveAsExample,
     /// Turn wrapping long lines on or off (R-SET-7).
     SetWrap(bool),
     /// Add this test to the request's test script (R-TEST-13).
@@ -544,6 +555,7 @@ fn details(
 ) -> Option<ResponseAction> {
     let PanelContext {
         can_save,
+        example,
         filter,
         filtered,
         tests,
@@ -578,6 +590,14 @@ fn details(
         |ui| {
             if can_save && ui.button("Save to file…").clicked() {
                 action = Some(ResponseAction::SaveBody);
+            }
+            if example == SaveExample::Offered
+                && ui
+                    .button("Save as example")
+                    .on_hover_text("Keep this response as an example the mock server answers with")
+                    .clicked()
+            {
+                action = Some(ResponseAction::SaveAsExample);
             }
             if let Some(msg) = &st.save_status {
                 ui.add(Label::new(RichText::new(msg).small().color(p.muted)).truncate())
@@ -938,6 +958,7 @@ mod tests {
                 filtered: Filtered::Off,
                 tests: None,
                 wrap: false,
+                example: SaveExample::Offered,
             };
             response_panel(ui, outcome.as_ref(), &mut st, cx);
         });
@@ -961,6 +982,7 @@ mod tests {
                 filtered: Filtered::Off,
                 tests: None,
                 wrap: false,
+                example: SaveExample::Offered,
             };
             if let Some(a) = response_panel(ui, outcome.as_ref(), &mut st, cx) {
                 asked = Some(a);

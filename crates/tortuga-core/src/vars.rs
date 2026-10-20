@@ -56,6 +56,16 @@ impl Context {
         path: Option<&std::path::Path>,
     ) -> Self {
         let env = environment_id.and_then(|id| collection.environment(id));
+        Self::for_request_in(collection, env, path)
+    }
+
+    /// As [`Context::for_request`], with an environment that need not be one of the
+    /// project's files, such as the mock's (R-MOCK-4).
+    pub fn for_request_in(
+        collection: &Collection,
+        env: Option<&crate::format::Environment>,
+        path: Option<&std::path::Path>,
+    ) -> Self {
         let folders = path.map(|p| collection.folders_of(p)).unwrap_or_default();
         let mut variables = collection.manifest.variables.clone();
         // Nearest folder last, so it wins; an empty value means "inherit".
