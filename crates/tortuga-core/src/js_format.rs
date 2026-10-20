@@ -148,24 +148,87 @@ pub struct LineStart {
     pub after: Option<char>,
 }
 
-/// Every line of a script and the names it uses.
+/// Every line of a script, the names it uses and what to colour (R-TEST-14).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Scan {
     /// One per line, the first line first.
     pub lines: Vec<LineStart>,
     /// Identifiers used in code, not after a `.`, each once, in order of first use.
     pub names: Vec<String>,
+    /// Byte ranges of the parts that get a colour, in order.
+    pub spans: Vec<(std::ops::Range<usize>, Token)>,
 }
+
+/// A part of a script that the editor colours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Token {
+    Keyword,
+    String,
+    Number,
+    Comment,
+    Regex,
+}
+
+/// Words coloured as keywords.
+const KEYWORDS: &[&str] = &[
+    "async",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "in",
+    "instanceof",
+    "let",
+    "new",
+    "null",
+    "of",
+    "return",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "undefined",
+    "var",
+    "void",
+    "while",
+    "yield",
+];
 
 /// Scans `src` for its lines and names (R-TEST-10).
 pub fn scan(src: &str) -> Scan {
     let chars: Vec<char> = src.chars().collect();
+    // Byte offset of each character, and of the end.
+    let bytes: Vec<usize> = src
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain([src.len()])
+        .collect();
+    let span = |from: usize, to: usize, token: Token| {
+        let at = |i: usize| bytes[i.min(chars.len())];
+        (at(from)..at(to), token)
+    };
     let mut out = Scan {
         lines: vec![LineStart {
             in_code: true,
             after: None,
         }],
         names: Vec::new(),
+        spans: Vec::new(),
     };
     let mut last = String::new();
     let mut after: Option<char> = None;
@@ -197,13 +260,16 @@ pub fn scan(src: &str) -> Scan {
             '"' | '\'' => quoted(&chars, i),
             '`' => template(&chars, i),
             '/' if chars.get(i + 1) == Some(&'/') => {
-                i = (i..chars.len())
+                let end = (i..chars.len())
                     .find(|&j| chars[j] == '\n')
                     .unwrap_or(chars.len());
+                out.spans.push(span(i, end, Token::Comment));
+                i = end;
                 continue;
             }
             '/' if chars.get(i + 1) == Some(&'*') => {
                 let end = find_from(&chars, i + 2, &['*', '/']).map_or(chars.len(), |j| j + 2);
+                out.spans.push(span(i, end, Token::Comment));
                 skip(&mut out, i, end);
                 i = end;
                 continue;
@@ -214,6 +280,11 @@ pub fn scan(src: &str) -> Scan {
                     .find(|&j| !is_word(chars[j]))
                     .unwrap_or(chars.len());
                 let word: String = chars[i..end].iter().collect();
+                if c.is_ascii_digit() {
+                    out.spans.push(span(i, end, Token::Number));
+                } else if after != Some('.') && KEYWORDS.contains(&word.as_str()) {
+                    out.spans.push(span(i, end, Token::Keyword));
+                }
                 if !c.is_ascii_digit() && after != Some('.') && !out.names.contains(&word) {
                     out.names.push(word.clone());
                 }
@@ -224,6 +295,12 @@ pub fn scan(src: &str) -> Scan {
             }
             _ => i + 1,
         };
+        match c {
+            '"' | '\'' | '`' => out.spans.push(span(i, end, Token::String)),
+            // A division is one character; a regular expression is more.
+            '/' if end > i + 1 => out.spans.push(span(i, end, Token::Regex)),
+            _ => {}
+        }
         skip(&mut out, i, end);
         last = chars[i..end.min(chars.len())].iter().collect();
         after = chars.get(end.min(chars.len()) - 1).copied();
@@ -625,6 +702,29 @@ const half=res.time/2,obj={a:[1,2,{b:3}],c:{}};let n=0;do{n++}while(n<3);"#;
         assert!(
             scan("\"open\n").lines[1].in_code,
             "a string ends at the line break"
+        );
+    }
+
+    /// R-TEST-14
+    #[test]
+    fn scan_finds_what_to_colour() {
+        let src = "const ü = \"s\"; // c\nif (a.if) x = /r/g + 12 / y;";
+        let coloured: Vec<(&str, Token)> = scan(src)
+            .spans
+            .into_iter()
+            .map(|(r, t)| (&src[r], t))
+            .collect();
+        assert_eq!(
+            coloured,
+            [
+                ("const", Token::Keyword),
+                ("\"s\"", Token::String),
+                ("// c", Token::Comment),
+                ("if", Token::Keyword),
+                ("/r/g", Token::Regex),
+                ("12", Token::Number),
+            ],
+            "a property named like a keyword is not one"
         );
     }
 

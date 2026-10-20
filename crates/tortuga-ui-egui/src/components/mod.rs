@@ -14,6 +14,7 @@ mod palette;
 mod request_editor;
 mod request_scripts;
 mod response_panel;
+mod script_editing;
 mod script_editor;
 mod sidebar;
 mod tab_strip;
@@ -36,10 +37,12 @@ pub use modals::{
 use modals::{dialog, resizable_dialog};
 pub use palette::{Palette, PaletteItem};
 pub use request_editor::{EditorAction, EditorContext, EditorState, Rerun, request_editor};
+pub use request_scripts::ScriptTab;
 pub use response_panel::{
     Filtered, Outcome, PanelContext, ResponseAction, ResponseState, ResponseView, TestsView,
     TextBody, filter_body, response_panel, tests_details,
 };
+pub use script_editing::insert_block;
 pub use sidebar::{Marks, SidebarAction, SidebarState, sidebar};
 pub use tab_strip::{GroupChip, TabAction, TabGroup, TabStripState, TabView, tab_strip};
 pub use workflow_view::{

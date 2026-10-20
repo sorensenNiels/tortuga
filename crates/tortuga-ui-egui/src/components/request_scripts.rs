@@ -11,6 +11,53 @@ use super::script_editor::{LineMark, line_marks, script_editor, script_toolbar};
 use super::{TestsView, key_value_table};
 use crate::theme;
 
+/// Snippets for a pre-request script (R-TEST-15): (menu label, code).
+const PRE_REQUEST_SNIPPETS: &[(&str, &str)] = &[
+    ("Set a variable", "vars.set(\"name\", \"value\");"),
+    (
+        "Set a header",
+        "req.setHeader(\"X-Request-Id\", String(Date.now()));",
+    ),
+    (
+        "Timestamp in a variable",
+        "vars.set(\"now\", new Date().toISOString());",
+    ),
+    (
+        "Random number in a variable",
+        "vars.set(\"random\", String(Math.floor(Math.random() * 1000000)));",
+    ),
+    ("Log the request", "console.log(req.method, req.url);"),
+];
+
+/// Snippets for a test script (R-TEST-15): (menu label, code).
+const TEST_SNIPPETS: &[(&str, &str)] = &[
+    (
+        "Status is 200",
+        "test(\"status is 200\", () => {\n  expect(res.status).toBe(200);\n});",
+    ),
+    (
+        "Status is 2xx",
+        "test(\"status is 2xx\", () => {\n  expect(res.status).to.be.within(200, 299);\n});",
+    ),
+    (
+        "Response time under 500 ms",
+        "test(\"response time under 500 ms\", () => {\n  expect(res.time).toBeLessThan(500);\n});",
+    ),
+    (
+        "Body is JSON",
+        "test(\"body is JSON\", () => {\n  expect(res.header(\"content-type\")).toMatch(/json/);\n});",
+    ),
+    (
+        "Body has a property",
+        "test(\"body has an id\", () => {\n  expect(res.json()).toHaveProperty(\"id\");\n});",
+    ),
+    (
+        "Save a field to a variable",
+        "vars.set(\"id\", String(res.json().id));",
+    ),
+    ("Log the body", "console.log(res.json());"),
+];
+
 /// Room under a script field for its "Reference" line.
 const BELOW_FIELD: f32 = 64.0;
 
@@ -167,7 +214,9 @@ pub fn request_scripts(
             script_toolbar(
                 ui,
                 "Runs before variables are filled in and the request is sent.",
+                "pre-request",
                 &mut request.scripts.pre_request,
+                PRE_REQUEST_SNIPPETS,
                 None,
             );
             let toggled = script_editor(
@@ -192,7 +241,9 @@ pub fn request_scripts(
             let rerun = script_toolbar(
                 ui,
                 "Runs after the response arrives.",
+                "tests",
                 &mut request.scripts.tests,
+                TEST_SNIPPETS,
                 Some(cx.rerun == Rerun::Ready),
             );
             let toggled = script_editor(
@@ -280,6 +331,66 @@ mod tests {
         let mut c = Request::default();
         c.capture.insert("id".into(), "$.id".into());
         assert_eq!(ScriptTab::first_for(&c), ScriptTab::Captures);
+    }
+
+    /// R-TEST-15: every snippet is valid JavaScript, and the test snippets run on a
+    /// typical JSON response without errors.
+    #[test]
+    fn snippets_parse_and_run() {
+        use std::collections::BTreeMap;
+        use tortuga_core::script::{self, Phase};
+        use tortuga_core::{HttpMethod, KeyValue, Response};
+        for (label, code) in PRE_REQUEST_SNIPPETS.iter().chain(TEST_SNIPPETS) {
+            assert!(script::parses(code), "{label}: {code}");
+        }
+        let req = Request::new(HttpMethod::Get, "https://a.test/");
+        let res = Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: vec![KeyValue::new("content-type", "application/json")],
+            body: br#"{"id": 7}"#.to_vec(),
+            elapsed: std::time::Duration::from_millis(5),
+        };
+        let all: Vec<&str> = TEST_SNIPPETS.iter().map(|(_, c)| *c).collect();
+        let run = script::run(
+            &all.join("\n"),
+            Phase::Test,
+            &BTreeMap::new(),
+            &req,
+            Some(&res),
+        );
+        assert_eq!(run.error, None);
+        assert!(run.tests.iter().all(|t| t.passed), "{:?}", run.tests);
+        assert_eq!(run.vars["id"].as_deref(), Some("7"));
+        let all: Vec<&str> = PRE_REQUEST_SNIPPETS.iter().map(|(_, c)| *c).collect();
+        let run = script::run(
+            &all.join("\n"),
+            Phase::PreRequest,
+            &BTreeMap::new(),
+            &req,
+            None,
+        );
+        assert_eq!(run.error, None);
+    }
+
+    /// R-TEST-15: a snippet picked from the menu lands in the script.
+    #[test]
+    fn a_snippet_is_inserted_from_the_menu() {
+        use egui_kittest::kittest::Queryable;
+        let mut script = "const a = 1;".to_owned();
+        let mut h = crate::test_host::harness(|ui| {
+            script_toolbar(ui, "about", "t", &mut script, TEST_SNIPPETS, None);
+        });
+        h.run();
+        h.get_by_label("Snippets").click();
+        h.run();
+        h.get_by_label("Status is 200").click();
+        h.run();
+        drop(h);
+        assert_eq!(
+            script,
+            "const a = 1;\n\ntest(\"status is 200\", () => {\n  expect(res.status).toBe(200);\n});"
+        );
     }
 
     #[test]

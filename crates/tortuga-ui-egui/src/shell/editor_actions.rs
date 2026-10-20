@@ -6,7 +6,9 @@ use tortuga_core::script::ScriptKind;
 use tortuga_core::{Scripts, vars};
 
 use super::{Modal, Selection, TortugaUi};
-use crate::components::{DefaultsDialog, EditorAction, Outcome, TestsView};
+use crate::components::{
+    DefaultsDialog, EditorAction, Outcome, ScriptTab, TestsView, insert_block,
+};
 
 impl TortugaUi {
     /// Does what the request editor asked for.
@@ -90,6 +92,19 @@ impl TortugaUi {
                 .apply_runtime(key.as_ref().map(|k| k.root.as_path()), &t.vars);
         }
         self.sent.entry(key.clone()).or_default().tests = tests;
+    }
+
+    /// Adds a test written from the response to the test script, and shows it (R-TEST-13).
+    pub(super) fn add_test(&mut self, code: &str) {
+        let tests = &mut self.current.scripts.tests;
+        *tests = insert_block(tests, None, code).text;
+        self.editor.open_scripts(ScriptTab::Tests);
+    }
+
+    /// Adds a capture from the response and shows it (R-TEST-13).
+    pub(super) fn add_capture(&mut self, name: &str, from: &str) {
+        self.editor.add_capture(&mut self.current, name, from);
+        self.editor.open_scripts(ScriptTab::Captures);
     }
 
     /// Sets or clears the breakpoint on `line` of a script of the request `key` (R-TEST-10).

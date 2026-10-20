@@ -664,6 +664,8 @@ impl TortugaUi {
                 self.state
                     .update_settings(|s| s.appearance.wrap_lines = wrap);
             }
+            Some(ResponseAction::AddTest(code)) => self.add_test(&code),
+            Some(ResponseAction::AddCapture { name, from }) => self.add_capture(&name, &from),
             None => {}
         }
     }
@@ -1412,6 +1414,23 @@ mod tests {
         let tests = ui.sent[&selection].tests.clone().expect("results");
         assert!(tests.tests[0].passed);
         assert!(ui.in_flight.is_none());
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-TEST-13: tests from the response go after the script with one blank line.
+    #[test]
+    fn tests_from_the_response_are_appended() {
+        let (mut ui, root, key) = setup("add-test");
+        ui.select(Some(key));
+        ui.add_test("test(\"a\", () => {});");
+        assert_eq!(ui.current.scripts.tests, "test(\"a\", () => {});");
+        ui.add_test("test(\"b\", () => {});");
+        ui.current.scripts.tests.push_str("\n\n\n");
+        ui.add_test("test(\"c\", () => {});");
+        assert_eq!(
+            ui.current.scripts.tests,
+            "test(\"a\", () => {});\n\ntest(\"b\", () => {});\n\ntest(\"c\", () => {});"
+        );
         std::fs::remove_dir_all(root).expect("clean up");
     }
 

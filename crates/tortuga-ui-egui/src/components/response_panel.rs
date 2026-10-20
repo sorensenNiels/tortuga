@@ -1,8 +1,7 @@
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
-use egui::text::{LayoutJob, TextFormat};
-use egui::{Grid, Key, Label, RichText, ScrollArea, TextEdit, TextStyle, TextWrapMode, Ui};
+use egui::{Grid, Key, Label, RichText, ScrollArea, TextEdit, TextStyle, Ui};
 use tortuga_core::script::{ConsoleEntry, ScriptKind};
 use tortuga_core::{BodyView, Response};
 
@@ -11,13 +10,16 @@ use super::console_view::{console_view, console_went_wrong};
 use crate::{format, theme};
 
 mod filter;
+mod json_menu;
 mod picture;
+mod rows;
 
 use filter::Syntax;
 pub use filter::{Filtered, filter_body};
 #[cfg(test)]
 use picture::MAX_IMAGE_SIDE;
 use picture::{ImageBody, ImageTexture, decode_image, image_view};
+use rows::{RowMenus, text_rows};
 
 /// Longest piece of a line drawn as one row; longer lines are split so a
 /// minified multi-megabyte body never becomes one giant text layout.
@@ -360,6 +362,9 @@ pub struct ResponseState {
     raw: bool,
     /// The shown image on the GPU (R-HTTP-17).
     texture: Option<ImageTexture>,
+    /// The value on each line of the formatted JSON, worked out after the first
+    /// right-click on it (R-TEST-13).
+    json_lines: json_menu::JsonLines,
 }
 
 /// Rows of a text cut at a width, kept until the text or the width changes (R-SET-7).
@@ -417,11 +422,18 @@ pub struct PanelContext<'a> {
     pub wrap: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseAction {
     SaveBody,
     /// Turn wrapping long lines on or off (R-SET-7).
     SetWrap(bool),
+    /// Add this test to the request's test script (R-TEST-13).
+    AddTest(String),
+    /// Add a capture of this JSON path into a variable (R-TEST-13).
+    AddCapture {
+        name: String,
+        from: String,
+    },
 }
 
 /// Body, Headers, and Tests and Console when the request has scripts; Tests and Console
@@ -582,8 +594,8 @@ fn details(
 
     theme::card(ui).show(ui, |ui| match st.tab {
         Tab::Body => {
-            if let Some(wrap) = body(ui, view, st, filter, filtered, wrap) {
-                action = Some(ResponseAction::SetWrap(wrap));
+            if let Some(asked) = body(ui, view, st, filter, filtered, wrap) {
+                action = Some(asked);
             }
         }
         Tab::Tests => tests_tab(ui, tests),
@@ -622,7 +634,7 @@ fn body(
     filter: &mut String,
     filtered: Filtered<'_>,
     wrap: bool,
-) -> Option<bool> {
+) -> Option<ResponseAction> {
     // "Preview" for content that is not text, "Pretty" for text (R-HTTP-18).
     let modes = view.raw.as_ref().map(|_| match view.body {
         Body::Image(_) | Body::Binary => "Preview",
@@ -666,7 +678,7 @@ fn body(
         st.update_matches(&shown.text);
     }
     let filter = (full.syntax != Syntax::Plain).then_some((filter, full.syntax));
-    let wrap_changed = toolbar(ui, st, modes, filter, wrap);
+    let wrap_changed = toolbar(ui, st, modes, filter, wrap).map(ResponseAction::SetWrap);
     if let Filtered::Failed(message) = filtered {
         theme::warning(ui, message);
     }
@@ -684,8 +696,17 @@ fn body(
             format!("Showing the first {limit}. Use “Save to file” for the full body."),
         );
     }
-    text_rows(ui, shown, st, wrap);
-    wrap_changed
+    // Tests and captures come from the whole formatted JSON only (R-TEST-13).
+    let menus = if raw.is_none()
+        && shown.syntax == Syntax::Json
+        && !shown.truncated
+        && matches!(filtered, Filtered::Off | Filtered::Failed(_))
+    {
+        RowMenus::Json
+    } else {
+        RowMenus::None
+    };
+    text_rows(ui, shown, st, wrap, menus).or(wrap_changed)
 }
 
 /// The "Pretty" (or "Preview") and "Raw" switch, if the body has a raw view (R-HTTP-18).
@@ -863,114 +884,6 @@ fn toolbar(
     wrap_changed
 }
 
-/// The text, one row per line; only the visible rows are laid out, so big bodies
-/// scroll smoothly (R-NF-2). Matches of the search are highlighted (R-HTTP-12).
-fn text_rows(ui: &mut Ui, body: &TextBody, st: &mut ResponseState, wrap: bool) {
-    let row_height = ui.text_style_height(&TextStyle::Monospace);
-    ui.spacing_mut().item_spacing.y = 3.0;
-    let char_width =
-        ui.fonts_mut(|f| f.glyph_width(&TextStyle::Monospace.resolve(ui.style()), 'x'));
-    // Wrapped: rows as wide as the panel, worked out from the monospace character width
-    // and kept until the text or the width changes (R-SET-7).
-    let rows: &[Range<usize>] = if wrap {
-        // Leave room for the scroll bar.
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a panel is a few thousand points wide at most"
-        )]
-        let width = ((ui.available_width() - 16.0) / char_width.max(1.0)).max(10.0) as usize;
-        let key = (body.text.as_ptr() as usize, body.text.len(), width);
-        if st.wrapped.as_ref().is_none_or(|w| w.key != key) {
-            st.wrapped = Some(WrappedRows {
-                key,
-                rows: wrap_rows(&body.text, &body.rows, width),
-            });
-        }
-        st.wrapped.as_ref().map_or(&body.rows, |w| &w.rows)
-    } else {
-        &body.rows
-    };
-    // A new text (another response, or a filter result) starts at the top.
-    let mut area = if wrap {
-        ScrollArea::vertical()
-    } else {
-        ScrollArea::both()
-    }
-    .id_salt(("response-body", body.text.as_ptr() as usize, wrap))
-    .auto_shrink(false);
-    if std::mem::take(&mut st.scroll_to_match)
-        && let Some(m) = st.matches.get(st.current)
-    {
-        let row = rows.partition_point(|r| r.end < m.start);
-        let stride = row_height + ui.spacing().item_spacing.y;
-        #[expect(clippy::cast_precision_loss, reason = "row numbers are far below 2^23")]
-        let y = (row as f32 - 3.0).max(0.0) * stride;
-        let column = rows
-            .get(row)
-            .map_or(0, |r| body.text[r.start..m.start].chars().count());
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "rows are at most a few thousand characters"
-        )]
-        let x = (column as f32 * char_width - 120.0).max(0.0);
-        area = area.vertical_scroll_offset(y).horizontal_scroll_offset(x);
-    }
-    let p = theme::palette(ui);
-    let font = TextStyle::Monospace.resolve(ui.style());
-    let text_color = ui.visuals().text_color();
-    area.show_rows(ui, row_height, rows.len(), |ui, visible| {
-        for range in &rows[visible] {
-            let found = matches_in(&st.matches, range);
-            if found.is_empty() {
-                ui.add(
-                    Label::new(RichText::new(&body.text[range.clone()]).monospace())
-                        .wrap_mode(TextWrapMode::Extend),
-                );
-                continue;
-            }
-            let mut job = LayoutJob::default();
-            let plain = TextFormat::simple(font.clone(), text_color);
-            let mut at = range.start;
-            for (i, m) in found {
-                let (start, end) = (m.start.max(range.start), m.end.min(range.end));
-                job.append(&body.text[at..start], 0.0, plain.clone());
-                let background = if i == st.current {
-                    p.redirect
-                } else {
-                    p.redirect.gamma_multiply(0.35)
-                };
-                let color = if i == st.current { p.bg } else { text_color };
-                job.append(
-                    &body.text[start..end],
-                    0.0,
-                    TextFormat {
-                        background,
-                        ..TextFormat::simple(font.clone(), color)
-                    },
-                );
-                at = end;
-            }
-            job.append(&body.text[at..range.end], 0.0, plain);
-            ui.add(Label::new(job).wrap_mode(TextWrapMode::Extend));
-        }
-    });
-}
-
-/// The matches (with their index) that overlap `row`. `matches` is sorted.
-fn matches_in<'a>(
-    matches: &'a [Range<usize>],
-    row: &Range<usize>,
-) -> Vec<(usize, &'a Range<usize>)> {
-    let first = matches.partition_point(|m| m.end <= row.start);
-    matches[first..]
-        .iter()
-        .take_while(|m| m.start < row.end)
-        .enumerate()
-        .map(|(i, m)| (first + i, m))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -1030,6 +943,50 @@ mod tests {
         });
         harness.run();
         harness
+    }
+
+    /// R-TEST-13: right-clicking a line of formatted JSON offers a test for its value;
+    /// the raw view has no such menu.
+    #[test]
+    fn right_clicking_a_json_line_adds_a_test() {
+        let outcome = Some(Outcome::from_result(Ok(json_response())));
+        let mut st = ResponseState::default();
+        let mut filter = String::new();
+        let mut asked = None;
+        let mut h = crate::test_host::harness(|ui| {
+            let cx = PanelContext {
+                sending: false,
+                can_save: true,
+                filter: &mut filter,
+                filtered: Filtered::Off,
+                tests: None,
+                wrap: false,
+            };
+            if let Some(a) = response_panel(ui, outcome.as_ref(), &mut st, cx) {
+                asked = Some(a);
+            }
+        });
+        h.run();
+        h.get_by_label("  \"id\": 7").click_secondary();
+        h.run();
+        h.run();
+        h.get_by_label("Add test").click();
+        h.run();
+        h.get_by_label("Equals 7").click();
+        h.run();
+        drop(h);
+        let Some(ResponseAction::AddTest(code)) = asked else {
+            panic!("no test: {asked:?}");
+        };
+        assert!(code.contains("expect(res.json().id).to.equal(7)"), "{code}");
+
+        // The raw view shows the body as it came: no menu.
+        let mut h = render(Some(Outcome::from_result(Ok(json_response()))));
+        h.get_by_label("Raw").click();
+        h.run();
+        h.get_by_label(r#"{"id":7}"#).click_secondary();
+        h.run();
+        assert!(h.query_by_label("Add test").is_none());
     }
 
     fn text(view: &ResponseView) -> &TextBody {

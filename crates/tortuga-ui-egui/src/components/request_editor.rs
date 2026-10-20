@@ -44,6 +44,32 @@ impl EditorState {
         self.body.set_file(request, index, path);
     }
 
+    /// Opens the Scripts tab on its sub-tab `sub` (R-TEST-13).
+    pub fn open_scripts(&mut self, sub: ScriptTab) {
+        self.tab = Tab::Scripts;
+        self.script_tab = sub;
+    }
+
+    /// Adds the capture `from` into `name`, or `name_2`, … when that name is taken
+    /// (R-TEST-13). Nothing is added if the same capture is there already.
+    pub fn add_capture(&mut self, request: &mut Request, name: &str, from: &str) {
+        if request.capture.get(name).is_some_and(|f| f == from) {
+            return;
+        }
+        let taken = |n: &str| self.captures.iter().any(|c| c.name.trim() == n);
+        let name = if taken(name) {
+            // At most `captures.len()` names are taken, so one of these is free.
+            (2..=self.captures.len() + 2)
+                .map(|i| format!("{name}_{i}"))
+                .find(|n| !taken(n))
+                .unwrap_or_else(|| name.to_owned())
+        } else {
+            name.to_owned()
+        };
+        request.capture.insert(name.clone(), from.to_owned());
+        self.captures.push(KeyValue::new(name, from));
+    }
+
     /// Whether the Preview tab is open (so the shell works out the preview).
     pub fn shows_preview(&self) -> bool {
         self.tab == Tab::Preview
@@ -880,6 +906,23 @@ mod tests {
             "test('ok', () => {\n  expect(res.status).toBe(200);\n});"
         );
         assert_eq!(request.scripts.pre_request, "");
+    }
+
+    /// R-TEST-13: captures from the response get a free name and are not doubled; the
+    /// Scripts tab opens on them.
+    #[test]
+    fn captures_from_the_response_get_free_names() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/");
+        let mut st = EditorState::new(&request);
+        st.add_capture(&mut request, "token", "$.data.token");
+        st.add_capture(&mut request, "token", "$.data.token");
+        st.add_capture(&mut request, "token", "$.other.token");
+        st.add_capture(&mut request, "ü😀", "$['ü😀']");
+        let names: Vec<&str> = request.capture.keys().map(String::as_str).collect();
+        assert_eq!(names, ["token", "token_2", "ü😀"]);
+        assert_eq!(st.captures.len(), 3, "the table rows match");
+        st.open_scripts(ScriptTab::Captures);
+        assert_eq!((st.tab, st.script_tab), (Tab::Scripts, ScriptTab::Captures));
     }
 
     #[test]
