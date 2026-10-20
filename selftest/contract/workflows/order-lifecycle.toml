@@ -1,0 +1,11 @@
+name = "Order lifecycle"
+continue_on_failure = true
+
+[[steps]]
+request = "orders/list-orders.toml"
+
+[[steps]]
+request = "orders/get-order.toml"
+
+[[steps]]
+request = "orders/create-order.toml"

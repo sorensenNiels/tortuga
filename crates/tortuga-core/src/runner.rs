@@ -31,6 +31,8 @@ pub struct Extra<'a> {
     pub capture: Option<&'a BTreeMap<String, String>>,
     pub tests: Option<&'a str>,
     pub breakpoints: Option<&'a Breakpoints>,
+    /// Compare the response with the request's examples (R-MOCK-8).
+    pub check_examples: bool,
 }
 
 /// What happened when a request was run.
@@ -160,7 +162,7 @@ pub async fn run_step(
 }
 
 /// What runs once a response is there: captures, then the test scripts (R-TEST-1,
-/// R-TEST-4). Also used to run the tests again on the last response without sending
+/// R-TEST-4), then the contract check if asked for (R-MOCK-8). Also used to run the tests again on the last response without sending
 /// (R-TEST-12). `sent` is the request as it was sent, shown to scripts as `req`.
 pub fn after_response(
     request: &Request,
@@ -217,6 +219,13 @@ pub fn after_response(
             };
             out.errors.push(format!("{which}: {e}"));
         }
+    }
+
+    if extra.check_examples
+        && let Some(result) =
+            crate::mock::contract::check(&request.examples, sent, response, &ctx.variables)
+    {
+        out.tests.push(result);
     }
 }
 

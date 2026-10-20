@@ -139,6 +139,8 @@ pub struct RunOptions {
     pub workspace_defaults: crate::workspace::WorkspaceDefaults,
     /// One iteration per row; none means one iteration without a row.
     pub rows: Vec<BTreeMap<String, String>>,
+    /// Compare each response with its request's examples (R-MOCK-8, `--check-examples`).
+    pub check_examples: bool,
 }
 
 /// A step that ran (or could not).
@@ -257,6 +259,7 @@ pub async fn run(
                         capture: Some(&step.capture),
                         tests: Some(step.tests.as_str()),
                         breakpoints: None,
+                        check_examples: options.check_examples,
                     };
                     runner::run_step(client, Some(&jar), &item.request, &ctx, extra).await
                 }

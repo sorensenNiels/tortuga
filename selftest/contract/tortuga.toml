@@ -1,0 +1,9 @@
+format = 1
+name = "Contract"
+
+[[servers]]
+id = "api"
+name = "Orders API"
+
+[variables]
+built_port = "4011"

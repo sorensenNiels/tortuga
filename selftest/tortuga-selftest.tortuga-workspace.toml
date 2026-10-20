@@ -19,3 +19,7 @@ remote = "https://github.com/sorensenNiels/tortuga.git"
 [[projects]]
 path = "data-driven"
 remote = "https://github.com/sorensenNiels/tortuga.git"
+
+[[projects]]
+path = "contract"
+remote = "https://github.com/sorensenNiels/tortuga.git"

@@ -486,6 +486,8 @@ impl TortugaUi {
             workspace: self.state.workspace_values(),
             workspace_defaults: self.state.workspace().defaults.clone(),
             rows,
+            // Workflows pass and fail as in CI, where checking is opt-in (R-MOCK-8, D47).
+            check_examples: false,
         };
         self.workflows.next_run += 1;
         let run_id = self.workflows.next_run;

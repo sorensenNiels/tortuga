@@ -1443,6 +1443,47 @@ mod tests {
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
+    /// R-MOCK-8: the response is checked against the request's examples, as a test.
+    #[test]
+    fn responses_are_checked_against_the_examples() {
+        use crate::components::EditorAction;
+
+        let (mut ui, root, key) = setup("contract");
+        let selection = Some(key.clone());
+        ui.select(selection.clone());
+        ui.current.examples = vec![tortuga_core::mock::Example {
+            body: r#"{"name": "x", "id": 1}"#.into(),
+            ..tortuga_core::mock::Example::new("200 OK")
+        }];
+        let response = tortuga_core::Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: vec![tortuga_core::KeyValue::new(
+                "content-type",
+                "application/json",
+            )],
+            body: r#"{"name": "ü😀"}"#.as_bytes().to_vec(),
+            elapsed: std::time::Duration::from_millis(3),
+        };
+        ui.sent.insert(
+            selection.clone(),
+            Sent {
+                outcome: Some(Outcome::Response(Arc::new(ResponseView::new(response)))),
+                ..Sent::default()
+            },
+        );
+        ui.apply_editor_action(
+            &egui::Context::default(),
+            EditorAction::RerunTests,
+            &selection,
+        );
+        let tests = ui.sent[&selection].tests.clone().expect("results");
+        assert_eq!(tests.tests.len(), 1);
+        assert_eq!(tests.tests[0].name, "Matches example “200 OK”");
+        assert_eq!(tests.tests[0].message.as_deref(), Some("$.id is missing"));
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
     /// R-TEST-13: tests from the response go after the script with one blank line.
     #[test]
     fn tests_from_the_response_are_appended() {

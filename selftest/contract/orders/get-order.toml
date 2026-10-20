@@ -1,0 +1,14 @@
+name = "Get order"
+seq = 200
+method = "GET"
+server = "api"
+url = "/orders/7"
+
+[[examples]]
+name = "open order"
+body = """
+{"id": 7, "total": 9.5, "status": "open", "lines": [{"sku": "A-1", "qty": 1}]}
+"""
+
+[examples.match.headers]
+X-Client = "tortuga-selftest"

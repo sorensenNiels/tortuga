@@ -1,0 +1,12 @@
+# Drifted: 200 instead of 201 Created.
+name = "Create order"
+seq = 300
+method = "POST"
+server = "api"
+url = "/orders"
+
+[[examples]]
+name = "created"
+body = """
+{"id": 8}
+"""

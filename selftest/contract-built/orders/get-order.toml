@@ -1,0 +1,12 @@
+# Drifted: the id and qty became strings, and status was renamed to state.
+name = "Get order"
+seq = 200
+method = "GET"
+server = "api"
+url = "/orders/7"
+
+[[examples]]
+name = "open order"
+body = """
+{"id": "7", "total": 9.5, "state": "open", "lines": [{"sku": "A-1", "qty": "1"}]}
+"""

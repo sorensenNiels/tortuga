@@ -55,7 +55,7 @@ fn project(dir: &Path, delete_in_workflow: bool) {
             ..Example::new("bob")
         },
         Example {
-            body: r#"{"name": "Ann"}"#.into(),
+            body: r#"{"name": "Ann", "id": 1}"#.into(),
             ..Example::new("anyone")
         },
     ];
@@ -169,10 +169,78 @@ async fn mock_serves_the_project_and_prints_each_request() {
         .await
         .expect("send");
     assert_eq!(response.status, 200);
-    assert_eq!(response.body, br#"{"name": "Ann"}"#);
+    assert_eq!(response.body, br#"{"name": "Ann", "id": 1}"#);
     let logged = lines.next().expect("a line").expect("utf-8");
     assert_eq!(logged, "200 GET /users/zoe → Get user / anyone");
     child.kill().expect("stop the mock");
     // Reaping it; its exit status after the kill says nothing.
     let _ = child.wait();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_examples_reports_where_the_real_api_differs_from_the_design() {
+    // R-MOCK-8: the same workflow, against an implementation that drifted.
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/login"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(r#"{"token": "t-1"}"#, "application/json"),
+        )
+        .mount(&api)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/users/ann"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"name": "Ann", "id": "7", "debug": true}"#,
+            "application/json",
+        ))
+        .mount(&api)
+        .await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    project(dir.path(), false);
+    let col = Collection::open(&FS, dir.path()).expect("open");
+    let local = Environment {
+        id: "local".into(),
+        name: "Local".into(),
+        servers: [("api".to_owned(), api.uri())].into(),
+        ..Environment::default()
+    };
+    col.save_config(&FS, &col.manifest, &[local])
+        .expect("config");
+    let p = dir.path().to_str().expect("utf-8").to_owned();
+
+    // Without the option the workflow passes: the check is opt-in for workflows (D47).
+    let run = |extra: &'static [&'static str]| {
+        let p = p.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut args = vec!["run", p.as_str(), "Lifecycle", "--env", "local"];
+            args.extend(extra);
+            cli(&args)
+        })
+    };
+    let (code, out) = run(&[]).await.expect("cli");
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("Matches example"), "{out}");
+
+    let (code, out) = run(&["--check-examples"]).await.expect("cli");
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("ok   Matches example “ok”"), "{out}");
+    assert!(
+        out.contains(
+            "FAIL Matches example “anyone”: $.id is a string, the example has a number; \
+             $.debug is not in the example"
+        ),
+        "{out}"
+    );
+
+    // Against the mock, the design matches itself.
+    let (code, out) = tokio::task::spawn_blocking(move || {
+        cli(&["run", p.as_str(), "Lifecycle", "--mock", "--check-examples"])
+    })
+    .await
+    .expect("cli");
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("ok   Matches example “anyone”"), "{out}");
 }

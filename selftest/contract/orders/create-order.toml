@@ -1,0 +1,25 @@
+name = "Create order"
+seq = 300
+method = "POST"
+server = "api"
+url = "/orders"
+
+[body]
+kind = "json"
+content = """
+{"sku": "A-1", "qty": 2}
+"""
+
+[[examples]]
+name = "created"
+status = 201
+body = """
+{"id": 8}
+"""
+
+[examples.match.headers]
+X-Client = "tortuga-selftest"
+Content-Type = "application/json"
+
+[examples.match.body]
+"$.sku" = "A-1"

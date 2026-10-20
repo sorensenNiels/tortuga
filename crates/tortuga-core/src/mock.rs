@@ -16,6 +16,7 @@ use crate::format::Environment;
 use crate::model::{HttpMethod, KeyValue, Request, Response};
 use crate::vars::{self, Context};
 
+pub mod contract;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 

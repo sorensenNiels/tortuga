@@ -1,0 +1,14 @@
+name = "List orders"
+seq = 100
+method = "GET"
+server = "api"
+url = "/orders"
+
+[[examples]]
+name = "orders"
+body = """
+{"orders": [{"id": 1, "total": 9.5, "status": "open"}], "next": null}
+"""
+
+[examples.match.headers]
+X-Client = "tortuga-selftest"

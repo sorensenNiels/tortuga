@@ -1,0 +1,12 @@
+# As designed: other values, the same shape.
+name = "List orders"
+seq = 100
+method = "GET"
+server = "api"
+url = "/orders"
+
+[[examples]]
+name = "orders"
+body = """
+{"orders": [{"id": 3, "total": 20, "status": "paid"}, {"id": 4, "total": 5.25, "status": "open"}], "next": "page-2"}
+"""

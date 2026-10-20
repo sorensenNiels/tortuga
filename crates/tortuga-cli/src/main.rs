@@ -35,6 +35,8 @@ Options:
   --mock                Run against the project's mock: start it on a free port and
                         send every request that has a server there
   --port N              The mock's port
+  --check-examples      Also check each response against its request's examples:
+                        status, Content-Type and JSON shape (a difference fails)
   --insecure            Do not verify TLS certificates
   --cacert FILE         Also trust the CA certificates in this PEM file (repeatable)
   --report junit|json   Write a report ...
@@ -66,6 +68,8 @@ struct Args {
     /// Run against the project's mock (R-MOCK-5).
     mock: bool,
     port: Option<u16>,
+    /// Compare responses with the requests' examples (R-MOCK-8).
+    check_examples: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +173,7 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
             }
             "--out" => out = Some(PathBuf::from(value("--out")?)),
             "--mock" => args.mock = true,
+            "--check-examples" => args.check_examples = true,
             "--port" => {
                 let v = value("--port")?;
                 args.port = Some(
@@ -274,6 +279,7 @@ fn run(args: &Args) -> Result<bool, String> {
         workspace: workspace.variables.values,
         workspace_defaults: workspace.defaults,
         rows,
+        check_examples: args.check_examples,
     };
 
     let env_name = options
@@ -480,7 +486,7 @@ mod tests {
     #[test]
     fn parses_options() {
         let Ok(Command::Run(a)) = args(
-            "run api lifecycle --env Staging --var user=ann --var x=a=b --data rows.csv --insecure --report junit --out r.xml --workspace w.toml",
+            "run api lifecycle --env Staging --var user=ann --var x=a=b --data rows.csv --insecure --report junit --out r.xml --workspace w.toml --check-examples",
         ) else {
             panic!("run")
         };
@@ -490,6 +496,7 @@ mod tests {
         assert_eq!(a.vars["x"], "a=b");
         assert_eq!(a.workspace, Some(PathBuf::from("w.toml")));
         assert!(a.insecure);
+        assert!(a.check_examples);
         assert_eq!(a.report, Some((ReportKind::Junit, PathBuf::from("r.xml"))));
         assert!(matches!(args("--help"), Ok(Command::Help)));
         assert!(args("run").is_err(), "no project");

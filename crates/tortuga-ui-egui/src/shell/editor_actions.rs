@@ -63,6 +63,8 @@ impl TortugaUi {
         let mut out = StepOutcome::default();
         let extra = Extra {
             breakpoints: Some(&breakpoints),
+            // The design is checked on every send (R-MOCK-8, D47).
+            check_examples: true,
             ..Extra::default()
         };
         runner::after_response(

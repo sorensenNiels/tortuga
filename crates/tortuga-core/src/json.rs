@@ -92,6 +92,21 @@ fn is_identifier(key: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
+/// `['key']`, the `JSONPath` step for a key that is not a name.
+fn bracketed(key: &str) -> String {
+    let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("['{escaped}']")
+}
+
+/// The `JSONPath` of `key` under `parent`: `$.data.id`, or `$.data['a b']`.
+pub(crate) fn path_with_key(parent: &str, key: &str) -> String {
+    if is_identifier(key) {
+        format!("{parent}.{key}")
+    } else {
+        format!("{parent}{}", bracketed(key))
+    }
+}
+
 /// `text` as a JavaScript/JSON string literal.
 fn quoted(text: &str) -> String {
     serde_json::Value::String(text.to_owned()).to_string()
@@ -138,10 +153,7 @@ impl Point {
 
     /// `$.data.items[0].id`, for captures (R-TEST-4).
     pub fn json_path(&self) -> String {
-        self.written("$", |k| {
-            let escaped = k.replace('\\', "\\\\").replace('\'', "\\'");
-            format!("['{escaped}']")
-        })
+        self.written("$", bracketed)
     }
 
     /// A variable name for a capture of this value: its key, or `value`.

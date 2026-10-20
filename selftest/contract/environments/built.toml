@@ -1,0 +1,4 @@
+name = "Built"
+
+[servers]
+api = "http://127.0.0.1:{{built_port}}"

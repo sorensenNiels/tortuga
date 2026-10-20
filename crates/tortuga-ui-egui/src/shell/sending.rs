@@ -63,6 +63,8 @@ impl TortugaUi {
                 &ctx,
                 tortuga_core::runner::Extra {
                     breakpoints: Some(&breakpoints),
+                    // The design is checked on every send (R-MOCK-8, D47).
+                    check_examples: true,
                     ..tortuga_core::runner::Extra::default()
                 },
             )
