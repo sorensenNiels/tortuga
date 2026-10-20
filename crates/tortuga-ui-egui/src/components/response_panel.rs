@@ -71,6 +71,9 @@ pub struct TestsView {
     pub errors: Vec<String>,
     /// Variables set (`Some`) or removed (`None`).
     pub vars: std::collections::BTreeMap<String, Option<String>>,
+    /// The scripts as they ran, so results are only shown on their lines while the
+    /// script is unchanged (R-TEST-11).
+    pub ran: tortuga_core::Scripts,
 }
 
 impl TestsView {
@@ -81,6 +84,7 @@ impl TestsView {
             console: o.console.clone(),
             errors: o.errors.clone(),
             vars: o.vars.clone(),
+            ran: tortuga_core::Scripts::default(),
         };
         (view != Self::default()).then_some(view)
     }

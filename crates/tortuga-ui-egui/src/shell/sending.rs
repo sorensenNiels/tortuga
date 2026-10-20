@@ -81,7 +81,10 @@ impl TortugaUi {
                 environment,
                 for_history,
             );
-            let tests = TestsView::from_step(&step);
+            let tests = TestsView::from_step(&step).map(|t| TestsView {
+                ran: request.scripts.clone(),
+                ..t
+            });
             // Prepared here, off the UI thread: pretty-printing big bodies takes a while (R-NF-2).
             let outcome = Outcome::from_step(step.response.take(), &step.errors);
             // The receiver only goes away with the app.

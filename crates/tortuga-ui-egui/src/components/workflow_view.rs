@@ -81,6 +81,8 @@ impl StepView {
             tests: TestsView {
                 tests: o.tests.clone(),
                 console: o.console.clone(),
+                // Workflow results are not shown on script lines.
+                ran: tortuga_core::Scripts::default(),
                 errors,
                 vars: o.vars.clone(),
             },
@@ -470,6 +472,7 @@ fn step_details(
                     4,
                     "test(\"created\", () => expect(res.status).toBe(201));",
                     None,
+                    &std::collections::BTreeMap::new(),
                 );
                 theme::hint(ui, "Runs after the request's own tests.");
             });

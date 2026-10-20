@@ -3,8 +3,9 @@ use tortuga_core::script::{Breakpoints, ScriptKind};
 use tortuga_core::settings::ResolvedSettings;
 use tortuga_core::{Auth, HttpMethod, KeyValue, Request, RequestBody};
 
+use super::TestsView;
 use super::auth_editor::EditDefaults;
-use super::script_editor::{script_editor, script_heading};
+use super::request_scripts::{ScriptTab, request_scripts};
 use super::{BodyDrafts, body_editor, key_value_table, request_auth};
 use crate::theme;
 
@@ -32,7 +33,9 @@ pub struct EditorState {
     body: BodyDrafts,
     focus_url: bool,
     /// The captures as table rows (R-TEST-4).
-    captures: Vec<KeyValue>,
+    pub(super) captures: Vec<KeyValue>,
+    /// The open sub-tab of the Scripts tab (R-TEST-11).
+    pub(super) script_tab: ScriptTab,
 }
 
 impl EditorState {
@@ -61,6 +64,7 @@ impl EditorState {
                 .iter()
                 .map(|(name, from)| KeyValue::new(name, from))
                 .collect(),
+            script_tab: ScriptTab::first_for(request),
         }
     }
 }
@@ -98,6 +102,20 @@ pub struct EditorContext<'a> {
     pub can_pick_files: bool,
     /// Breakpoints in the request's scripts, kept while the app runs (R-TEST-10).
     pub breakpoints: &'a Breakpoints,
+    /// What the request's scripts and captures did on its last send, shown on their lines
+    /// (R-TEST-11).
+    pub last_run: Option<&'a TestsView>,
+    /// Whether the tests can run again on the last response (R-TEST-12).
+    pub rerun: Rerun,
+}
+
+/// Whether "Re-run tests" can run (R-TEST-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rerun {
+    /// The last send has a response to run the tests on.
+    Ready,
+    /// Sending, or no response yet.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +130,8 @@ pub enum EditorAction {
     PasteCurl(String),
     /// Set or clear the breakpoint on a line of one of the scripts (R-TEST-10).
     ToggleBreakpoint(ScriptKind, u32),
+    /// Run the captures and tests again on the last response, without sending (R-TEST-12).
+    RerunTests,
     /// "Choose…" for the file of multipart part `n` (R-HTTP-15).
     ChooseFile(usize),
 }
@@ -265,8 +285,8 @@ fn tab_content(
         }
         Tab::Options => request_options(ui, request, st, cx),
         Tab::Scripts => {
-            if let Some(toggled) = request_scripts(ui, request, st, cx.breakpoints) {
-                action = Some(toggled);
+            if let Some(asked) = request_scripts(ui, request, st, cx) {
+                action = Some(asked);
             }
         }
         Tab::Preview => request_preview(ui, cx.preview),
@@ -510,65 +530,6 @@ fn take_pasted_curl(input: &mut egui::InputState) -> Option<String> {
     }
 }
 
-/// The scripts and captures of a request (R-TEST-1, R-TEST-2, R-TEST-4). Returns the
-/// breakpoint the user set or cleared (R-TEST-10).
-fn request_scripts(
-    ui: &mut Ui,
-    request: &mut Request,
-    st: &mut EditorState,
-    breakpoints: &Breakpoints,
-) -> Option<EditorAction> {
-    script_heading(ui, "Pre-request script", &mut request.scripts.pre_request);
-    let pre = script_editor(
-        ui,
-        "pre-request",
-        &mut request.scripts.pre_request,
-        4,
-        "vars.set(\"now\", String(Date.now()));\nreq.setHeader(\"X-Request-Id\", vars.get(\"now\"));",
-        Some(&breakpoints.pre_request),
-    )
-    .map(|line| EditorAction::ToggleBreakpoint(ScriptKind::PreRequest, line));
-    theme::hint(
-        ui,
-        "Runs before variables are filled in: vars.get/set/unset, req.setHeader(name, value), console.log.",
-    );
-    ui.add_space(10.0);
-    script_heading(ui, "Tests", &mut request.scripts.tests);
-    let tests = script_editor(
-        ui,
-        "tests",
-        &mut request.scripts.tests,
-        6,
-        "test(\"status is 200\", () => expect(res.status).toBe(200));\ntest(\"has an id\", () => expect(res.json()).toHaveProperty(\"id\"));",
-        Some(&breakpoints.tests),
-    )
-    .map(|line| EditorAction::ToggleBreakpoint(ScriptKind::Tests, line));
-    theme::hint(
-        ui,
-        "Runs after the response: test(name, fn), expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not) \
-         or Chai's expect(x).to.equal/.to.be.an(\"object\")/.to.have.property/…, \
-         res.status, res.json(), res.header(name), res.time, vars, console.log. \
-         Click a line number to set a breakpoint: the Console then shows the variables there.",
-    );
-    ui.add_space(10.0);
-    theme::section_label(ui, "Captures");
-    if key_value_table(ui, "captures", &mut st.captures, "Variable", &[]) {
-        request.capture = st
-            .captures
-            .iter()
-            .filter(|c| c.is_active())
-            .map(|c| (c.name.trim().to_owned(), c.value.trim().to_owned()))
-            .collect();
-    }
-    theme::hint(
-        ui,
-        "Puts a value from the response into a variable: $.json.path, xpath://xml/path, \
-         header:Name or status. \
-         Captured values are kept until Tortuga closes and win over environment values.",
-    );
-    pre.or(tests)
-}
-
 /// The request exactly as it will be sent, secrets masked (R-HTTP-14).
 fn request_preview(ui: &mut Ui, preview: Option<&Result<Request, String>>) {
     let p = theme::palette(ui);
@@ -752,6 +713,8 @@ mod tests {
                         preview: None,
                         can_pick_files: false,
                         breakpoints: &Breakpoints::default(),
+                        last_run: None,
+                        rerun: Rerun::Unavailable,
                     },
                 );
             });
@@ -805,6 +768,8 @@ mod tests {
                     preview: Some(&preview),
                     can_pick_files: false,
                     breakpoints: &Breakpoints::default(),
+                    last_run: None,
+                    rerun: Rerun::Unavailable,
                 },
             );
         });
@@ -816,7 +781,8 @@ mod tests {
         h.get_by_label("{\"a\": 1}");
     }
 
-    /// R-TEST-1, R-TEST-4: scripts and captures are edited in the Scripts tab.
+    /// R-TEST-1, R-TEST-4, R-TEST-11: scripts and captures are edited in the Scripts
+    /// tab's sub-tabs.
     #[test]
     fn scripts_tab_edits_scripts_and_captures() {
         let mut request = Request::new(HttpMethod::Get, "https://a.test/");
@@ -844,6 +810,8 @@ mod tests {
                         preview: None,
                         can_pick_files: false,
                         breakpoints: &Breakpoints::default(),
+                        last_run: None,
+                        rerun: Rerun::Unavailable,
                     },
                 );
             });
@@ -851,9 +819,11 @@ mod tests {
             let fields: Vec<_> = h
                 .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
                 .collect();
-            assert_eq!(fields.len(), 2, "pre-request and tests");
-            fields[1].focus();
-            fields[1].type_text("test('ok', () => {})");
+            assert_eq!(fields.len(), 1, "one script at a time: the tests first");
+            fields[0].focus();
+            fields[0].type_text("test('ok', () => {})");
+            h.run();
+            h.get_by_label("Captures").click();
             h.run();
             let capture_name = h
                 .get_all_by_role(egui::accesskit::Role::TextInput)
@@ -896,13 +866,13 @@ mod tests {
                         preview: None,
                         can_pick_files: false,
                         breakpoints: &Breakpoints::default(),
+                        last_run: None,
+                        rerun: Rerun::Unavailable,
                     },
                 );
             });
             h.run();
-            let buttons: Vec<_> = h.get_all_by_label("Beautify").collect();
-            assert_eq!(buttons.len(), 2, "pre-request and tests");
-            buttons[1].click();
+            h.get_by_label("Beautify").click();
             h.run();
         }
         assert_eq!(

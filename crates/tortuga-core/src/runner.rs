@@ -103,7 +103,6 @@ pub async fn run_step(
     extra: Extra<'_>,
 ) -> StepOutcome {
     let mut out = StepOutcome::default();
-    let no_breakpoints = std::collections::BTreeSet::new();
     let default_breakpoints = Breakpoints::default();
     let breakpoints = extra.breakpoints.unwrap_or(&default_breakpoints);
     // The app's settings are the last level under the workspace's and project's (R-SET-1).
@@ -154,6 +153,26 @@ pub async fn run_step(
         }
     };
 
+    let sent = out.sent.clone().unwrap_or_default();
+    after_response(&request, &sent, &response, &mut ctx, &extra, &mut out);
+    out.response = Some(Ok(response));
+    out
+}
+
+/// What runs once a response is there: captures, then the test scripts (R-TEST-1,
+/// R-TEST-4). Also used to run the tests again on the last response without sending
+/// (R-TEST-12). `sent` is the request as it was sent, shown to scripts as `req`.
+pub fn after_response(
+    request: &Request,
+    sent: &Request,
+    response: &Response,
+    ctx: &mut vars::Context,
+    extra: &Extra<'_>,
+    out: &mut StepOutcome,
+) {
+    let no_breakpoints = std::collections::BTreeSet::new();
+    let default_breakpoints = Breakpoints::default();
+    let breakpoints = extra.breakpoints.unwrap_or(&default_breakpoints);
     // Captures: the request's, then the step's (which may override them).
     let sources = request
         .capture
@@ -161,14 +180,13 @@ pub async fn run_step(
         .chain(extra.capture.into_iter().flatten());
     let mut captured = BTreeMap::new();
     for (name, from) in sources {
-        match capture(from, &response) {
+        match capture(from, response) {
             Ok(value) => drop(captured.insert(name.clone(), Some(value))),
             Err(e) => out.errors.push(format!("Capture “{name}” ({from}): {e}")),
         }
     }
-    apply_vars(&mut ctx, &mut out, &captured);
+    apply_vars(ctx, out, &captured);
 
-    let sent = out.sent.clone().unwrap_or_default();
     let scripts = [Some(request.scripts.tests.as_str()), extra.tests];
     for (n, tests) in scripts.into_iter().flatten().enumerate() {
         if tests.trim().is_empty() {
@@ -183,11 +201,11 @@ pub async fn run_step(
             tests,
             Phase::Test,
             &ctx.variables,
-            &sent,
-            Some(&response),
+            sent,
+            Some(response),
             lines,
         );
-        apply_vars(&mut ctx, &mut out, &run.vars);
+        apply_vars(ctx, out, &run.vars);
         out.tests.extend(run.tests);
         out.console
             .extend(run.console.into_iter().map(|e| (kind, e)));
@@ -200,8 +218,6 @@ pub async fn run_step(
             out.errors.push(format!("{which}: {e}"));
         }
     }
-    out.response = Some(Ok(response));
-    out
 }
 
 fn apply_vars(

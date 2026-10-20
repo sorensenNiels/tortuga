@@ -12,6 +12,7 @@ mod key_value_table;
 mod modals;
 mod palette;
 mod request_editor;
+mod request_scripts;
 mod response_panel;
 mod script_editor;
 mod sidebar;
@@ -34,7 +35,7 @@ pub use modals::{
 };
 use modals::{dialog, resizable_dialog};
 pub use palette::{Palette, PaletteItem};
-pub use request_editor::{EditorAction, EditorContext, EditorState, request_editor};
+pub use request_editor::{EditorAction, EditorContext, EditorState, Rerun, request_editor};
 pub use response_panel::{
     Filtered, Outcome, PanelContext, ResponseAction, ResponseState, ResponseView, TestsView,
     TextBody, filter_body, response_panel, tests_details,

@@ -33,9 +33,9 @@ use tortuga_core::{Request, vars};
 use crate::components::{
     AddProjectsDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
     CreateProjectDialog, DefaultsDialog, EditorContext, EditorState, EnvironmentsDialog, Filtered,
-    Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext, ResponseAction, ResponseState,
-    ResponseView, SaveToCollectionDialog, SettingsDialog, SidebarState, TabStripState, TestsView,
-    TextBody, request_editor, response_panel, sidebar,
+    Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext, Rerun, ResponseAction,
+    ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog, SidebarState,
+    TabStripState, TestsView, TextBody, request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
 use crate::host::{Host, SavedDrafts};
@@ -560,10 +560,15 @@ impl TortugaUi {
             .shows_preview()
             .then(|| vars::preview(&self.current, &ctx).map_err(|e| sentence(&e.to_string())));
         let no_breakpoints = Breakpoints::default();
-        let breakpoints = self
-            .sent
-            .get(&key)
-            .map_or(&no_breakpoints, |s| &s.breakpoints);
+        let last = self.sent.get(&key);
+        let breakpoints = last.map_or(&no_breakpoints, |s| &s.breakpoints);
+        let last_run = last.and_then(|s| s.tests.as_ref());
+        let rerun =
+            if !sending && last.is_some_and(|s| matches!(s.outcome, Some(Outcome::Response(_)))) {
+                Rerun::Ready
+            } else {
+                Rerun::Unavailable
+            };
         let action = Panel::top("request")
             .frame(Frame::new().inner_margin(Margin {
                 bottom: 12,
@@ -595,6 +600,8 @@ impl TortugaUi {
                         preview: preview.as_ref(),
                         can_pick_files: self.state.host.can_pick_folders(),
                         breakpoints,
+                        last_run,
+                        rerun,
                     },
                 )
             })
@@ -1326,6 +1333,85 @@ mod tests {
         ui.select(Some(first));
         ui.on_disk_change(&root);
         assert!(!ui.sent.contains_key(&Some(renamed)), "nothing left of it");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-TEST-12: "Re-run tests" runs the edited tests and captures on the last response,
+    /// without sending; the pre-request script's console stays, variables apply.
+    #[test]
+    fn tests_run_again_on_the_last_response() {
+        use tortuga_core::script::{ConsoleEntry, LogLevel, ScriptKind};
+
+        use crate::components::EditorAction;
+
+        let (mut ui, root, key) = setup("rerun");
+        let selection = Some(key.clone());
+        ui.select(selection.clone());
+        ui.current.scripts.tests = "test(\"ok\", () => expect(res.status).toBe(500));".into();
+        ui.current.capture.insert("user".into(), "$.name".into());
+        let response = tortuga_core::Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: vec![tortuga_core::KeyValue::new(
+                "content-type",
+                "application/json",
+            )],
+            body: r#"{"name": "ü😀"}"#.as_bytes().to_vec(),
+            elapsed: std::time::Duration::from_millis(3),
+        };
+        let pre_log = (
+            ScriptKind::PreRequest,
+            ConsoleEntry::Log {
+                level: LogLevel::Log,
+                args: vec![serde_json::json!("before")],
+                line: Some(1),
+            },
+        );
+        ui.sent.insert(
+            selection.clone(),
+            Sent {
+                outcome: Some(Outcome::Response(Arc::new(ResponseView::new(response)))),
+                tests: Some(TestsView {
+                    console: vec![pre_log.clone()],
+                    ..TestsView::default()
+                }),
+                ..Sent::default()
+            },
+        );
+
+        ui.apply_editor_action(
+            &egui::Context::default(),
+            EditorAction::RerunTests,
+            &selection,
+        );
+        let tests = ui.sent[&selection].tests.clone().expect("results");
+        assert_eq!(tests.tests.len(), 1);
+        assert!(!tests.tests[0].passed, "expects 500, got 200");
+        assert_eq!(
+            tests.console.first(),
+            Some(&pre_log),
+            "the pre-request console stays"
+        );
+        assert_eq!(tests.ran.tests, ui.current.scripts.tests);
+        assert_eq!(
+            ui.state
+                .runtime_vars(Some(&root))
+                .and_then(|v| v.get("user"))
+                .map(String::as_str),
+            Some("ü😀"),
+            "the capture applied"
+        );
+
+        // Fixed and run again: no request was sent for any of it.
+        ui.current.scripts.tests = "test(\"ok\", () => expect(res.status).toBe(200));".into();
+        ui.apply_editor_action(
+            &egui::Context::default(),
+            EditorAction::RerunTests,
+            &selection,
+        );
+        let tests = ui.sent[&selection].tests.clone().expect("results");
+        assert!(tests.tests[0].passed);
+        assert!(ui.in_flight.is_none());
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
