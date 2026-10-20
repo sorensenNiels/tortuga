@@ -24,6 +24,8 @@ cookie_store.workspace = true
 boa_engine.workspace = true
 # OpenAPI import (R-COL-15).
 yaml-rust2.workspace = true
+# XML bodies and XPath (R-HTTP-19).
+quick-xml.workspace = true
 
 # `time` needs the browser clock on wasm32.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -540,7 +540,8 @@ fn request_scripts(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
     }
     theme::hint(
         ui,
-        "Puts a value from the response into a variable: $.json.path, header:Name or status. \
+        "Puts a value from the response into a variable: $.json.path, xpath://xml/path, \
+         header:Name or status. \
          Captured values are kept until Tortuga closes and win over environment values.",
     );
 }
@@ -599,7 +600,7 @@ fn request_preview(ui: &mut Ui, preview: Option<&Result<Request, String>>) {
     }
     let body = match &request.body {
         RequestBody::None => None,
-        RequestBody::Text(t) | RequestBody::Json(t) => Some(t.clone()),
+        RequestBody::Text(t) | RequestBody::Json(t) | RequestBody::Xml(t) => Some(t.clone()),
         RequestBody::Form(fields) => Some(tortuga_core::query::encode_form(fields)),
         RequestBody::Multipart(parts) => Some(
             parts

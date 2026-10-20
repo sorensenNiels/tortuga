@@ -115,6 +115,16 @@ pub fn is_json_content_type(content_type: &str) -> bool {
     })
 }
 
+/// Whether a `Content-Type` value says XML: `application/xml`, `text/xml` or a `+xml`
+/// type such as `application/soap+xml` (R-HTTP-19). Case and parameters are ignored.
+pub fn is_xml_content_type(content_type: &str) -> bool {
+    let essence = content_type.split(';').next().unwrap_or_default().trim();
+    essence.rsplit_once('/').is_some_and(|(_, subtype)| {
+        let subtype = subtype.to_ascii_lowercase();
+        subtype == "xml" || subtype.ends_with("+xml")
+    })
+}
+
 /// Request body (R-HTTP-4).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "content", rename_all = "snake_case")]
@@ -123,6 +133,8 @@ pub enum RequestBody {
     None,
     Text(String),
     Json(String),
+    /// XML text (R-HTTP-19).
+    Xml(String),
     Form(Vec<KeyValue>),
     /// `multipart/form-data` (R-HTTP-15).
     Multipart(Vec<FormPart>),
@@ -136,6 +148,7 @@ impl RequestBody {
             Self::None => None,
             Self::Text(_) => Some("text/plain; charset=utf-8"),
             Self::Json(_) => Some("application/json"),
+            Self::Xml(_) => Some("application/xml"),
             Self::Form(_) => Some("application/x-www-form-urlencoded"),
             Self::Multipart(_) => Some("multipart/form-data"),
         }
@@ -399,6 +412,8 @@ pub enum BodyView {
     Empty,
     /// Pretty-printed JSON.
     Json(String),
+    /// Pretty-printed XML (R-HTTP-19).
+    Xml(String),
     Text(String),
     /// Not valid UTF-8; offer saving to a file instead of rendering.
     Binary,
@@ -421,8 +436,9 @@ impl Response {
     }
 
     /// Decides how to show the body: JSON is pretty-printed when the
-    /// content type says JSON (or the text parses as JSON), other UTF-8 is
-    /// text, anything else is binary.
+    /// content type says JSON (or the text parses as JSON), XML when the content type
+    /// says XML (or there is none and the text parses as XML, R-HTTP-19), other UTF-8
+    /// is text, anything else is binary.
     pub fn body_view(&self) -> BodyView {
         if self.body.is_empty() {
             return BodyView::Empty;
@@ -438,7 +454,20 @@ impl Response {
         {
             return BodyView::Json(pretty);
         }
+        if self.looks_xml(text)
+            && let Some(pretty) = crate::xml::pretty(text)
+        {
+            return BodyView::Xml(pretty);
+        }
         BodyView::Text(text.to_owned())
+    }
+
+    /// The content type says XML, or there is none and `text` starts like markup.
+    pub fn looks_xml(&self, text: &str) -> bool {
+        match self.content_type() {
+            Some(content_type) => is_xml_content_type(content_type),
+            None => text.trim_start().starts_with('<'),
+        }
     }
 
     /// File name suggestion when saving the body, based on the content type.
@@ -450,7 +479,8 @@ impl Response {
             Some("application/json") => "json",
             Some("text/html") => "html",
             Some("text/plain") => "txt",
-            Some("application/xml" | "text/xml") => "xml",
+            Some("image/svg+xml") => "svg",
+            Some(ct) if is_xml_content_type(ct) => "xml",
             Some("application/pdf") => "pdf",
             Some("image/png") => "png",
             Some("image/jpeg") => "jpg",
@@ -634,6 +664,50 @@ mod tests {
     fn invalid_json_falls_back_to_text() {
         let res = response(Some("application/json"), b"{not json");
         assert_eq!(res.body_view(), BodyView::Text("{not json".into()));
+    }
+
+    /// R-HTTP-19.
+    #[test]
+    fn xml_content_types() {
+        for xml in [
+            "application/xml",
+            "Text/XML; charset=utf-8",
+            "application/soap+xml",
+            "application/atom+xml ; type=feed",
+        ] {
+            assert!(is_xml_content_type(xml), "{xml}");
+        }
+        for other in [
+            "text/html",
+            "application/xml-dtd",
+            "xml",
+            "application/json",
+            "",
+        ] {
+            assert!(!is_xml_content_type(other), "{other}");
+        }
+    }
+
+    /// R-HTTP-19.
+    #[test]
+    fn xml_body_is_pretty_printed() {
+        let res = response(Some("text/xml"), "<a><b>ü😀</b></a>".as_bytes());
+        assert_eq!(
+            res.body_view(),
+            BodyView::Xml("<a>\n  <b>ü😀</b>\n</a>".into())
+        );
+        assert_eq!(res.suggested_file_name(), "response.xml");
+        let detected = response(None, b"<?xml version=\"1.0\"?><a/>");
+        assert!(matches!(detected.body_view(), BodyView::Xml(_)));
+    }
+
+    /// R-HTTP-19: HTML is not reformatted, and broken XML is shown as it came.
+    #[test]
+    fn html_and_invalid_xml_stay_text() {
+        let html = response(Some("text/html"), b"<p>hi</p>");
+        assert_eq!(html.body_view(), BodyView::Text("<p>hi</p>".into()));
+        let broken = response(Some("application/xml"), b"<a><b></a>");
+        assert_eq!(broken.body_view(), BodyView::Text("<a><b></a>".into()));
     }
 
     #[test]

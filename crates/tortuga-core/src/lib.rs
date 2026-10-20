@@ -30,6 +30,8 @@ pub mod storage;
 pub mod vars;
 pub mod workflow;
 pub mod workspace;
+pub mod xml;
+pub mod xpath;
 
 pub use collection::{Collection, Direction, Item, NewItem};
 pub use cookies::{CookieInfo, CookieJar};

@@ -196,8 +196,9 @@ fn apply_vars(
     }
 }
 
-/// A value from a response (R-TEST-4): `status`, `header:<name>`, or a `JSONPath`
-/// expression on the JSON body (the first match; text as is, anything else as JSON).
+/// A value from a response (R-TEST-4): `status`, `header:<name>`, `xpath:<expression>`
+/// on an XML body (the first match's text, R-HTTP-19), or a `JSONPath` expression on the
+/// JSON body (the first match; text as is, anything else as JSON).
 pub fn capture(from: &str, response: &Response) -> Result<String, String> {
     let from = from.trim();
     if from == "status" {
@@ -208,6 +209,11 @@ pub fn capture(from: &str, response: &Response) -> Result<String, String> {
             .header(name.trim())
             .map(str::to_owned)
             .ok_or_else(|| format!("no header “{}” in the response", name.trim()));
+    }
+    if let Some(expr) = from.strip_prefix("xpath:") {
+        let body = std::str::from_utf8(&response.body)
+            .map_err(|_| "the response body is not XML".to_owned())?;
+        return crate::xpath::first_text(expr, body);
     }
     let path = JsonPath::parse(from).map_err(|e| crate::error::sentence(&e))?;
     let body: serde_json::Value = serde_json::from_slice(&response.body)

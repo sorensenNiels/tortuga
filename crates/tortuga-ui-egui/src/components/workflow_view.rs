@@ -457,7 +457,8 @@ fn step_details(
                 }
                 theme::hint(
                     ui,
-                    "$.json.path, header:Name or status; available as {{variable}} in later steps.",
+                    "$.json.path, xpath://xml/path, header:Name or status; available as {{variable}} in later \
+                     steps.",
                 );
                 ui.add_space(4.0);
                 theme::section_label(ui, "Tests");

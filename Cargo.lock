@@ -6063,6 +6063,7 @@ dependencies = [
  "boa_engine",
  "cookie_store",
  "percent-encoding",
+ "quick-xml",
  "reqwest",
  "rustls-pki-types",
  "serde",

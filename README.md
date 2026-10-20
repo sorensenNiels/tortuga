@@ -197,7 +197,8 @@ field: method, URL, headers, body and auth are filled in. In a saved request thi
 undoes it.
 
 **Responses.** **Ctrl+F** searches the body. Above a JSON body, **Filter** takes a JSONPath expression such as
-`$.items[*].id` or `$..users[?(@.active == true)].email`. The **Preview** tab of the request shows exactly what will be
+`$.items[*].id` or `$..users[?(@.active == true)].email`; above an XML body, an XPath expression such as
+`//order[@status='paid']/@id` (a name without a prefix matches any prefix, so `//Body` finds `soap:Body`). The **Preview** tab of the request shows exactly what will be
 sent, with secret values masked.
 
 **History.** The **History** tab in the sidebar lists what you sent, per day. Click an entry to see that response;
@@ -248,7 +249,7 @@ Scripts have `res` (`status`, `headers`, `json()`, `header(name)`, `time`, …),
 `toHaveProperty`, `toBeLessThan`, … and `.not`). Scripts can't read files or use the network.
 
 **Captures** (under the scripts) put a value from the response into a variable: `$.access_token` (JSONPath),
-`header:Location` or `status`. Captured and script-set values are *runtime variables*: they are used by every request
+`xpath://token` (XPath, on an XML body), `header:Location` or `status`. Captured and script-set values are *runtime variables*: they are used by every request
 of the project until you close Tortuga, are never saved, and are listed (and cleared) under **Runtime variables…** in
 the project's **…** menu.
 

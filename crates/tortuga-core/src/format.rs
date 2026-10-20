@@ -193,6 +193,8 @@ struct BodyFile {
 enum BodyKind {
     Text,
     Json,
+    /// R-HTTP-19.
+    Xml,
     Form,
     Multipart,
 }
@@ -228,6 +230,11 @@ pub fn parse_request(text: &str, stem: &str) -> Result<(Request, Option<i64>), S
             ..
         }) => RequestBody::Json(content.unwrap_or_default()),
         Some(BodyFile {
+            kind: BodyKind::Xml,
+            content,
+            ..
+        }) => RequestBody::Xml(content.unwrap_or_default()),
+        Some(BodyFile {
             kind: BodyKind::Form,
             fields,
             ..
@@ -252,6 +259,12 @@ pub fn write_request(request: &Request, seq: Option<i64>) -> String {
         }),
         RequestBody::Json(t) => Some(BodyFile {
             kind: BodyKind::Json,
+            content: Some(t.clone()),
+            fields: vec![],
+            parts: vec![],
+        }),
+        RequestBody::Xml(t) => Some(BodyFile {
+            kind: BodyKind::Xml,
             content: Some(t.clone()),
             fields: vec![],
             parts: vec![],
@@ -549,6 +562,17 @@ content_type = "image/png"
         let mut r = Request::new(HttpMethod::Post, "http://a.test");
         r.body = RequestBody::Form(vec![KeyValue::new("a", "1")]);
         let (back, _) = parse_request(&write_request(&r, None), "x").expect("parse");
+        assert_eq!(back.body, r.body);
+    }
+
+    /// R-HTTP-19.
+    #[test]
+    fn xml_body_is_written_as_kind_xml_and_round_trips() {
+        let mut r = Request::new(HttpMethod::Post, "http://a.test");
+        r.body = RequestBody::Xml("<order>\n  <item>ü😀 {{sku}}</item>\n</order>\n".into());
+        let text = write_request(&r, None);
+        assert!(text.contains("[body]\nkind = \"xml\"\n"), "{text}");
+        let (back, _) = parse_request(&text, "x").expect("parse");
         assert_eq!(back.body, r.body);
     }
 

@@ -355,7 +355,7 @@ pub fn prepare(request: &Request, ctx: &Context) -> Result<Request> {
     substitute_all(&mut out.headers, ctx, &mut undefined);
     match &mut out.body {
         RequestBody::None => {}
-        RequestBody::Text(t) | RequestBody::Json(t) => {
+        RequestBody::Text(t) | RequestBody::Json(t) | RequestBody::Xml(t) => {
             *t = substitute(t, &ctx.variables, &mut undefined);
         }
         RequestBody::Form(fields) => substitute_all(fields, ctx, &mut undefined),
@@ -404,7 +404,7 @@ pub fn undefined_in(request: &Request, ctx: &Context) -> Vec<String> {
     }
     match &request.body {
         RequestBody::None => {}
-        RequestBody::Text(t) | RequestBody::Json(t) => texts.push(t),
+        RequestBody::Text(t) | RequestBody::Json(t) | RequestBody::Xml(t) => texts.push(t),
         RequestBody::Form(fields) => {
             for kv in fields.iter().filter(|kv| kv.enabled) {
                 texts.extend([kv.name.as_str(), kv.value.as_str()]);

@@ -91,7 +91,7 @@ async fn sends_enabled_headers_including_duplicates() {
     assert_eq!(header_values(&got, "x-off"), Vec::<String>::new());
 }
 
-/// R-HTTP-4: each body type gets the right automatic Content-Type.
+/// R-HTTP-4, R-HTTP-19: each body type gets the right automatic Content-Type.
 #[tokio::test]
 async fn body_types_set_content_type_automatically() {
     let cases = [
@@ -104,6 +104,12 @@ async fn body_types_set_content_type_automatically() {
             RequestBody::Json(r#"{"a":1}"#.into()),
             "application/json",
             r#"{"a":1}"#,
+        ),
+        // R-HTTP-19.
+        (
+            RequestBody::Xml("<a>ü</a>".into()),
+            "application/xml",
+            "<a>ü</a>",
         ),
         (
             RequestBody::Form(vec![

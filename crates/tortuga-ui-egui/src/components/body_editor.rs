@@ -1,5 +1,5 @@
 use egui::{ComboBox, Grid, TextEdit, Ui};
-use tortuga_core::{FormPart, KeyValue, Request, RequestBody, json};
+use tortuga_core::{FormPart, KeyValue, Request, RequestBody, json, xml};
 
 use super::key_value_table;
 use crate::theme;
@@ -9,15 +9,17 @@ enum Kind {
     None,
     Text,
     Json,
+    Xml,
     Form,
     Multipart,
 }
 
 impl Kind {
-    const ALL: [(Self, &'static str); 5] = [
+    const ALL: [(Self, &'static str); 6] = [
         (Self::None, "None"),
         (Self::Text, "Text"),
         (Self::Json, "JSON"),
+        (Self::Xml, "XML"),
         (Self::Form, "Form URL-encoded"),
         (Self::Multipart, "Multipart"),
     ];
@@ -27,9 +29,32 @@ impl Kind {
             RequestBody::None => Self::None,
             RequestBody::Text(_) => Self::Text,
             RequestBody::Json(_) => Self::Json,
+            RequestBody::Xml(_) => Self::Xml,
             RequestBody::Form(_) => Self::Form,
             RequestBody::Multipart(_) => Self::Multipart,
         }
+    }
+
+    /// What is wrong with `text`, for the kinds that are checked while typing.
+    fn check(self, text: &str) -> Option<String> {
+        match self {
+            Self::Json => json::check(text),
+            Self::Xml => xml::check(text),
+            Self::None | Self::Text | Self::Form | Self::Multipart => None,
+        }
+    }
+
+    /// `text` pretty-printed, for the kinds that have a "Format" button.
+    fn pretty(self, text: &str) -> Option<String> {
+        match self {
+            Self::Json => json::pretty(text),
+            Self::Xml => xml::pretty(text),
+            Self::None | Self::Text | Self::Form | Self::Multipart => None,
+        }
+    }
+
+    fn formats(self) -> bool {
+        matches!(self, Self::Json | Self::Xml)
     }
 }
 
@@ -44,7 +69,7 @@ pub struct BodyDrafts {
 impl BodyDrafts {
     pub fn new(body: &RequestBody) -> Self {
         match body {
-            RequestBody::Text(t) | RequestBody::Json(t) => Self {
+            RequestBody::Text(t) | RequestBody::Json(t) | RequestBody::Xml(t) => Self {
                 text: t.clone(),
                 ..Self::default()
             },
@@ -65,6 +90,7 @@ impl BodyDrafts {
             Kind::None => RequestBody::None,
             Kind::Text => RequestBody::Text(self.text.clone()),
             Kind::Json => RequestBody::Json(self.text.clone()),
+            Kind::Xml => RequestBody::Xml(self.text.clone()),
             Kind::Form => RequestBody::Form(self.form.clone()),
             Kind::Multipart => RequestBody::Multipart(self.parts.clone()),
         }
@@ -80,7 +106,7 @@ impl BodyDrafts {
     }
 }
 
-/// Body type picker and editor (R-HTTP-4, R-HTTP-15). Returns the multipart part whose
+/// Body type picker and editor (R-HTTP-4, R-HTTP-15, R-HTTP-19). Returns the multipart part whose
 /// "Choose…" was clicked.
 pub fn body_editor(
     ui: &mut Ui,
@@ -90,11 +116,7 @@ pub fn body_editor(
     can_pick_files: bool,
 ) -> Option<usize> {
     let kind = Kind::of(&request.body);
-    let json_error = if kind == Kind::Json {
-        json::check(&drafts.text)
-    } else {
-        None
-    };
+    let error = kind.check(&drafts.text);
 
     ui.horizontal_wrapped(|ui| {
         let mut chosen = kind;
@@ -104,30 +126,30 @@ pub fn body_editor(
         if chosen != kind {
             request.body = drafts.body(chosen);
         }
-        if kind == Kind::Json
+        if kind.formats()
             && ui
-                .add_enabled(json_error.is_none(), egui::Button::new("Format").small())
+                .add_enabled(error.is_none(), egui::Button::new("Format").small())
                 .clicked()
-            && let Some(pretty) = json::pretty(&drafts.text)
+            && let Some(pretty) = kind.pretty(&drafts.text)
         {
             drafts.text = pretty;
-            request.body = drafts.body(Kind::Json);
+            request.body = drafts.body(kind);
         }
     });
 
     match kind {
         Kind::None => theme::hint(ui, "This request has no body."),
-        Kind::Text | Kind::Json => {
+        Kind::Text | Kind::Json | Kind::Xml => {
             let flagged = theme::uses_undefined(&drafts.text, undefined);
             let mut edit = TextEdit::multiline(&mut drafts.text)
                 .id_salt("body-text")
                 .code_editor()
                 .desired_width(f32::INFINITY)
                 .desired_rows(10)
-                .hint_text(if kind == Kind::Json {
-                    "{\n  \"key\": \"value\"\n}"
-                } else {
-                    "Request body"
+                .hint_text(match kind {
+                    Kind::Json => "{\n  \"key\": \"value\"\n}",
+                    Kind::Xml => "<order>\n  <id>{{id}}</id>\n</order>",
+                    Kind::None | Kind::Text | Kind::Form | Kind::Multipart => "Request body",
                 });
             if flagged {
                 edit = edit.background_color(theme::undefined_bg(ui));
@@ -135,7 +157,7 @@ pub fn body_editor(
             if ui.add(edit).changed() {
                 request.body = drafts.body(kind);
             }
-            if let Some(err) = json_error {
+            if let Some(err) = error {
                 theme::error(ui, err);
             }
         }
@@ -328,6 +350,44 @@ mod tests {
             RequestBody::Form(vec![KeyValue::new("a", "1")])
         );
         assert_eq!(drafts.body(Kind::Json), RequestBody::Json("{}".into()));
+        assert_eq!(drafts.body(Kind::Xml), RequestBody::Xml("{}".into()));
+    }
+
+    /// R-HTTP-19: XML is checked while typing and "Format" indents it.
+    #[test]
+    fn xml_bodies_are_checked_and_formatted() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut request = Request {
+            body: RequestBody::Xml("<a><b>ü</b>".into()),
+            ..Request::default()
+        };
+        let mut drafts = BodyDrafts::new(&request.body);
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                body_editor(ui, &mut request, &mut drafts, &[], false);
+            });
+            h.run();
+            assert!(
+                h.query_by_label_contains("Invalid XML").is_some(),
+                "the error is shown"
+            );
+        }
+        drafts.text.push_str("</a>");
+        request.body = drafts.body(Kind::Xml);
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                body_editor(ui, &mut request, &mut drafts, &[], false);
+            });
+            h.run();
+            assert!(h.query_by_label_contains("Invalid XML").is_none());
+            h.get_by_label("Format").click();
+            h.run();
+        }
+        assert_eq!(
+            request.body,
+            RequestBody::Xml("<a>\n  <b>ü</b>\n</a>".into())
+        );
     }
 
     /// R-HTTP-15: typing in the blank row adds a part; "Choose…" is reported for files.

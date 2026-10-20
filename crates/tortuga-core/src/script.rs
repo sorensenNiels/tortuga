@@ -182,7 +182,7 @@ fn describe(error: &str) -> String {
 fn request_view(request: &Request) -> RequestView {
     let body = match &request.body {
         RequestBody::None => None,
-        RequestBody::Text(t) | RequestBody::Json(t) => Some(t.clone()),
+        RequestBody::Text(t) | RequestBody::Json(t) | RequestBody::Xml(t) => Some(t.clone()),
         RequestBody::Form(fields) => Some(crate::query::encode_form(fields)),
         RequestBody::Multipart(_) => Some(String::new()),
     };

@@ -185,3 +185,39 @@ fn captures_from_json_headers_and_status() {
     assert!(capture("header:X-None", &res).is_err());
     assert!(capture("$[", &res).is_err());
 }
+
+/// R-HTTP-19: `xpath:` takes the first match's text from an XML body.
+#[test]
+fn captures_from_xml_with_xpath() {
+    let res = Response {
+        status: 200,
+        status_text: "OK".into(),
+        headers: vec![KeyValue::new("Content-Type", "application/soap+xml")],
+        body: r#"<s:Envelope xmlns:s="urn:s"><s:Body><user id="7"><name>Jürgen 😀</name></user><user id="8"/></s:Body></s:Envelope>"#
+            .as_bytes()
+            .to_vec(),
+        elapsed: std::time::Duration::ZERO,
+    };
+    assert_eq!(capture("xpath://user/@id", &res).as_deref(), Ok("7"));
+    assert_eq!(
+        capture("xpath: //Body/user/name", &res).as_deref(),
+        Ok("Jürgen 😀")
+    );
+    assert_eq!(
+        capture("xpath://user[@id='8']/@id", &res).as_deref(),
+        Ok("8")
+    );
+    assert_eq!(
+        capture("xpath://none", &res),
+        Err("nothing in the response matches".to_owned())
+    );
+    assert!(capture("xpath://user[", &res).is_err());
+    let json = Response {
+        body: b"{\"a\": 1}".to_vec(),
+        ..res
+    };
+    assert_eq!(
+        capture("xpath://a", &json),
+        Err("the response body is not XML".to_owned())
+    );
+}

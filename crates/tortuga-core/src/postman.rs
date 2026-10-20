@@ -376,7 +376,7 @@ impl<'a> Importer<'a> {
 
     // ------------------------------------------------------------------- body
 
-    /// The body, and a `Content-Type` for raw XML, HTML and JavaScript.
+    /// The body, and a `Content-Type` for raw HTML and JavaScript.
     fn body(&mut self, body: Option<&Value>, request: &str) -> (RequestBody, Option<KeyValue>) {
         let Some(body) = body.filter(|b| b.is_object() && !is_disabled(b)) else {
             return (RequestBody::None, None);
@@ -395,7 +395,7 @@ impl<'a> Importer<'a> {
                     .and_then(Value::as_str)
                 {
                     Some("json") => return (RequestBody::Json(raw), None),
-                    Some("xml") => Some("application/xml"),
+                    Some("xml") => return (RequestBody::Xml(raw), None),
                     Some("html") => Some("text/html"),
                     Some("javascript") => Some("application/javascript"),
                     _ => None,
@@ -980,11 +980,9 @@ mod tests {
         assert_eq!(graphql["query"], "{ users { id } }");
         assert_eq!(graphql["variables"]["n"], 1);
         let feed = find(&import, "Feed");
-        assert_eq!(feed.body, RequestBody::Text("<a/>".into()));
-        assert_eq!(
-            feed.headers,
-            [KeyValue::new("Content-Type", "application/xml")]
-        );
+        // R-HTTP-19: an XML body, which sends application/xml by itself.
+        assert_eq!(feed.body, RequestBody::Xml("<a/>".into()));
+        assert_eq!(feed.headers, []);
 
         let tests = &find(&import, "List users").scripts.tests;
         assert_eq!(

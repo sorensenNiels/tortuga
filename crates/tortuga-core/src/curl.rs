@@ -105,7 +105,7 @@ pub fn write(request: &Request, settings: &ClientSettings) -> String {
     }
     match &request.body {
         RequestBody::None => {}
-        RequestBody::Text(text) | RequestBody::Json(text) => {
+        RequestBody::Text(text) | RequestBody::Json(text) | RequestBody::Xml(text) => {
             parts.push(format!("--data-raw {}", quote(text)));
         }
         RequestBody::Form(fields) => {

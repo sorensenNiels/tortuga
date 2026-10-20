@@ -288,7 +288,9 @@ impl Client {
 
         builder = match &request.body {
             RequestBody::None => builder,
-            RequestBody::Text(text) | RequestBody::Json(text) => builder.body(text.clone()),
+            RequestBody::Text(text) | RequestBody::Json(text) | RequestBody::Xml(text) => {
+                builder.body(text.clone())
+            }
             RequestBody::Form(fields) => builder.body(query::encode_form(fields)),
             RequestBody::Multipart(parts) => builder.multipart(self.multipart_form(parts)?),
         };

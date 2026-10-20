@@ -7,6 +7,7 @@
 
 use crate::model::{
     Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, is_json_content_type,
+    is_xml_content_type,
 };
 use crate::{query, vars};
 
@@ -412,7 +413,7 @@ impl Builder {
         })
     }
 
-    /// JSON, form or text, from the Content-Type or the data itself. A Content-Type that
+    /// JSON, XML, form or text, from the Content-Type or the data itself. A Content-Type that
     /// Tortuga would set anyway is left out (R-HTTP-4).
     fn body(&mut self, data: String) -> RequestBody {
         let content_type = self
@@ -423,6 +424,7 @@ impl Builder {
         let body = match content_type.as_deref() {
             _ if self.json => RequestBody::Json(data),
             Some(ct) if is_json_content_type(ct) => RequestBody::Json(data),
+            Some(ct) if is_xml_content_type(ct) => RequestBody::Xml(data),
             Some(ct) if ct.starts_with("application/x-www-form-urlencoded") => form(&data),
             Some(_) => RequestBody::Text(data),
             None if looks_json => RequestBody::Json(data),

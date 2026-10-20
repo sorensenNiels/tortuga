@@ -26,6 +26,7 @@ use crate::format::{self, Manifest};
 use crate::import::{Collected, Import, ImportKind, short_name, variable_name, variables_in};
 use crate::model::{
     Auth, HttpMethod, KeyValue, Request, RequestBody, Scripts, is_json_content_type,
+    is_xml_content_type,
 };
 use crate::{Error, Result, curl};
 
@@ -416,6 +417,9 @@ impl Importer {
             || (content_type.is_empty() && text.trim_start().starts_with(['{', '[']))
         {
             return RequestBody::Json(text.to_owned());
+        }
+        if is_xml_content_type(&content_type) {
+            return RequestBody::Xml(text.to_owned());
         }
         if content_type.starts_with("application/x-www-form-urlencoded") {
             let joined: String = text.lines().map(str::trim).collect();
