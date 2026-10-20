@@ -16,6 +16,9 @@ use tortuga_core::{EnvironmentColor, HttpMethod};
 /// Named font family for headings and emphasis (Inter `SemiBold`).
 pub const SEMIBOLD: &str = "semibold";
 
+/// Width of a scroll bar while the pointer is on it (floating bars are thinner otherwise).
+const SCROLL_BAR_WIDTH: f32 = 6.0;
+
 /// Corner radius of inputs and buttons.
 const RADIUS: u8 = 6;
 
@@ -113,7 +116,11 @@ pub fn install(ctx: &Context) {
         s.menu_margin = Margin::same(6);
         s.window_margin = Margin::same(20);
         s.combo_height = 320.0;
-        s.scroll = egui::style::ScrollStyle::floating();
+        s.scroll = egui::style::ScrollStyle {
+            // Thin until hovered, then 6 px rather than egui's 10.
+            bar_width: SCROLL_BAR_WIDTH,
+            ..egui::style::ScrollStyle::floating()
+        };
         style.interaction.tooltip_delay = 0.3;
     });
     ctx.style_mut_of(Theme::Dark, |s| s.visuals = visuals(&DARK, true));
@@ -569,6 +576,18 @@ pub fn ghost_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;
+
+    /// Scroll bars float over the content and stay narrow when hovered.
+    #[test]
+    fn scroll_bars_are_thin_and_float() {
+        let ctx = egui::Context::default();
+        super::install(&ctx);
+        for theme in [egui::Theme::Light, egui::Theme::Dark] {
+            let scroll = &ctx.style_of(theme).spacing.scroll;
+            assert!(scroll.floating, "{theme:?}");
+            assert!((scroll.bar_width - 6.0).abs() < f32::EPSILON, "{theme:?}");
+        }
+    }
 
     #[test]
     fn project_colours_are_stable_and_spread() {
