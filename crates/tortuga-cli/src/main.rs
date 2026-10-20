@@ -382,7 +382,7 @@ fn print_progress(p: Progress<'_>, options: &RunOptions, multi: bool) {
             for e in o.errors.iter().chain(response_error) {
                 println!("         {e}");
             }
-            for line in &o.logs {
+            for line in o.console.iter().filter_map(|(_, e)| e.log_text()) {
                 println!("         log: {line}");
             }
         }

@@ -65,28 +65,14 @@ pub fn request_auth(
     undefined: &[String],
 ) -> Option<EditDefaults> {
     let from_project = origin == "the project";
-    let current = match auth {
-        None if inherited.is_some() => Kind::Inherit,
-        None => Kind::None,
-        Some(a) => Kind::of(a),
-    };
-    let mut chosen = current;
-    ui.horizontal(|ui| {
-        if inherited.is_some() {
-            let label = if from_project {
-                "Inherit from project".to_owned()
-            } else {
-                format!("Inherit from {origin}")
-            };
-            ui.radio_value(&mut chosen, Kind::Inherit, label);
+    let inherit = inherited.map(|_| {
+        if from_project {
+            "Inherit from project".to_owned()
+        } else {
+            format!("Inherit from {origin}")
         }
-        ui.radio_value(&mut chosen, Kind::None, "No auth");
-        ui.radio_value(&mut chosen, Kind::Basic, "Basic");
-        ui.radio_value(&mut chosen, Kind::Bearer, "Bearer token");
     });
-    if chosen != current {
-        *auth = chosen.empty();
-    }
+    kind_picker(ui, auth, inherit.as_deref());
     ui.add_space(6.0);
 
     let mut edit_defaults = None;
@@ -124,20 +110,25 @@ pub fn request_auth(
     edit_defaults
 }
 
-/// Kind picker for a concrete auth (collection defaults: no "inherit").
-/// Picks the kind of auth. `none_label` names "no auth here", e.g. "Inherit" for a folder.
-pub fn kind_picker(ui: &mut Ui, auth: &mut Auth, none_label: &str) {
-    let current = Kind::of(auth);
+/// Picks the kind of auth: `None` inherits, `Some(Auth::None)` sends none. `inherit` labels
+/// the "inherit" choice; without one (nothing to inherit from), `None` shows as "No auth".
+pub fn kind_picker(ui: &mut Ui, auth: &mut Option<Auth>, inherit: Option<&str>) {
+    let current = match auth {
+        None if inherit.is_some() => Kind::Inherit,
+        None => Kind::None,
+        Some(a) => Kind::of(a),
+    };
     let mut chosen = current;
     ui.horizontal(|ui| {
-        ui.radio_value(&mut chosen, Kind::None, none_label);
+        if let Some(label) = inherit {
+            ui.radio_value(&mut chosen, Kind::Inherit, label);
+        }
+        ui.radio_value(&mut chosen, Kind::None, "No auth");
         ui.radio_value(&mut chosen, Kind::Basic, "Basic");
         ui.radio_value(&mut chosen, Kind::Bearer, "Bearer token");
     });
-    if chosen != current
-        && let Some(new) = chosen.empty()
-    {
-        *auth = new;
+    if chosen != current {
+        *auth = chosen.empty();
     }
 }
 

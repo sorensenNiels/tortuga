@@ -15,7 +15,7 @@ use tortuga_core::secrets::SecretValues;
 use tortuga_core::settings::{Level, ResolvedSettings};
 use tortuga_core::storage::Storage;
 use tortuga_core::workspace::{self, ProjectRef, WorkspaceDefaults, WorkspaceVariables};
-use tortuga_core::{AppSettings, Client, ClientSettings, Collection, Request, vars};
+use tortuga_core::{AppSettings, Client, ClientSettings, Collection, Environment, Request, vars};
 
 use crate::format::sentence;
 use crate::host::{Host, LocalState, Workspace};
@@ -695,6 +695,30 @@ impl AppState {
         self.save_local();
     }
 
+    /// Keeps the project at `root` on its environment when a save renamed it (R-SRV-7): the
+    /// workspace picks environments by name (R-WS-6). `old` are its environments before.
+    pub fn follow_environment_renames(&mut self, root: &Path, old: &[Environment]) {
+        let (Some(chosen), Some(c)) = (self.workspace().environment.clone(), self.collection(root))
+        else {
+            return;
+        };
+        let Some(renamed) = old
+            .iter()
+            .filter(|e| e.name == chosen)
+            .find_map(|e| c.environment(&e.id))
+            .filter(|e| e.name != chosen)
+        else {
+            return;
+        };
+        let (id, name) = (renamed.id.clone(), renamed.name.clone());
+        if self.environment_names().contains(&chosen) {
+            // Other projects still have the old name and stay on it; only this one moves.
+            self.set_project_environment(root, &id);
+        } else {
+            self.set_workspace_environment(&name);
+        }
+    }
+
     /// The environment a project uses when it has none named like the workspace's.
     pub fn set_project_environment(&mut self, root: &Path, id: &str) {
         self.workspace_mut()
@@ -1195,6 +1219,47 @@ mod tests {
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 
+    /// R-SRV-7: renaming the workspace's environment keeps every project on it.
+    #[test]
+    fn renaming_the_chosen_environment_keeps_it_chosen() {
+        use tortuga_core::storage::FsStorage;
+        let dir = temp("env-rename");
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        project(&a, "A", &["Alpha", "Dev"]);
+        project(&b, "B", &["Local", "Dev"]);
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![a.clone(), b.clone()],
+            ..Default::default()
+        }));
+        state.set_workspace_environment("Dev");
+        let rename = |state: &mut AppState, root: &Path, to: &str| {
+            let old = state.collection(root).expect("open").environments.clone();
+            let mut envs = old.clone();
+            let dev = envs.iter_mut().find(|e| e.id == "dev").expect("dev");
+            dev.name = to.to_owned();
+            state
+                .run(root, |c, s| c.save_config(s, &c.manifest, &envs))
+                .expect("saved");
+            state.follow_environment_renames(root, &old);
+        };
+
+        // B still has "Dev": the workspace stays on it, A stays on its renamed one.
+        rename(&mut state, &a, "Development ü😀");
+        assert_eq!(state.workspace().environment.as_deref(), Some("Dev"));
+        assert_eq!(state.active_environment(&a).as_deref(), Some("dev"));
+        assert_eq!(state.active_environment(&b).as_deref(), Some("dev"));
+
+        // Now no project has "Dev": the workspace follows the new name.
+        rename(&mut state, &b, "Development ü😀");
+        assert_eq!(
+            state.workspace().environment.as_deref(),
+            Some("Development ü😀")
+        );
+        assert_eq!(state.active_environment(&b).as_deref(), Some("dev"));
+        assert!(Collection::open(&FsStorage, &b).is_ok());
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
     /// R-WS-8: workspace variables reach every project below the project's own values,
     /// go into the workspace file (secrets by name only), and a `workspace.` capture in
     /// one project is used by the others.
@@ -1317,9 +1382,9 @@ mod tests {
                 timeout_ms: Some(1_000),
                 ..RequestSettings::default()
             },
-            auth: Auth::Bearer {
+            auth: Some(Auth::Bearer {
                 token: "b-own".into(),
-            },
+            }),
             ..c.manifest.clone()
         };
         c.save_config(&FsStorage, &manifest, &c.environments)

@@ -1,12 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use egui::{Context, Grid, ScrollArea, TextEdit, Ui};
+use egui::{
+    Atom, AtomExt as _, CentralPanel, Context, Frame, Grid, Panel, ScrollArea, TextEdit, Ui,
+};
 use tortuga_core::secrets::SecretValues;
 use tortuga_core::{Collection, Environment, Manifest, Server};
 
 use super::variable_row::{self, SecretHelp, new_row_input};
-use super::{DialogResult, dialog};
+use super::{DialogResult, resizable_dialog};
 use crate::state::AppState;
 use crate::theme;
 
@@ -286,7 +288,7 @@ fn move_item<T>(list: &mut Vec<T>, from: usize, to: usize) {
     list.insert(to, item);
 }
 
-/// An environment column or server row being dragged (R-SRV-6).
+/// An environment or server row being dragged (R-SRV-6).
 #[derive(Debug, Clone, Copy)]
 struct EnvDrag(usize);
 #[derive(Debug, Clone, Copy)]
@@ -302,13 +304,12 @@ fn drag_handle<P: Clone + Send + Sync + 'static>(ui: &mut Ui, id: (&str, usize),
     .on_hover_text("Drag to change the order");
 }
 
-/// Makes `zone` a drop target for `P`. Returns the dragged index if dropped here, and
-/// marks the edge it will land on.
+/// Makes the list row `zone` a drop target for `P`. Returns the dragged index if dropped
+/// here, and marks the edge it will land on.
 fn drop_index<P: Copy + Send + Sync + 'static>(
     ui: &Ui,
     zone: &egui::Response,
     index: usize,
-    vertical: bool,
     from: impl Fn(&P) -> usize,
 ) -> Option<usize> {
     let dragged = from(&*zone.dnd_hover_payload::<P>()?);
@@ -316,67 +317,90 @@ fn drop_index<P: Copy + Send + Sync + 'static>(
         return None;
     }
     let r = zone.rect;
+    // Lands before this one when coming from below it, else after it.
+    let y = if dragged > index {
+        r.top() - 2.0
+    } else {
+        r.bottom() + 2.0
+    };
     let stroke = egui::Stroke::new(2.0, theme::palette(ui).accent);
-    // Lands before this one when coming from after it, else after it.
-    match (vertical, dragged > index) {
-        (true, true) => {
-            ui.painter().hline(r.x_range(), r.top() - 2.0, stroke);
-        }
-        (true, false) => {
-            ui.painter().hline(r.x_range(), r.bottom() + 2.0, stroke);
-        }
-        (false, true) => {
-            ui.painter().vline(r.left() - 3.0, r.y_range(), stroke);
-        }
-        (false, false) => {
-            ui.painter().vline(r.right() + 3.0, r.y_range(), stroke);
-        }
-    }
+    ui.painter().hline(r.x_range(), y, stroke);
     zone.dnd_release_payload::<P>().map(|p| from(&p))
 }
 
-/// Servers × environments and variables × environments (R-SRV-2, R-VAR-2, R-VAR-7).
+/// What the right side of the dialog shows: one environment at a time (R-SRV-7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    /// The names of servers and variables, secret flags and default values, which every
+    /// environment shares.
+    Defaults,
+    Environment(usize),
+}
+
+impl Shown {
+    /// What to show once environment `col` is removed and `left` environments remain:
+    /// the same one, or its neighbour when it was the one removed.
+    fn after_remove(self, col: usize, left: usize) -> Self {
+        match self {
+            Self::Environment(i) if i == col && left == 0 => Self::Defaults,
+            Self::Environment(i) if i == col => Self::Environment(col.min(left - 1)),
+            Self::Environment(i) if i > col => Self::Environment(i - 1),
+            Self::Environment(_) | Self::Defaults => self,
+        }
+    }
+
+    /// What to show once environment `from` moved to `to`: the same environment.
+    fn after_move(self, from: usize, to: usize) -> Self {
+        match self {
+            Self::Environment(i) if i == from => Self::Environment(to),
+            Self::Environment(i) if from < i && i <= to => Self::Environment(i - 1),
+            Self::Environment(i) if to <= i && i < from => Self::Environment(i + 1),
+            Self::Environment(_) | Self::Defaults => self,
+        }
+    }
+}
+
+/// Edits a project's environments one at a time, plus the servers and variables they share
+/// (R-SRV-2, R-VAR-2, R-VAR-7, R-SRV-7).
 #[derive(Debug, Clone)]
 pub struct EnvironmentsDialog {
     pub root: PathBuf,
     draft: Draft,
+    shown: Shown,
     new_server: String,
     new_variable: String,
     /// Shown when the draft cannot be saved.
     pub error: Option<String>,
 }
 
-/// Narrowest a table cell gets; narrower dialogs scroll the tables sideways.
-const CELL_WIDTH: f32 = 170.0;
+/// Width of the environment list on the left.
+const LIST_WIDTH: f32 = 200.0;
 
-/// Width of each of `columns` equal cells that share `total` with `gap` between them, so the
-/// tables fill the dialog instead of truncating names (BUG-1). Never below `CELL_WIDTH`.
-fn cell_width(total: f32, columns: usize, gap: f32) -> f32 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a handful of environment columns"
-    )]
-    let columns = columns.max(1) as f32;
-    ((total - gap * (columns - 1.0)) / columns)
-        .floor()
-        .max(CELL_WIDTH)
-}
-
-/// Room each table has: the visible width, minus the scrollbar that floats over its right edge.
-fn table_width(ui: &Ui) -> f32 {
-    ui.available_width() - ui.spacing().scroll.bar_width
+/// Width of the name column in the server and variable tables: a share of the room, so long
+/// names are not truncated (BUG-1), within sensible bounds.
+fn name_width(total: f32) -> f32 {
+    (total * 0.4).clamp(160.0, 320.0).floor()
 }
 
 impl EnvironmentsDialog {
     pub fn new(state: &AppState, root: PathBuf) -> Self {
         let secrets = state.secrets.get(&root).cloned().unwrap_or_default();
-        let draft = state
-            .collection(&root)
+        let collection = state.collection(&root);
+        let draft = collection
             .map(|c| Draft::from_collection(c, &secrets))
             .unwrap_or_default();
+        // Opens on the environment requests are sent with, where edits matter most.
+        let active = state.active_environment(&root);
+        let shown = draft
+            .environments
+            .iter()
+            .position(|e| e.id.is_some() && e.id == active)
+            .or_else(|| (!draft.environments.is_empty()).then_some(0))
+            .map_or(Shown::Defaults, Shown::Environment);
         Self {
             root,
             draft,
+            shown,
             new_server: String::new(),
             new_variable: String::new(),
             error: None,
@@ -390,231 +414,408 @@ impl EnvironmentsDialog {
         };
         let title = format!("Environments — {}", c.name());
         let read_only = c.read_only;
-        dialog(ctx, "environments", &title, 900.0, false, |ui| {
-            theme::hint(
-                ui,
-                "Each server gets a base URL per environment; requests pick a server and add the path. \
-                 Variables are used as {{name}}. An empty cell uses the default.",
-            );
-            ui.add_space(4.0);
-            if ui
-                .add_enabled(!read_only, egui::Button::new("+ Add environment"))
-                .clicked()
-            {
-                self.draft.add_environment();
-            }
-            if self.draft.environments.is_empty() {
-                theme::hint(
-                    ui,
-                    "No environments yet. Add one (for example “Development”) to give servers their addresses.",
-                );
-            }
-            // Fill the dialog's width, so the tables can use it and the scrollbar sits at its edge.
-            ScrollArea::both()
-                .id_salt("env-matrix")
-                .auto_shrink([false, true])
-                .max_height(ctx.content_rect().height() * 0.6)
-                .show(ui, |ui| {
-                    servers_table(ui, &mut self.draft, &mut self.new_server);
-                    ui.add_space(12.0);
-                    variables_table(ui, &mut self.draft, &mut self.new_variable);
+        resizable_dialog(
+            ctx,
+            "environments",
+            &title,
+            egui::vec2(820.0, 520.0),
+            egui::vec2(560.0, 360.0),
+            |ui| {
+                let (cancel, save) = Panel::bottom("env-footer")
+                    .frame(Frame::NONE.inner_margin(egui::Margin {
+                        top: 10,
+                        ..egui::Margin::ZERO
+                    }))
+                    .show_separator_line(false)
+                    .show(ui, |ui| footer(ui, state, self.error.as_deref(), read_only))
+                    .inner;
+                Panel::left("env-list")
+                    .frame(Frame::NONE.inner_margin(egui::Margin {
+                        right: 12,
+                        ..egui::Margin::ZERO
+                    }))
+                    .resizable(false)
+                    .exact_size(LIST_WIDTH)
+                    .show(ui, |ui| {
+                        environment_list(ui, &mut self.draft, &mut self.shown, read_only);
+                    });
+                CentralPanel::no_frame().show(ui, |ui| {
+                    ScrollArea::vertical()
+                        .id_salt("env-detail")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match self.shown {
+                            Shown::Defaults => defaults_view(
+                                ui,
+                                &mut self.draft,
+                                &mut self.new_server,
+                                &mut self.new_variable,
+                            ),
+                            Shown::Environment(col) => {
+                                if let Some(left) = environment_view(
+                                    ui,
+                                    &mut self.draft,
+                                    col,
+                                    &mut self.new_server,
+                                    &mut self.new_variable,
+                                ) {
+                                    self.shown = self.shown.after_remove(col, left);
+                                }
+                            }
+                        });
                 });
-            ui.add_space(10.0);
-            theme::callout(
-                ui,
-                "Values are saved in the project files and shared through git. Mark a variable as \
-                 secret (🔒) to keep its values on this machine only — teammates see the name, not the value.",
-            );
-            if let Some(warning) = state.host.secrets_warning() {
-                ui.add_space(4.0);
-                theme::callout(ui, warning);
-            }
-            if let Some(err) = &self.error {
-                theme::error(ui, err);
-            }
-            ui.add_space(8.0);
-            let (cancel, save) = ui
-                .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let save = ui
-                        .add_enabled(!read_only, theme::primary_button(ui, "Save"))
-                        .clicked();
-                    (ui.button("Cancel").clicked(), save)
-                })
-                .inner;
-            if save {
-                match self.draft.to_config(&c.manifest, &c.environments) {
-                    Ok(config) => return DialogResult::Done(config),
-                    Err(e) => self.error = Some(e),
+                if save {
+                    match self.draft.to_config(&c.manifest, &c.environments) {
+                        Ok(config) => return DialogResult::Done(config),
+                        Err(e) => self.error = Some(e),
+                    }
                 }
-            }
-            if cancel {
-                DialogResult::Close
-            } else {
-                DialogResult::Open
-            }
-        })
+                if cancel {
+                    DialogResult::Close
+                } else {
+                    DialogResult::Open
+                }
+            },
+        )
     }
 }
 
-fn servers_table(ui: &mut Ui, d: &mut Draft, new_server: &mut String) {
-    let columns = d.environments.len() + 1;
-    let width = cell_width(table_width(ui), columns, ui.spacing().item_spacing.x);
-    Grid::new("servers").num_columns(columns).show(ui, |ui| {
-        theme::section_label(ui, "Servers");
-        let mut remove_env = None;
-        let mut move_env = None;
-        for (col, e) in d.environments.iter_mut().enumerate() {
-            let cell = ui.horizontal(|ui| {
-                drag_handle(ui, ("env-drag", col), EnvDrag(col));
-                theme::sized_edit(
-                    ui,
-                    width - 50.0,
-                    TextEdit::singleline(&mut e.name).id_salt(("env", col)),
-                );
-                if ui
-                    .add(theme::icon_button(ui, "🗙"))
-                    .on_hover_text("Remove this environment")
-                    .clicked()
-                {
-                    remove_env = Some(col);
-                }
-            });
-            if let Some(from) = drop_index(ui, &cell.response, col, false, |p: &EnvDrag| p.0) {
-                move_env = Some((from, col));
-            }
-        }
-        ui.end_row();
+/// The notes, any error, and Cancel/Save. Returns (cancel clicked, save clicked).
+fn footer(ui: &mut Ui, state: &AppState, error: Option<&str>, read_only: bool) -> (bool, bool) {
+    theme::callout(
+        ui,
+        "Values are saved in the project files and shared through git. Mark a variable as \
+         secret (🔒) under Defaults to keep its values on this machine only — teammates see \
+         the name, not the value.",
+    );
+    if let Some(warning) = state.host.secrets_warning() {
+        ui.add_space(4.0);
+        theme::callout(ui, warning);
+    }
+    if let Some(err) = error {
+        theme::error(ui, err);
+    }
+    ui.add_space(8.0);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let save = ui
+            .add_enabled(!read_only, theme::primary_button(ui, "Save"))
+            .clicked();
+        (ui.button("Cancel").clicked(), save)
+    })
+    .inner
+}
 
-        let mut remove = None;
-        let mut move_server = None;
+/// "Defaults" and the environments, in order; click one to edit it, drag to reorder (R-SRV-6).
+fn environment_list(ui: &mut Ui, d: &mut Draft, shown: &mut Shown, read_only: bool) {
+    let row_width = ui.available_width();
+    if ui
+        .add(
+            egui::Button::selectable(*shown == Shown::Defaults, ("Defaults", Atom::grow()))
+                .min_size(egui::vec2(row_width, 0.0)),
+        )
+        .on_hover_text("Servers, variables and the values every environment starts from")
+        .clicked()
+    {
+        *shown = Shown::Defaults;
+    }
+    ui.add_space(6.0);
+    theme::section_label(ui, "Environments");
+    let mut move_env = None;
+    for (col, e) in d.environments.iter().enumerate() {
+        let row = ui.horizontal(|ui| {
+            drag_handle(ui, ("env-drag", col), EnvDrag(col));
+            let name = if e.name.trim().is_empty() {
+                "(no name)"
+            } else {
+                e.name.as_str()
+            };
+            let selected = *shown == Shown::Environment(col);
+            let width = ui.available_width();
+            if ui
+                .add(
+                    // Long names are cut short, left-aligned like "Defaults".
+                    egui::Button::selectable(
+                        selected,
+                        (Atom::from(name).atom_shrink(true), Atom::grow()),
+                    )
+                    .min_size(egui::vec2(width, 0.0)),
+                )
+                .clicked()
+            {
+                *shown = Shown::Environment(col);
+            }
+        });
+        if let Some(from) = drop_index(ui, &row.response, col, |p: &EnvDrag| p.0) {
+            move_env = Some((from, col));
+        }
+    }
+    if d.environments.is_empty() {
+        theme::hint(
+            ui,
+            "No environments yet. Add one (for example “Development”) to give servers their addresses.",
+        );
+    }
+    ui.add_space(6.0);
+    if ui
+        .add_enabled(!read_only, theme::ghost_button("+ Add environment"))
+        .clicked()
+    {
+        d.add_environment();
+        *shown = Shown::Environment(d.environments.len() - 1);
+    }
+    if let Some((from, to)) = move_env {
+        d.move_environment(from, to);
+        *shown = shown.after_move(from, to);
+    }
+}
+
+/// Server and variable names, secret flags and defaults (R-VAR-7).
+fn defaults_view(ui: &mut Ui, d: &mut Draft, new_server: &mut String, new_variable: &mut String) {
+    theme::hint(
+        ui,
+        "Servers and variables are shared by every environment; each environment sets a \
+         server's base URL and can override a variable's default. Variables are used as {{name}}.",
+    );
+    ui.add_space(8.0);
+    let total = ui.available_width() - ui.spacing().scroll.bar_width;
+    let names = name_width(total);
+    let values = (total - names - ui.spacing().item_spacing.x).max(120.0);
+
+    theme::section_label(ui, "Servers");
+    let mut remove = None;
+    let mut move_server = None;
+    Grid::new("default-servers").num_columns(1).show(ui, |ui| {
         for (row, s) in d.servers.iter_mut().enumerate() {
             let cell = ui.horizontal(|ui| {
                 drag_handle(ui, ("server-drag", row), ServerDrag(row));
                 theme::sized_edit(
                     ui,
-                    width - 50.0,
+                    names - 50.0,
                     TextEdit::singleline(&mut s.name).id_salt(("server", row)),
                 );
                 if ui
                     .add(theme::icon_button(ui, "🗙"))
-                    .on_hover_text("Remove this server")
+                    .on_hover_text("Remove this server from every environment")
                     .clicked()
                 {
                     remove = Some(row);
                 }
             });
-            if let Some(from) = drop_index(ui, &cell.response, row, true, |p: &ServerDrag| p.0) {
+            if let Some(from) = drop_index(ui, &cell.response, row, |p: &ServerDrag| p.0) {
                 move_server = Some((from, row));
             }
-            for (col, url) in s.urls.iter_mut().enumerate() {
-                theme::sized_edit(
-                    ui,
-                    width,
-                    TextEdit::singleline(url)
-                        .id_salt(("url", row, col))
-                        .font(egui::TextStyle::Monospace)
-                        .hint_text("https://…"),
-                );
-            }
             ui.end_row();
         }
-        if let Some(name) = new_row_input(
-            ui,
-            "new-server",
-            width,
-            new_server,
-            "Add server (press Enter)…",
-        ) {
-            d.add_server(name);
-        }
-        ui.end_row();
-
-        if let Some(row) = remove {
-            d.servers.remove(row);
-        }
-        if let Some(col) = remove_env {
-            d.remove_environment(col);
-        }
-        if let Some((from, to)) = move_server {
-            d.move_server(from, to);
-        }
-        if let Some((from, to)) = move_env {
-            d.move_environment(from, to);
-        }
+        add_server_row(ui, d, names, new_server);
     });
+    if let Some(row) = remove {
+        d.servers.remove(row);
+    }
+    if let Some((from, to)) = move_server {
+        d.move_server(from, to);
+    }
+
+    ui.add_space(14.0);
+    let mut remove = None;
+    Grid::new("default-variables")
+        .num_columns(2)
+        .show(ui, |ui| {
+            theme::section_label(ui, "Variables");
+            theme::section_label(ui, "Default");
+            ui.end_row();
+            for (row, v) in d.variables.iter_mut().enumerate() {
+                if variable_row::name_cell(
+                    ui,
+                    ("var", row),
+                    names,
+                    &mut v.name,
+                    &mut v.secret,
+                    SECRET_HELP,
+                ) {
+                    remove = Some(row);
+                }
+                theme::sized_edit(
+                    ui,
+                    values,
+                    TextEdit::singleline(&mut v.default)
+                        .id_salt(("default", row))
+                        .password(v.secret)
+                        .hint_text(if v.secret { "not set" } else { "" })
+                        .font(egui::TextStyle::Monospace),
+                );
+                ui.end_row();
+            }
+            add_variable_row(ui, d, names, new_variable);
+        });
+    if let Some(row) = remove {
+        d.variables.remove(row);
+    }
 }
 
-fn variables_table(ui: &mut Ui, d: &mut Draft, new_variable: &mut String) {
-    let columns = d.environments.len() + 2;
-    let width = cell_width(table_width(ui), columns, ui.spacing().item_spacing.x);
-    Grid::new("variables").num_columns(columns).show(ui, |ui| {
-        theme::section_label(ui, "Variables");
-        theme::section_label(ui, "Default");
-        for e in &d.environments {
-            theme::section_label(ui, &e.name);
-        }
-        ui.end_row();
-
-        let mut remove = None;
-        for (row, v) in d.variables.iter_mut().enumerate() {
-            if variable_row::name_cell(
-                ui,
-                ("var", row),
-                width,
-                &mut v.name,
-                &mut v.secret,
-                SECRET_HELP,
-            ) {
-                remove = Some(row);
-            }
-            // Secret values are masked; a placeholder never shows the secret default.
-            let default_hint = if v.secret {
-                if v.default.is_empty() {
-                    "not set"
-                } else {
-                    "default"
-                }
-                .to_owned()
-            } else {
-                v.default.clone()
-            };
+/// One environment: its name, each server's base URL and each variable's value (R-SRV-7).
+/// Returns how many environments are left when this one was removed.
+fn environment_view(
+    ui: &mut Ui,
+    d: &mut Draft,
+    col: usize,
+    new_server: &mut String,
+    new_variable: &mut String,
+) -> Option<usize> {
+    let total = ui.available_width() - ui.spacing().scroll.bar_width;
+    let names = name_width(total);
+    let values = (total - names - ui.spacing().item_spacing.x).max(120.0);
+    let env = d.environments.get_mut(col)?;
+    let remove = ui
+        .horizontal(|ui| {
+            ui.label("Name");
             theme::sized_edit(
                 ui,
-                width,
-                TextEdit::singleline(&mut v.default)
-                    .id_salt(("default", row))
-                    .password(v.secret)
-                    .hint_text(if v.secret { "not set" } else { "" })
-                    .font(egui::TextStyle::Monospace),
+                names,
+                TextEdit::singleline(&mut env.name).id_salt(("env-name", col)),
             );
-            for (col, value) in v.values.iter_mut().enumerate() {
-                theme::sized_edit(
-                    ui,
-                    width,
-                    TextEdit::singleline(value)
-                        .id_salt(("value", row, col))
-                        .password(v.secret)
-                        .font(egui::TextStyle::Monospace)
-                        .hint_text(default_hint.clone()),
-                );
-            }
-            ui.end_row();
-        }
-        if let Some(name) = new_row_input(
-            ui,
-            "new-variable",
-            width,
-            new_variable,
-            "Add variable (press Enter)…",
-        ) {
-            d.add_variable(name);
-        }
-        ui.end_row();
+            ui.add(theme::ghost_button("Remove environment")).clicked()
+        })
+        .inner;
+    if remove {
+        d.remove_environment(col);
+        return Some(d.environments.len());
+    }
+    ui.add_space(10.0);
 
-        if let Some(row) = remove {
-            d.variables.remove(row);
-        }
-    });
+    let mut remove_server = None;
+    Grid::new(("env-servers", col))
+        .num_columns(2)
+        .show(ui, |ui| {
+            theme::section_label(ui, "Servers");
+            theme::section_label(ui, "Base URL");
+            ui.end_row();
+            for (row, s) in d.servers.iter_mut().enumerate() {
+                if name_label(ui, names, &s.name, false, REMOVE_SERVER) {
+                    remove_server = Some(row);
+                }
+                if let Some(url) = s.urls.get_mut(col) {
+                    theme::sized_edit(
+                        ui,
+                        values,
+                        TextEdit::singleline(url)
+                            .id_salt(("url", row, col))
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text("https://…"),
+                    );
+                }
+                ui.end_row();
+            }
+            add_server_row(ui, d, names, new_server);
+        });
+    if let Some(row) = remove_server {
+        d.servers.remove(row);
+    }
+
+    ui.add_space(14.0);
+    let mut remove_variable = None;
+    Grid::new(("env-variables", col))
+        .num_columns(2)
+        .show(ui, |ui| {
+            theme::section_label(ui, "Variables");
+            theme::section_label(ui, "Value");
+            ui.end_row();
+            for (row, v) in d.variables.iter_mut().enumerate() {
+                if name_label(ui, names, &v.name, v.secret, REMOVE_VARIABLE) {
+                    remove_variable = Some(row);
+                }
+                // Secret values are masked; a placeholder never shows the secret default.
+                let hint = match (v.secret, v.default.is_empty()) {
+                    (true, true) => "not set".to_owned(),
+                    (true, false) => "default".to_owned(),
+                    (false, _) => v.default.clone(),
+                };
+                if let Some(value) = v.values.get_mut(col) {
+                    theme::sized_edit(
+                        ui,
+                        values,
+                        TextEdit::singleline(value)
+                            .id_salt(("value", row, col))
+                            .password(v.secret)
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text(hint),
+                    );
+                }
+                ui.end_row();
+            }
+            add_variable_row(ui, d, names, new_variable);
+        });
+    if let Some(row) = remove_variable {
+        d.variables.remove(row);
+    }
+    ui.add_space(6.0);
+    theme::hint(
+        ui,
+        "An empty value uses the default. Servers and variables belong to every environment: \
+         🗙 removes them from all. Rename them or mark variables secret under Defaults.",
+    );
+    None
+}
+
+/// Hover texts of the remove buttons in an environment's tables.
+const REMOVE_SERVER: &str = "Remove this server from every environment";
+const REMOVE_VARIABLE: &str = "Remove this variable from every environment";
+
+/// A server or variable name in an environment's table (renamed under Defaults), with a
+/// remove button (R-SRV-7). Returns whether remove was clicked.
+fn name_label(ui: &mut Ui, width: f32, name: &str, secret: bool, remove_help: &str) -> bool {
+    ui.horizontal(|ui| {
+        ui.set_width(width);
+        let text = if secret {
+            format!("{name} 🔒")
+        } else {
+            name.to_owned()
+        };
+        egui::Sides::new()
+            .shrink_left()
+            .show(
+                ui,
+                |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(text).monospace())
+                            .truncate()
+                            .selectable(false),
+                    )
+                    .on_hover_text(name);
+                },
+                |ui| {
+                    ui.add(theme::icon_button(ui, "🗙"))
+                        .on_hover_text(remove_help)
+                        .clicked()
+                },
+            )
+            .1
+    })
+    .inner
+}
+
+fn add_server_row(ui: &mut Ui, d: &mut Draft, width: f32, new_server: &mut String) {
+    if let Some(name) = new_row_input(
+        ui,
+        "new-server",
+        width,
+        new_server,
+        "Add server (press Enter)…",
+    ) {
+        d.add_server(name);
+    }
+    ui.end_row();
+}
+
+fn add_variable_row(ui: &mut Ui, d: &mut Draft, width: f32, new_variable: &mut String) {
+    if let Some(name) = new_row_input(
+        ui,
+        "new-variable",
+        width,
+        new_variable,
+        "Add variable (press Enter)…",
+    ) {
+        d.add_variable(name);
+    }
+    ui.end_row();
 }
 
 const SECRET_HELP: SecretHelp = SecretHelp {
@@ -778,20 +979,37 @@ mod tests {
     }
 
     #[test]
-    fn cells_share_the_width_but_never_get_narrower_than_the_minimum() {
+    fn names_get_a_share_of_the_width_within_bounds() {
         // BUG-1
-        assert!((cell_width(860.0, 2, 8.0) - 426.0).abs() < f32::EPSILON);
-        assert!((cell_width(300.0, 4, 8.0) - CELL_WIDTH).abs() < f32::EPSILON);
-        assert!((cell_width(0.0, 0, 8.0) - CELL_WIDTH).abs() < f32::EPSILON);
+        assert!((name_width(600.0) - 240.0).abs() < f32::EPSILON);
+        assert!((name_width(100.0) - 160.0).abs() < f32::EPSILON);
+        assert!((name_width(5000.0) - 320.0).abs() < f32::EPSILON);
     }
 
+    /// R-SRV-7: the shown environment stays the same one when others move or go.
     #[test]
-    fn the_tables_fill_the_dialog_so_names_are_not_truncated() {
-        // BUG-1
-        use egui_kittest::kittest::Queryable;
-        use tortuga_core::storage::FsStorage;
+    fn the_shown_environment_follows_moves_and_removes() {
+        use Shown::{Defaults, Environment};
+        assert_eq!(Environment(2).after_remove(0, 2), Environment(1));
+        assert_eq!(Environment(0).after_remove(2, 2), Environment(0));
+        assert_eq!(
+            Environment(1).after_remove(1, 1),
+            Environment(0),
+            "neighbour"
+        );
+        assert_eq!(Environment(0).after_remove(0, 0), Defaults, "none left");
+        assert_eq!(Defaults.after_remove(0, 0), Defaults);
+        assert_eq!(Environment(0).after_move(0, 2), Environment(2));
+        assert_eq!(Environment(2).after_move(0, 2), Environment(1));
+        assert_eq!(Environment(0).after_move(2, 0), Environment(1));
+        assert_eq!(Environment(3).after_move(0, 2), Environment(3));
+        assert_eq!(Defaults.after_move(0, 1), Defaults);
+    }
 
-        let root = std::env::temp_dir().join(format!("tortuga-env-width-{}", std::process::id()));
+    /// A project on disk, open in an `AppState`, for showing the dialog.
+    fn open_project(name: &str) -> (PathBuf, AppState) {
+        use tortuga_core::storage::FsStorage;
+        let root = std::env::temp_dir().join(format!("tortuga-env-{name}-{}", std::process::id()));
         // Leftovers of an earlier run may be missing; either way the directory starts empty.
         let _ = std::fs::remove_dir_all(&root);
         Collection::create(&FsStorage, &root, "C").expect("create");
@@ -799,20 +1017,164 @@ mod tests {
             open: vec![root.clone()],
             ..crate::test_host::TestHost::default()
         }));
-        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
-        dialog.draft = draft();
+        (root, state)
+    }
+
+    fn harness<'a>(
+        dialog: &'a mut EnvironmentsDialog,
+        state: &'a AppState,
+    ) -> egui_kittest::Harness<'a> {
         let mut installed = false;
-        // The URL and value cells have no accessible name yet; this test is about layout.
-        let mut h = egui_kittest::Harness::builder()
+        // The URL and value cells have no accessible name yet; these tests are about layout.
+        egui_kittest::Harness::builder()
             .with_size(egui::vec2(1200.0, 800.0))
             .with_accessibility_check(false)
-            .build_ui(|ui| {
+            .build_ui(move |ui| {
                 if !installed {
                     theme::install(ui.ctx());
                     installed = true;
                 }
-                dialog.show(ui.ctx(), &state);
-            });
+                dialog.show(ui.ctx(), state);
+            })
+    }
+
+    fn on_screen(h: &egui_kittest::Harness<'_>, value: &str) -> bool {
+        use egui_kittest::kittest::Queryable;
+        h.query_all_by_value(value).next().is_some()
+    }
+
+    /// R-SRV-7: only the chosen environment's URLs and values are on screen.
+    #[test]
+    fn one_environment_is_shown_at_a_time() {
+        use egui_kittest::kittest::Queryable;
+        let (root, state) = open_project("one-at-a-time");
+        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+        dialog.draft = draft();
+        dialog.draft.servers[0].urls = vec!["http://dev".into(), "http://staging".into()];
+        dialog.shown = Shown::Environment(0);
+        let mut h = harness(&mut dialog, &state);
+        h.run();
+        assert!(on_screen(&h, "http://dev"));
+        assert!(!on_screen(&h, "http://staging"));
+        assert!(on_screen(&h, "dev-token"));
+
+        h.get_by_label("Staging").click();
+        h.run();
+        assert!(!on_screen(&h, "http://dev"));
+        assert!(on_screen(&h, "http://staging"));
+        assert!(!on_screen(&h, "dev-token"));
+
+        h.get_by_label("Defaults").click();
+        h.run();
+        assert!(!on_screen(&h, "http://staging"));
+        assert!(on_screen(&h, "none"), "the default value");
+        drop(h);
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// R-SRV-7: servers and variables can be removed while editing an environment.
+    #[test]
+    fn servers_and_variables_are_removed_from_an_environment_view() {
+        use egui_kittest::kittest::Queryable;
+        let (root, state) = open_project("remove");
+        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+        dialog.draft = draft();
+        dialog.draft.add_variable("ü😀".into());
+        dialog.shown = Shown::Environment(1);
+        let mut h = harness(&mut dialog, &state);
+        h.run();
+        // Rows in order: the server "Users API", then the variables "token" and "ü😀".
+        h.query_all_by_label("🗙")
+            .nth(1)
+            .expect("token's remove")
+            .click();
+        h.run();
+        h.query_all_by_label("🗙")
+            .next()
+            .expect("the server's remove")
+            .click();
+        h.run();
+        drop(h);
+        assert_eq!(dialog.draft.servers, []);
+        let names: Vec<&str> = dialog
+            .draft
+            .variables
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect();
+        assert_eq!(names, ["ü😀"]);
+        assert_eq!(dialog.draft.environments.len(), 2, "environments stay");
+        assert_eq!(dialog.shown, Shown::Environment(1), "still on the same one");
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// R-SRV-7: an environment is renamed in its Name field and keeps its id.
+    #[test]
+    fn an_environment_is_renamed_in_its_view() {
+        use egui_kittest::kittest::Queryable;
+        use tortuga_core::storage::FsStorage;
+        let (root, mut state) = open_project("rename");
+        let mut d = Draft::default();
+        d.add_environment();
+        d.environments[0].name = "Development".into();
+        let config = d.to_config(&Manifest::new("C"), &[]).expect("valid");
+        state
+            .run(&root, |c, s| {
+                c.save_config(s, &config.manifest, &config.environments)
+            })
+            .expect("saved");
+        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+        assert_eq!(
+            dialog.shown,
+            Shown::Environment(0),
+            "opens on the active one"
+        );
+        let mut result = None;
+        {
+            let mut installed = false;
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1200.0, 800.0))
+                .with_accessibility_check(false)
+                .build_ui(|ui| {
+                    if !installed {
+                        theme::install(ui.ctx());
+                        installed = true;
+                    }
+                    if let DialogResult::Done(r) = dialog.show(ui.ctx(), &state) {
+                        result = Some(r);
+                    }
+                });
+            h.run();
+            // The first text field is the environment's name.
+            h.get_all_by_role(egui::accesskit::Role::TextInput)
+                .next()
+                .expect("name field")
+                .click();
+            h.run();
+            h.get_all_by_role(egui::accesskit::Role::TextInput)
+                .next()
+                .expect("name field")
+                .type_text(" ü😀");
+            h.run();
+            h.get_by_label("Save").click();
+            h.run();
+        }
+        let saved = result.expect("saved");
+        assert_eq!(saved.environments[0].id, "development");
+        assert_eq!(saved.environments[0].name, "Development ü😀");
+        assert!(Collection::open(&FsStorage, &root).is_ok());
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    #[test]
+    fn names_are_not_truncated() {
+        // BUG-1
+        use egui_kittest::kittest::Queryable;
+        let (root, state) = open_project("width");
+        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+        dialog.draft = draft();
+        dialog.shown = Shown::Defaults;
+        let mut h = harness(&mut dialog, &state);
         h.run();
         let widest = |value: &str| {
             h.query_all_by_value(value)
@@ -820,11 +1182,50 @@ mod tests {
                 .fold(0.0, f32::max)
         };
         let server = widest("Users API");
-        assert!(server > 200.0, "server name field is only {server} wide");
+        assert!(server > 150.0, "server name field is only {server} wide");
         let variable = widest("token");
         assert!(
-            variable > CELL_WIDTH - 56.0,
+            variable > 150.0,
             "variable name field is only {variable} wide"
+        );
+        drop(h);
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// R-SRV-7: dragging the bottom-right corner makes the dialog bigger, on both sides.
+    #[test]
+    fn the_dialog_resizes_from_its_corner() {
+        use egui_kittest::kittest::Queryable;
+        let (root, state) = open_project("resize");
+        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+        let mut h = harness(&mut dialog, &state);
+        h.run();
+        let heading = h.get_by_label("Environments — C").rect();
+        let left = heading.left();
+        // The grip's centre: just outside the 820 × 520 body, in the frame's margin.
+        let grip = egui::pos2(left + 820.0 + 11.0, heading.top() + 520.0 + 11.0);
+        let pointer = |h: &mut egui_kittest::Harness<'_>, pos, pressed: Option<bool>| {
+            h.input_mut().events.push(egui::Event::PointerMoved(pos));
+            if let Some(pressed) = pressed {
+                h.input_mut().events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+            h.run();
+        };
+        pointer(&mut h, grip, None);
+        pointer(&mut h, grip, Some(true));
+        for step in 1..=4u8 {
+            pointer(&mut h, grip + egui::vec2(10.0, 5.0) * f32::from(step), None);
+        }
+        pointer(&mut h, grip + egui::vec2(40.0, 20.0), Some(false));
+        let moved = left - h.get_by_label("Environments — C").rect().left();
+        assert!(
+            (moved - 40.0).abs() < 1.0,
+            "the left edge moved {moved} instead of 40"
         );
         drop(h);
         std::fs::remove_dir_all(&root).expect("clean up");

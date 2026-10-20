@@ -48,6 +48,11 @@ impl TortugaUi {
         let entry_id = tortuga_core::history::new_id(sent_at, id);
         let path = key.as_ref().map(|k| k.path.clone());
         let request = self.current.clone();
+        let breakpoints = self
+            .sent
+            .get(&key)
+            .map(|s| s.breakpoints.clone())
+            .unwrap_or_default();
         let environment = ctx.environment.clone();
         let (task, abort) = abortable(async move {
             // The pre-request script, sending, captures and tests (R-TEST-1..4).
@@ -56,7 +61,10 @@ impl TortugaUi {
                 Some(&jar),
                 &request,
                 &ctx,
-                tortuga_core::runner::Extra::default(),
+                tortuga_core::runner::Extra {
+                    breakpoints: Some(&breakpoints),
+                    ..tortuga_core::runner::Extra::default()
+                },
             )
             .await;
             // Off the UI thread: copying up to 1 MB of body for the history.

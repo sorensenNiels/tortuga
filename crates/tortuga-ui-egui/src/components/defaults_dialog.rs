@@ -36,7 +36,8 @@ pub enum DefaultsTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EditedDefaults {
     pub headers: Vec<KeyValue>,
-    pub auth: Auth,
+    /// `None` = inherit; the workspace has nothing to inherit, so `None` = no auth there.
+    pub auth: Option<Auth>,
     pub variables: BTreeMap<String, String>,
     pub settings: RequestSettings,
 }
@@ -48,7 +49,7 @@ pub struct EditedDefaults {
 pub struct DefaultsDialog {
     pub target: DefaultsTarget,
     headers: Vec<KeyValue>,
-    auth: Auth,
+    auth: Option<Auth>,
     variables: Vec<KeyValue>,
     settings: RequestSettings,
     timeout_text: String,
@@ -56,7 +57,7 @@ pub struct DefaultsDialog {
 }
 
 impl DefaultsDialog {
-    fn with(target: DefaultsTarget, headers: Vec<KeyValue>, auth: Auth) -> Self {
+    fn with(target: DefaultsTarget, headers: Vec<KeyValue>, auth: Option<Auth>) -> Self {
         Self {
             target,
             headers,
@@ -114,8 +115,8 @@ impl DefaultsDialog {
     /// The active workspace's defaults (R-SET-1, R-SET-2).
     pub fn for_workspace(state: &AppState) -> Self {
         let d = &state.workspace().defaults;
-        Self::with(DefaultsTarget::Workspace, d.headers.clone(), d.auth.clone())
-            .with_settings(d.settings)
+        let auth = Some(d.auth.clone()).filter(|a| !a.is_none());
+        Self::with(DefaultsTarget::Workspace, d.headers.clone(), auth).with_settings(d.settings)
     }
 
     /// Opens on the Auth tab (from a request's "Edit … defaults…").
@@ -137,7 +138,7 @@ impl DefaultsDialog {
         let undefined = if workspace {
             Vec::new()
         } else {
-            undefined_names(state, root.as_deref(), &self.headers, &self.auth)
+            undefined_names(state, root.as_deref(), &self.headers, self.auth.as_ref())
         };
         dialog(ctx, "collection-defaults", &title, 640.0, false, |ui| {
             theme::hint(ui, explanation(&self.target));
@@ -265,7 +266,7 @@ impl DefaultsDialog {
             (
                 Tab::Auth,
                 "Auth",
-                (!self.auth.is_none()).then(|| "⏺".to_owned()),
+                self.auth.is_some().then(|| "⏺".to_owned()),
             ),
         ];
         if folder {
@@ -392,28 +393,39 @@ fn inherit_picker(
 
 fn auth_tab(
     ui: &mut Ui,
-    auth: &mut Auth,
+    auth: &mut Option<Auth>,
     undefined: &[String],
     file: &str,
     folder: bool,
     workspace: bool,
 ) {
-    // A folder or project without auth passes on what it inherits (R-COL-11, R-SET-2).
-    kind_picker(ui, auth, if workspace { "No auth" } else { "Inherit" });
-    ui.add_space(6.0);
-    if auth.is_none() && folder {
-        theme::hint(
-            ui,
-            "Requests in this folder use the auth of a parent folder, or of the project.",
-        );
-    } else if auth.is_none() && !workspace {
-        theme::hint(
-            ui,
-            "Requests in this project use the workspace's auth, if it has one.",
-        );
-    } else {
-        auth_fields(ui, "default-auth", auth, undefined, file);
+    // A folder or project can inherit, or say "no auth" to stop what it would inherit
+    // (R-HTTP-5, R-COL-11, R-SET-2). The workspace is the top: nothing to inherit.
+    kind_picker(ui, auth, (!workspace).then_some("Inherit"));
+    if workspace && *auth == Some(Auth::None) {
+        *auth = None;
     }
+    ui.add_space(6.0);
+    let hint = match (auth.as_mut(), folder, workspace) {
+        (None, true, _) => {
+            "Requests in this folder use the auth of a parent folder, or of the project."
+        }
+        (None, false, false) => "Requests in this project use the workspace's auth, if it has one.",
+        (None, false, true) => "Requests send no authentication unless their project sets some.",
+        (Some(Auth::None), true, _) => {
+            "Requests in this folder send no authentication, whatever a parent folder or the \
+             project sets. A request can still choose its own."
+        }
+        (Some(Auth::None), false, _) => {
+            "Requests in this project send no authentication, even when the workspace sets \
+             some. A folder or request can still choose its own."
+        }
+        (Some(a), ..) => {
+            auth_fields(ui, "default-auth", a, undefined, file);
+            return;
+        }
+    };
+    theme::hint(ui, hint);
 }
 
 /// Variables used in the defaults that the active environment does not define (R-VAR-5).
@@ -421,10 +433,10 @@ fn undefined_names(
     state: &AppState,
     root: Option<&std::path::Path>,
     headers: &[KeyValue],
-    auth: &Auth,
+    auth: Option<&Auth>,
 ) -> Vec<String> {
     let ctx = state.context(root);
-    let mut texts: Vec<&str> = auth.fields();
+    let mut texts: Vec<&str> = auth.map(Auth::fields).unwrap_or_default();
     for h in headers.iter().filter(|h| h.enabled) {
         texts.extend([h.name.as_str(), h.value.as_str()]);
     }
@@ -478,7 +490,7 @@ mod tests {
         }
         let saved = result.expect("saved");
         assert_eq!(saved.headers, [KeyValue::new("X-Team", "")]);
-        assert_eq!(saved.auth, Auth::None);
+        assert_eq!(saved.auth, None);
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
@@ -520,14 +532,54 @@ mod tests {
         let saved = result.expect("saved");
         assert_eq!(
             saved.auth,
-            Auth::Bearer {
+            Some(Auth::Bearer {
                 token: "{{token}}".into()
-            }
+            })
         );
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
     /// R-SET-1: the Requests tab shows inherited values and saves overrides only.
+    /// R-HTTP-5, R-SET-2: a project can choose "No auth" to stop the workspace's auth;
+    /// the workspace, with nothing above it, has no "Inherit".
+    #[test]
+    fn project_auth_can_be_none_and_the_workspace_has_no_inherit() {
+        let root =
+            std::env::temp_dir().join(format!("tortuga-defaults-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Collection::create(&FsStorage, &root, "C").expect("create");
+        let state = AppState::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let mut dialog = DefaultsDialog::new(&state, root.clone()).on_auth();
+        let mut result = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                if let DialogResult::Done(r) = dialog.show(ui.ctx(), &state) {
+                    result = Some(r);
+                }
+            });
+            h.run();
+            h.get_by_label("Inherit");
+            h.get_by_label("No auth").click();
+            h.run();
+            h.get_by_label("Save").click();
+            h.run();
+        }
+        assert_eq!(result.expect("saved").auth, Some(Auth::None));
+
+        let mut workspace = DefaultsDialog::for_workspace(&state).on_auth();
+        let mut h = crate::test_host::harness(|ui| {
+            workspace.show(ui.ctx(), &state);
+        });
+        h.run();
+        h.get_by_label("No auth");
+        assert!(h.query_by_label("Inherit").is_none());
+        drop(h);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
     #[test]
     fn project_request_settings() {
         let root =

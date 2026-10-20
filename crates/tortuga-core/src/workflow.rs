@@ -256,6 +256,7 @@ pub async fn run(
                     let extra = Extra {
                         capture: Some(&step.capture),
                         tests: Some(step.tests.as_str()),
+                        breakpoints: None,
                     };
                     runner::run_step(client, Some(&jar), &item.request, &ctx, extra).await
                 }

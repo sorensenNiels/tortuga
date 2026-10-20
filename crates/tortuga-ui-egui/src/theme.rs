@@ -354,17 +354,37 @@ pub fn tabs<T: PartialEq + Copy>(
     current: &mut T,
     items: &[(T, &str, Option<String>)],
 ) {
+    tabs_flagged(ui, current, items, &[]);
+}
+
+/// [`tabs`], with the label and badge of the tabs in `failing` in the failure colour
+/// (e.g. Tests when a test failed).
+pub fn tabs_flagged<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    current: &mut T,
+    items: &[(T, &str, Option<String>)],
+    failing: &[T],
+) {
     let p = palette(ui);
     let mut underlines = Vec::new();
     let row = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 20.0;
         for (value, label, badge) in items {
             let selected = *current == *value;
-            let color = if selected { p.text } else { p.muted };
+            let failed = failing.contains(value);
+            let color = match (failed, selected) {
+                (true, _) => p.fail,
+                (false, true) => p.text,
+                (false, false) => p.muted,
+            };
             // One real button per tab, so clicks work everywhere (also inside dialogs).
             let mut atoms = vec![egui::Atom::from(semibold(*label).color(color))];
             if let Some(b) = badge {
-                let c = if selected { p.accent } else { p.muted };
+                let c = match (failed, selected) {
+                    (true, _) => p.fail,
+                    (false, true) => p.accent,
+                    (false, false) => p.muted,
+                };
                 atoms.push(egui::Atom::from(semibold(b).size(10.5).color(c)));
             }
             let atoms: egui::Atoms<'_> = atoms.into_iter().collect();

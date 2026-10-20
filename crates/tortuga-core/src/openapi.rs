@@ -181,7 +181,7 @@ impl<'a> Importer<'a> {
         if let Some(security) = self.global_security {
             self.global = self.requirement(security);
         }
-        manifest.auth = self.global.auth.clone().unwrap_or_default();
+        manifest.auth = self.global.auth.clone().filter(|a| !a.is_none());
         manifest.headers.extend(self.global.header.clone());
 
         let (items, requests) = self.operations();
@@ -1048,9 +1048,9 @@ components:
         let import = parse(PETSTORE).expect("import");
         assert_eq!(
             import.manifest.auth,
-            Auth::Bearer {
+            Some(Auth::Bearer {
                 token: "{{token}}".into()
-            }
+            })
         );
         assert_eq!(import.manifest.secrets, ["token", "x_api_key"]);
         assert_eq!(find(&import, "Get a pet").auth, None, "inherits");
@@ -1077,7 +1077,7 @@ components:
         .expect("import");
         let a = find(&query, "GET /a");
         assert_eq!(a.params, [KeyValue::new("api_key", "{{api_key}}")]);
-        assert_eq!(query.manifest.auth, Auth::None);
+        assert_eq!(query.manifest.auth, None);
 
         let header = parse(
             r#"{"openapi": "3.0.0", "info": {"title": "H"},
@@ -1147,9 +1147,9 @@ components:
         );
         assert_eq!(
             import.manifest.auth,
-            Auth::Bearer {
+            Some(Auth::Bearer {
                 token: "{{access_token}}".into()
-            }
+            })
         );
         let text = import.warnings.join("\n");
         for part in [

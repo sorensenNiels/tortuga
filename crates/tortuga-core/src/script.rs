@@ -6,12 +6,15 @@
 //! limits. Inputs go in as one JSON value and results come back as one, so the script
 //! API is plain JavaScript (the prelude below) rather than native bindings.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use boa_engine::{Context, Source};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{KeyValue, Request, RequestBody, Response};
+
+mod breakpoints;
 
 /// Loop iterations a script may run in total before it is stopped.
 const LOOP_LIMIT: u64 = 10_000_000;
@@ -19,6 +22,9 @@ const LOOP_LIMIT: u64 = 10_000_000;
 const RECURSION_LIMIT: usize = 400;
 /// Scripts see at most this much of a response body.
 const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+/// Source names, so errors and logs can tell the user's lines from the prelude's.
+const SCRIPT_PATH: &str = "script";
+const PRELUDE_PATH: &str = "prelude";
 
 /// When a script runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,12 +45,89 @@ pub struct TestResult {
     pub message: Option<String>,
 }
 
+/// Which of a request's scripts something came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScriptKind {
+    PreRequest,
+    Tests,
+    /// A workflow step's own tests (R-FLOW-1).
+    StepTests,
+}
+
+/// Lines to take a snapshot at in a request's scripts (R-TEST-10), counted from 1.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Breakpoints {
+    pub pre_request: BTreeSet<u32>,
+    pub tests: BTreeSet<u32>,
+}
+
+impl Breakpoints {
+    pub fn is_empty(&self) -> bool {
+        self.pre_request.is_empty() && self.tests.is_empty()
+    }
+}
+
+/// `console.log`, `info`, `warn`, `error` or `debug`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Log,
+    Info,
+    Warn,
+    Error,
+    Debug,
+}
+
+/// One line of a script's console (R-TEST-9), in the order things happened. Values are
+/// JSON; what JSON can't hold comes as `{"$type": "undefined" | "function" | "NaN" | …}`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConsoleEntry {
+    Log {
+        level: LogLevel,
+        args: Vec<serde_json::Value>,
+        line: Option<u32>,
+    },
+    Test {
+        name: String,
+        passed: bool,
+        message: Option<String>,
+        line: Option<u32>,
+    },
+    /// A breakpoint was passed (R-TEST-10): the variables in scope there, by name.
+    Break {
+        line: u32,
+        values: Vec<(String, serde_json::Value)>,
+    },
+    /// The error that stopped the script.
+    Error { message: String, line: Option<u32> },
+    /// Something the user should know, e.g. a breakpoint that could not be set.
+    Note { message: String },
+}
+
+impl ConsoleEntry {
+    /// A log line as plain text, the way a terminal shows it; `None` for other entries.
+    pub fn log_text(&self) -> Option<String> {
+        let Self::Log { args, .. } = self else {
+            return None;
+        };
+        let text: Vec<String> = args
+            .iter()
+            .map(|a| match a {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect();
+        Some(text.join(" "))
+    }
+}
+
 /// What a script did.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ScriptRun {
     pub tests: Vec<TestResult>,
-    /// `console.log` output, one entry per call.
-    pub logs: Vec<String>,
+    /// Logs, tests, breakpoint hits and errors, in order (R-TEST-9).
+    pub console: Vec<ConsoleEntry>,
     /// Variables set (`Some`) or unset (`None`) with `vars` (R-TEST-5).
     pub vars: BTreeMap<String, Option<String>>,
     /// Headers set with `req.setHeader` in a pre-request script (R-TEST-2).
@@ -90,7 +173,9 @@ struct ResponseView {
 #[derive(Deserialize)]
 struct Output {
     tests: Vec<TestResult>,
-    logs: Vec<String>,
+    console: Vec<ConsoleEntry>,
+    /// Console entries left out after the first [`MAX_CONSOLE`] (in the prelude).
+    dropped: u64,
     vars: BTreeMap<String, Option<String>>,
     headers: Vec<KeyValue>,
 }
@@ -99,6 +184,38 @@ struct Output {
 /// as `res` (only for [`Phase::Test`]). Never panics: errors end up in
 /// [`ScriptRun::error`].
 pub fn run(
+    script: &str,
+    phase: Phase,
+    vars: &BTreeMap<String, String>,
+    request: &Request,
+    response: Option<&Response>,
+) -> ScriptRun {
+    run_with_breakpoints(script, phase, vars, request, response, &BTreeSet::new())
+}
+
+/// [`run`], recording the variables in scope whenever a line in `breakpoints` is passed
+/// (R-TEST-10).
+pub fn run_with_breakpoints(
+    script: &str,
+    phase: Phase,
+    vars: &BTreeMap<String, String>,
+    request: &Request,
+    response: Option<&Response>,
+    breakpoints: &BTreeSet<u32>,
+) -> ScriptRun {
+    let instrumented = breakpoints::instrument(script, breakpoints);
+    let notes = instrumented
+        .skipped
+        .iter()
+        .map(|(line, why)| ConsoleEntry::Note {
+            message: format!("The breakpoint on line {line} was not set: {why}."),
+        });
+    let mut run = run_code(&instrumented.code, phase, vars, request, response);
+    run.console.splice(0..0, notes);
+    run
+}
+
+fn run_code(
     script: &str,
     phase: Phase,
     vars: &BTreeMap<String, String>,
@@ -131,34 +248,62 @@ pub fn run(
 
     // JSON is a valid JavaScript expression, so the input goes in as a literal.
     let prelude = format!("const __input = {input};\n{PRELUDE}");
-    if let Err(e) = context.eval(Source::from_bytes(&prelude)) {
+    if let Err(e) = context.eval(Source::from_bytes(&prelude).with_path(Path::new(PRELUDE_PATH))) {
         return ScriptRun {
             error: Some(format!("Tortuga's script setup failed: {e}")),
             ..ScriptRun::default()
         };
     }
     let error = context
-        .eval(Source::from_bytes(script))
+        .eval(Source::from_bytes(script).with_path(Path::new(SCRIPT_PATH)))
         .err()
-        .map(|e| describe(&e.to_string()));
+        .map(|e| {
+            let text = e.to_string();
+            (describe(&text), script_line(&text))
+        });
     let output = context
         .eval(Source::from_bytes("JSON.stringify(__out)"))
         .ok()
         .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
         .and_then(|json| serde_json::from_str::<Output>(&json).ok());
-    match output {
-        Some(out) => ScriptRun {
-            tests: out.tests,
-            logs: out.logs,
-            vars: out.vars,
-            headers: out.headers,
-            error,
-        },
+    let mut run = match output {
+        Some(mut out) => {
+            if out.dropped > 0 {
+                out.console.push(ConsoleEntry::Note {
+                    message: format!("{} more console lines were left out.", out.dropped),
+                });
+            }
+            ScriptRun {
+                tests: out.tests,
+                console: out.console,
+                vars: out.vars,
+                headers: out.headers,
+                error: None,
+            }
+        }
         None => ScriptRun {
-            error: error.or_else(|| Some("The script's results could not be read.".into())),
+            error: Some("The script's results could not be read.".into()),
             ..ScriptRun::default()
         },
+    };
+    if let Some((message, line)) = error {
+        run.error = Some(match line {
+            Some(l) => format!("{message} (line {l})"),
+            None => message.clone(),
+        });
+        run.console.push(ConsoleEntry::Error { message, line });
     }
+    run
+}
+
+/// The line of the user's script an error happened on: the innermost stack frame in it.
+fn script_line(error: &str) -> Option<u32> {
+    let marker = format!("({SCRIPT_PATH}:");
+    error.match_indices(&marker).find_map(|(at, m)| {
+        let rest = error.get(at + m.len()..)?;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    })
 }
 
 /// Whether `code` is valid JavaScript, checked without running it.
@@ -174,8 +319,13 @@ fn describe(error: &str) -> String {
     } else if first.contains("RuntimeLimitError") || first.contains("recursion") {
         "The script called functions too deeply (endless recursion?) and was stopped.".into()
     } else {
-        // Boa adds "at <main> (unknown …)" lines that say nothing to the user.
-        first.to_owned()
+        // Boa adds the position, and "at <main> (…)" lines that say nothing to the user;
+        // the line number is shown on its own.
+        let position = format!(" ({SCRIPT_PATH}:");
+        match first.find(&position) {
+            Some(at) if first.ends_with(')') => first[..at].to_owned(),
+            _ => first.to_owned(),
+        }
     }
 }
 
@@ -213,7 +363,62 @@ fn response_view(response: &Response) -> ResponseView {
 
 /// The script API (R-TEST-3), in JavaScript. `__input` is defined before it runs.
 const PRELUDE: &str = r#"
-const __out = { tests: [], logs: [], vars: {}, headers: [] };
+const __out = { tests: [], console: [], dropped: 0, vars: {}, headers: [] };
+const __MAX_CONSOLE = 1000;
+const __MAX_HITS = 200;
+let __hits = 0;
+
+function __push(entry) {
+  if (__out.console.length < __MAX_CONSOLE) __out.console.push(entry);
+  else __out.dropped += 1;
+}
+// The line of the user's script in a stack: its innermost frame.
+function __line(stack) {
+  const m = /\(script:(\d+):/.exec(String(stack));
+  return m ? Number(m[1]) : null;
+}
+// A value as JSON for the console; what JSON can't hold becomes {"$type": …}.
+function __snap(v, depth, seen) {
+  const d = depth === undefined ? 0 : depth;
+  const s = seen || new Set();
+  if (v === undefined) return { $type: "undefined" };
+  if (typeof v === "function") return { $type: "function", name: v.name || "" };
+  if (typeof v === "number" && !Number.isFinite(v)) return { $type: String(v) };
+  if (typeof v === "bigint") return { $type: "bigint", value: String(v) };
+  if (typeof v === "symbol") return { $type: "symbol", value: String(v) };
+  if (v === null || typeof v !== "object") return v;
+  if (v instanceof Date) return { $type: "date", value: String(v) };
+  if (v instanceof RegExp) return { $type: "regexp", value: String(v) };
+  if (v instanceof Error) return { $type: "error", value: String(v) };
+  if (s.has(v)) return { $type: "circular" };
+  if (d >= 8) return { $type: "more" };
+  s.add(v);
+  let out;
+  if (Array.isArray(v) || v instanceof Set) {
+    out = [...v].slice(0, 200).map((x) => __snap(x, d + 1, s));
+  } else if (v instanceof Map) {
+    out = {};
+    for (const [k, x] of [...v].slice(0, 200)) out[String(k)] = __snap(x, d + 1, s);
+  } else {
+    out = {};
+    for (const k of Object.keys(v).slice(0, 200)) out[k] = __snap(v[k], d + 1, s);
+  }
+  s.delete(v);
+  return out;
+}
+// A breakpoint (R-TEST-10): records every name in `names` that `get` can read here.
+function __bp(line, names, get) {
+  if (__hits >= __MAX_HITS) return;
+  __hits += 1;
+  const values = [];
+  for (const n of names) {
+    let v;
+    try { v = get(n); } catch (e) { continue; }
+    if (typeof v === "function") continue;
+    values.push([n, __snap(v)]);
+  }
+  __push({ kind: "break", line, values });
+}
 const __vars = Object.assign({}, __input.vars);
 
 function __fmt(v) {
@@ -284,8 +489,10 @@ const vars = Object.freeze({
 });
 
 const console = (() => {
-  const log = (...args) => { __out.logs.push(args.map(__fmt).join(" ")); };
-  return Object.freeze({ log, info: log, warn: log, error: log, debug: log });
+  const at = (level) => (...args) => {
+    __push({ kind: "log", level, args: args.map((a) => __snap(a)), line: __line(new Error().stack) });
+  };
+  return Object.freeze({ log: at("log"), info: at("info"), warn: at("warn"), error: at("error"), debug: at("debug") });
 })();
 
 const req = {
@@ -320,57 +527,175 @@ const res = __input.res && {
 };
 
 function test(name, fn) {
+  const line = __line(new Error().stack);
   try {
     fn();
     __out.tests.push({ name: String(name), passed: true });
+    __push({ kind: "test", name: String(name), passed: true, message: null, line });
   } catch (e) {
     const message = e && e.message !== undefined ? String(e.message) : String(e);
     __out.tests.push({ name: String(name), passed: false, message });
+    // Where it failed: the user's line in the error's stack, else the test's own line.
+    __push({ kind: "test", name: String(name), passed: false, message, line: __line(e && e.stack) || line });
   }
 }
 
-function expect(actual) {
-  const matchers = (negate) => {
-    const check = (ok, what) => {
-      if (Boolean(ok) === negate) {
-        throw new Error("Expected " + __show(actual) + (negate ? " not " : " ") + what);
-      }
-    };
-    return {
-      toBe(e) { check(Object.is(actual, e), "to be " + __show(e)); },
-      toEqual(e) { check(__eq(actual, e), "to equal " + __show(e)); },
-      toBeTruthy() { check(actual, "to be truthy"); },
-      toBeFalsy() { check(!actual, "to be falsy"); },
-      toBeDefined() { check(actual !== undefined, "to be defined"); },
-      toBeUndefined() { check(actual === undefined, "to be undefined"); },
-      toBeNull() { check(actual === null, "to be null"); },
-      toContain(item) {
-        const ok = typeof actual === "string"
-          ? actual.includes(String(item))
-          : Array.isArray(actual) && actual.some((x) => __eq(x, item));
-        check(ok, "to contain " + __show(item));
-      },
-      toMatch(re) {
-        const r = re instanceof RegExp ? re : new RegExp(String(re));
-        check(typeof actual === "string" && r.test(actual), "to match " + String(r));
-      },
-      toHaveLength(n) {
-        check(actual !== null && actual !== undefined && actual.length === n, "to have length " + n);
-      },
-      toHaveProperty(path, ...value) {
-        const p = __path(actual, path);
-        const ok = p.found && (value.length === 0 || __eq(p.value, value[0]));
-        check(ok, "to have property " + __show(path) + (value.length === 0 ? "" : " = " + __show(value[0])));
-      },
-      toBeGreaterThan(n) { check(actual > n, "to be greater than " + __show(n)); },
-      toBeGreaterThanOrEqual(n) { check(actual >= n, "to be at least " + __show(n)); },
-      toBeLessThan(n) { check(actual < n, "to be less than " + __show(n)); },
-      toBeLessThanOrEqual(n) { check(actual <= n, "to be at most " + __show(n)); },
-    };
+// `expect` takes Jest's style, `expect(x).toBe(1)`, and Chai's, `expect(x).to.equal(1)`
+// (R-TEST-8). Both report "Expected <actual> [not] <what>".
+function __type(v) {
+  if (v === null) return "null";
+  if (Array.isArray(v)) return "array";
+  if (v instanceof RegExp) return "regexp";
+  if (v instanceof Date) return "date";
+  return typeof v;
+}
+function __includes(actual, item, deep) {
+  const same = (x, y) => (deep ? __eq(x, y) : x === y);
+  if (typeof actual === "string") return actual.includes(String(item));
+  if (Array.isArray(actual)) return actual.some((x) => (deep ? __eq(x, item) : Object.is(x, item)));
+  if (actual instanceof Set) return [...actual].some((x) => same(x, item));
+  if (actual instanceof Map) return [...actual.values()].some((x) => same(x, item));
+  if (actual !== null && typeof actual === "object" && item !== null && typeof item === "object") {
+    return Object.keys(item).every((k) => k in actual && same(actual[k], item[k]));
+  }
+  return false;
+}
+function __size(v) {
+  if (v instanceof Set || v instanceof Map) return v.size;
+  return v === null || v === undefined ? undefined : v.length;
+}
+
+function expect(actual, flags) {
+  const f = Object.assign({ not: false, deep: false, nested: false, own: false, any: false }, flags);
+  const with_ = (more) => expect(actual, Object.assign({}, f, more));
+  const check = (ok, what) => {
+    if (Boolean(ok) === f.not) {
+      throw new Error("Expected " + __show(actual) + (f.not ? " not " : " ") + what);
+    }
   };
-  const m = matchers(false);
-  m.not = matchers(true);
-  return m;
+  const a = {};
+  const chain = (name, get) => Object.defineProperty(a, name, { get, enumerable: false });
+  const words = ["to", "be", "been", "is", "that", "which", "and", "has", "have", "with", "at", "of", "same", "but", "does", "still", "also"];
+  for (const w of words) chain(w, () => a);
+  chain("not", () => with_({ not: !f.not }));
+  chain("deep", () => with_({ deep: true }));
+  chain("nested", () => with_({ nested: true }));
+  chain("own", () => with_({ own: true }));
+  chain("any", () => with_({ any: true }));
+  chain("all", () => with_({ any: false }));
+  // Chai's checks that are properties, not calls: `.to.be.true`.
+  const prop = (name, ok, what) => chain(name, () => { check(ok(), what); return a; });
+  prop("ok", () => actual, "to be truthy");
+  prop("true", () => actual === true, "to be true");
+  prop("false", () => actual === false, "to be false");
+  prop("null", () => actual === null, "to be null");
+  prop("undefined", () => actual === undefined, "to be undefined");
+  prop("NaN", () => Number.isNaN(actual), "to be NaN");
+  prop("exist", () => actual !== null && actual !== undefined, "to exist");
+  prop("empty", () => {
+    if (typeof actual === "string" || Array.isArray(actual)) return actual.length === 0;
+    if (actual instanceof Set || actual instanceof Map) return actual.size === 0;
+    return actual !== null && typeof actual === "object" && Object.keys(actual).length === 0;
+  }, "to be empty");
+
+  const methods = {
+    // Jest
+    toBe(e) { check(Object.is(actual, e), "to be " + __show(e)); },
+    toEqual(e) { check(__eq(actual, e), "to equal " + __show(e)); },
+    toStrictEqual(e) { check(__eq(actual, e), "to equal " + __show(e)); },
+    toBeTruthy() { check(actual, "to be truthy"); },
+    toBeFalsy() { check(!actual, "to be falsy"); },
+    toBeDefined() { check(actual !== undefined, "to be defined"); },
+    toBeUndefined() { check(actual === undefined, "to be undefined"); },
+    toBeNull() { check(actual === null, "to be null"); },
+    toBeNaN() { check(Number.isNaN(actual), "to be NaN"); },
+    toContain(item) { check(__includes(actual, item, false), "to contain " + __show(item)); },
+    toContainEqual(item) { check(__includes(actual, item, true), "to contain " + __show(item)); },
+    toMatch(re) {
+      const r = re instanceof RegExp ? re : new RegExp(String(re));
+      check(typeof actual === "string" && r.test(actual), "to match " + String(r));
+    },
+    toHaveLength(n) { check(__size(actual) === n, "to have length " + n); },
+    toHaveProperty(path, ...value) {
+      const p = __path(actual, path);
+      const ok = p.found && (value.length === 0 || __eq(p.value, value[0]));
+      check(ok, "to have property " + __show(path) + (value.length === 0 ? "" : " = " + __show(value[0])));
+    },
+    toBeGreaterThan(n) { check(actual > n, "to be greater than " + __show(n)); },
+    toBeGreaterThanOrEqual(n) { check(actual >= n, "to be at least " + __show(n)); },
+    toBeLessThan(n) { check(actual < n, "to be less than " + __show(n)); },
+    toBeLessThanOrEqual(n) { check(actual <= n, "to be at most " + __show(n)); },
+    toBeCloseTo(n, digits) {
+      const d = digits === undefined ? 2 : digits;
+      check(Math.abs(actual - n) < Math.pow(10, -d) / 2, "to be close to " + __show(n));
+    },
+    toBeInstanceOf(c) { check(actual instanceof c, "to be an instance of " + (c && c.name)); },
+
+    // Chai
+    equal(e) {
+      if (f.deep) return a.eql(e);
+      check(actual === e, "to equal " + __show(e));
+      return a;
+    },
+    eql(e) { check(__eq(actual, e), "to deeply equal " + __show(e)); return a; },
+    a(type) {
+      const t = String(type).toLowerCase();
+      check(__type(actual) === t, "to be " + (/^[aeiou]/.test(t) ? "an " : "a ") + t);
+      return a;
+    },
+    include(item) { check(__includes(actual, item, f.deep), "to include " + __show(item)); return a; },
+    property(name, ...value) {
+      const p = f.nested
+        ? __path(actual, name)
+        : actual !== null && actual !== undefined
+          && (f.own ? Object.prototype.hasOwnProperty.call(Object(actual), name) : name in Object(actual))
+          ? { found: true, value: actual[name] }
+          : { found: false };
+      const matches = (v) => (f.deep ? __eq(v, value[0]) : v === value[0]);
+      const ok = p.found && (value.length === 0 || matches(p.value));
+      check(ok, "to have property " + __show(name) + (value.length === 0 ? "" : " = " + __show(value[0])));
+      // Like Chai, what follows is about the property's value: `.property("id").that.is.a("number")`.
+      return !f.not && value.length === 0 ? expect(p.value) : a;
+    },
+    lengthOf(n) { check(__size(actual) === n, "to have length " + n); return a; },
+    match(re) { check(typeof actual === "string" && re.test(actual), "to match " + String(re)); return a; },
+    above(n) { check(actual > n, "to be above " + __show(n)); return a; },
+    least(n) { check(actual >= n, "to be at least " + __show(n)); return a; },
+    below(n) { check(actual < n, "to be below " + __show(n)); return a; },
+    most(n) { check(actual <= n, "to be at most " + __show(n)); return a; },
+    within(lo, hi) { check(actual >= lo && actual <= hi, "to be within " + lo + ".." + hi); return a; },
+    oneOf(list) {
+      const ok = Array.isArray(list) && list.some((x) => (f.deep ? __eq(x, actual) : x === actual));
+      check(ok, "to be one of " + __show(list));
+      return a;
+    },
+    keys(...names) {
+      const want = names.length === 1 && Array.isArray(names[0]) ? names[0]
+        : names.length === 1 && names[0] !== null && typeof names[0] === "object" ? Object.keys(names[0])
+        : names;
+      const have = actual !== null && typeof actual === "object" ? Object.keys(actual) : [];
+      const ok = f.any
+        ? want.some((k) => have.includes(String(k)))
+        : want.length === have.length && want.every((k) => have.includes(String(k)));
+      check(ok, "to have " + (f.any ? "any of the keys " : "the keys ") + __show(want));
+      return a;
+    },
+    instanceOf(c) { check(actual instanceof c, "to be an instance of " + (c && c.name)); return a; },
+    closeTo(n, delta) { check(Math.abs(actual - n) <= delta, "to be close to " + n + " ± " + delta); return a; },
+    satisfy(fn) { check(fn(actual), "to satisfy " + String(fn)); return a; },
+    string(s) { check(typeof actual === "string" && actual.includes(s), "to contain " + __show(s)); return a; },
+  };
+  const aliases = {
+    equals: "equal", eq: "equal", eqls: "eql", an: "a", includes: "include", contain: "include",
+    contains: "include", length: "lengthOf", matches: "match", gt: "above", greaterThan: "above",
+    gte: "least", greaterThanOrEqual: "least", lt: "below", lessThan: "below", lte: "most",
+    lessThanOrEqual: "most", key: "keys", instanceof: "instanceOf", approximately: "closeTo",
+    haveOwnProperty: "ownProperty",
+  };
+  Object.assign(a, methods);
+  a.ownProperty = (name, ...value) => with_({ own: true }).property(name, ...value);
+  for (const [alias, name] of Object.entries(aliases)) a[alias] = a[name];
+  return a;
 }
 "#;
 
@@ -391,9 +716,271 @@ mod tests {
         }
     }
 
+    fn logs(run: &ScriptRun) -> Vec<String> {
+        run.console
+            .iter()
+            .filter_map(ConsoleEntry::log_text)
+            .collect()
+    }
+
     fn test_run(script: &str, res: &Response) -> ScriptRun {
         let req = Request::new(HttpMethod::Get, "https://api.test/users?page=2");
         run(script, Phase::Test, &BTreeMap::new(), &req, Some(res))
+    }
+
+    /// R-TEST-9: logs keep their level, line and values; tests and the error that stopped
+    /// the script show where they happened.
+    #[test]
+    fn the_console_shows_levels_lines_values_tests_and_errors() {
+        use serde_json::json;
+        let res = response(200, r#"{"id": 7}"#);
+        let out = test_run(
+            "console.log(\"id\", res.json().id, {a: [1, undefined]});\n\
+             console.warn(\"ü😀\");\n\
+             test(\"ok\", () => expect(1).toBe(1));\n\
+             test(\"bad\", () => {\n  expect(1).to.equal(2);\n});\n\
+             null.x;",
+            &res,
+        );
+        assert_eq!(
+            out.console,
+            [
+                ConsoleEntry::Log {
+                    level: LogLevel::Log,
+                    args: vec![
+                        json!("id"),
+                        json!(7),
+                        json!({"a": [1, {"$type": "undefined"}]})
+                    ],
+                    line: Some(1),
+                },
+                ConsoleEntry::Log {
+                    level: LogLevel::Warn,
+                    args: vec![json!("ü😀")],
+                    line: Some(2),
+                },
+                ConsoleEntry::Test {
+                    name: "ok".into(),
+                    passed: true,
+                    message: None,
+                    line: Some(3),
+                },
+                ConsoleEntry::Test {
+                    name: "bad".into(),
+                    passed: false,
+                    message: Some("Expected 1 to equal 2".into()),
+                    line: Some(5),
+                },
+                ConsoleEntry::Error {
+                    message: "TypeError: cannot convert 'null' or 'undefined' to object".into(),
+                    line: Some(7),
+                },
+            ]
+        );
+        assert_eq!(
+            out.error.as_deref(),
+            Some("TypeError: cannot convert 'null' or 'undefined' to object (line 7)")
+        );
+    }
+
+    /// R-TEST-10: a breakpoint records the variables in scope each time it is passed;
+    /// lines where one can't go get a note; the script runs on.
+    #[test]
+    fn breakpoints_record_the_variables_in_scope() {
+        use serde_json::json;
+        let res = response(200, r#"{"items": [{"id": 1}, {"id": 2}]}"#);
+        let script = "const body = res.json();\n\
+                      for (const item of body.items) {\n\
+                        const twice = item.id * 2;\n\
+                        vars.set(\"last\", String(twice));\n\
+                      }\n\
+                      const x =\n  5;";
+        let req = Request::new(HttpMethod::Get, "https://api.test/");
+        let lines: BTreeSet<u32> = [4, 7].into();
+        let out = run_with_breakpoints(
+            script,
+            Phase::Test,
+            &BTreeMap::new(),
+            &req,
+            Some(&res),
+            &lines,
+        );
+        assert_eq!(out.error, None);
+        assert_eq!(out.vars["last"].as_deref(), Some("4"), "the script ran on");
+        let hits: Vec<&ConsoleEntry> = out
+            .console
+            .iter()
+            .filter(|e| matches!(e, ConsoleEntry::Break { .. }))
+            .collect();
+        assert_eq!(hits.len(), 2, "once per pass through the loop");
+        let ConsoleEntry::Break { line, values } = hits[1] else {
+            unreachable!()
+        };
+        assert_eq!(*line, 4);
+        let get = |name: &str| {
+            values
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("twice"), Some(json!(4)));
+        assert_eq!(get("item"), Some(json!({"id": 2})));
+        assert_eq!(get("body"), Some(json!({"items": [{"id": 1}, {"id": 2}]})));
+        assert_eq!(get("x"), None, "not initialised yet");
+        assert_eq!(get("res"), None, "the script API is not shown");
+        assert!(matches!(
+            &out.console[0],
+            ConsoleEntry::Note { message } if message.starts_with("The breakpoint on line 7 was not set")
+        ));
+    }
+
+    #[test]
+    fn endless_logging_and_breakpoints_are_capped() {
+        let res = response(200, "{}");
+        let req = Request::new(HttpMethod::Get, "https://api.test/");
+        let out = run_with_breakpoints(
+            "for (let i = 0; i < 5000; i++) {\n  console.log(i);\n}",
+            Phase::Test,
+            &BTreeMap::new(),
+            &req,
+            Some(&res),
+            &[2].into(),
+        );
+        assert_eq!(out.console.len(), 1001, "1000 kept and one note");
+        assert!(
+            matches!(
+                out.console.last(),
+                Some(ConsoleEntry::Note { message }) if message.starts_with("4200 more")
+            ),
+            "5000 logs and 200 breakpoint hits, of which 1000 are kept"
+        );
+        let hits = out
+            .console
+            .iter()
+            .filter(|e| matches!(e, ConsoleEntry::Break { .. }))
+            .count();
+        assert!(hits <= 200);
+    }
+
+    /// R-TEST-8: a Chai-style test, as written for Postman, runs and sets its variable.
+    #[test]
+    fn chai_style_tests_run() {
+        let res = response(
+            200,
+            r#"{"data": {"accessToken": "t-ü😀", "expiresAt": "2026-10-21T00:00:00Z"}}"#,
+        );
+        let out = test_run(
+            r#"
+            test("responseData to include accessToken", function () {
+              const response = res.json();
+              expect(response).to.be.an('object');
+              expect(typeof response.data.accessToken).toBe("string");
+              expect(typeof response.data.expiresAt).toBe("string");
+
+              vars.set('cAccessToken', response.data.accessToken);
+            });
+            "#,
+            &res,
+        );
+        assert_eq!(out.error, None);
+        assert!(out.tests[0].passed, "{:?}", out.tests[0].message);
+        assert_eq!(out.vars["cAccessToken"].as_deref(), Some("t-ü😀"));
+    }
+
+    /// R-TEST-8: Chai's chains, flags and assertions, each passing and failing.
+    #[test]
+    fn chai_assertions_pass_and_fail_with_reasons() {
+        use std::fmt::Write as _;
+
+        let res = response(
+            200,
+            r#"{"id": 7, "name": "Ann", "tags": ["a", "b"], "user": {"name": "Ann", "roles": [{"r": 1}]}, "none": null}"#,
+        );
+        let passing = [
+            "expect(b.id).to.equal(7)",
+            "expect(b.id).to.not.equal(8)",
+            "expect(b.id).not.to.equal(8)",
+            "expect(b.user).to.deep.equal({name: 'Ann', roles: [{r: 1}]})",
+            "expect(b.user).to.eql({name: 'Ann', roles: [{r: 1}]})",
+            "expect(b.tags).to.be.an('array').that.includes('a')",
+            "expect(b.name).to.be.a('string')",
+            "expect(b.none).to.be.null",
+            "expect(b.missing).to.be.undefined",
+            "expect(b.id).to.exist",
+            "expect(b.none).to.not.exist",
+            "expect([]).to.be.empty",
+            "expect(b.tags).to.not.be.empty",
+            "expect(true).to.be.true",
+            "expect(b.id).to.be.ok",
+            "expect(b).to.have.property('id', 7)",
+            "expect(b).to.have.property('user').that.has.property('name').that.equals('Ann')",
+            "expect(b).to.have.nested.property('user.name', 'Ann')",
+            "expect(b).to.not.have.property('missing')",
+            "expect(b).to.include({name: 'Ann'})",
+            "expect(b.user.roles).to.deep.include({r: 1})",
+            "expect(b.name).to.include('nn')",
+            "expect(b.tags).to.have.lengthOf(2)",
+            "expect(b.tags).to.have.length(2)",
+            "expect(b.name).to.match(/^A/)",
+            "expect(b.id).to.be.above(5).and.below(10)",
+            "expect(b.id).to.be.at.least(7)",
+            "expect(b.id).to.be.at.most(7)",
+            "expect(b.id).to.be.within(1, 10)",
+            "expect(b.id).to.be.oneOf([1, 7])",
+            "expect(b.user).to.have.all.keys('name', 'roles')",
+            "expect(b.user).to.have.any.keys('name', 'other')",
+            "expect(0.1 + 0.2).to.be.closeTo(0.3, 0.001)",
+            "expect(b.id).to.satisfy((n) => n % 7 === 0)",
+            "expect(res.status).to.eq(200)",
+            "expect(res.status).toBe(200)",
+        ];
+        let failing = [
+            ("expect(b.id).to.equal(8)", "Expected 7 to equal 8"),
+            ("expect(b.id).to.not.equal(7)", "Expected 7 not to equal 7"),
+            (
+                "expect(b.name).to.be.a('number')",
+                "Expected \"Ann\" to be a number",
+            ),
+            (
+                "expect(b.tags).to.be.an('object')",
+                "Expected [\"a\",\"b\"] to be an object",
+            ),
+            ("expect(b.none).to.exist", "Expected null to exist"),
+            (
+                "expect(b).to.have.property('missing')",
+                "to have property \"missing\"",
+            ),
+            ("expect(b.tags).to.have.lengthOf(3)", "to have length 3"),
+            ("expect(b.id).to.be.above(7)", "Expected 7 to be above 7"),
+            (
+                "expect(b.user).to.have.all.keys('name')",
+                "to have the keys",
+            ),
+            (
+                "expect(b.user).to.equal({name: 'Ann', roles: [{r: 1}]})",
+                "to equal",
+            ),
+        ];
+        let mut script = String::from("const b = res.json();\n");
+        for (i, check) in passing.iter().enumerate() {
+            writeln!(script, "test(\"pass {i}\", () => {{ {check}; }});")
+                .expect("writing to a String");
+        }
+        for (i, (check, _)) in failing.iter().enumerate() {
+            writeln!(script, "test(\"fail {i}\", () => {{ {check}; }});")
+                .expect("writing to a String");
+        }
+        let out = test_run(&script, &res);
+        assert_eq!(out.error, None);
+        for (t, check) in out.tests.iter().zip(passing) {
+            assert!(t.passed, "{check}: {:?}", t.message);
+        }
+        for (t, (check, message)) in out.tests[passing.len()..].iter().zip(failing) {
+            assert!(!t.passed, "{check} should fail");
+            let got = t.message.as_deref().unwrap_or_default();
+            assert!(got.contains(message), "{check}: {got}");
+        }
+        assert_eq!(out.tests.len(), passing.len() + failing.len());
     }
 
     /// R-TEST-1: passing and failing tests, with readable reasons.
@@ -467,7 +1054,7 @@ mod tests {
             out.vars,
             BTreeMap::from([("workspace.token".to_owned(), Some("t-1".to_owned()))])
         );
-        assert_eq!(out.logs, ["t-1"]);
+        assert_eq!(logs(&out), ["t-1"]);
     }
 
     /// R-TEST-2, R-TEST-5: variables and headers set by scripts.
@@ -500,7 +1087,7 @@ mod tests {
             ])
         );
         assert_eq!(out.headers, [KeyValue::new("X-Signature", "abc")]);
-        assert_eq!(out.logs, [r#"signed {"ok":true} false"#]);
+        assert_eq!(logs(&out), [r#"signed {"ok":true} false"#]);
     }
 
     #[test]

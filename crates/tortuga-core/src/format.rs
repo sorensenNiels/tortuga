@@ -30,9 +30,10 @@ pub struct Manifest {
     /// name, enabled or not, replaces it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<KeyValue>,
-    /// Auth for requests that don't set their own (R-HTTP-5, R-COL-4).
-    #[serde(default, skip_serializing_if = "Auth::is_none")]
-    pub auth: Auth,
+    /// Auth for requests that don't set their own (R-HTTP-5, R-COL-4). Absent = inherit
+    /// the workspace's; `Auth::None` = send none, whatever the workspace sets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<Auth>,
     /// Collection-level variable defaults (R-VAR-2).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, String>,
@@ -49,7 +50,7 @@ impl Manifest {
             secrets: Vec::new(),
             servers: Vec::new(),
             headers: Vec::new(),
-            auth: Auth::None,
+            auth: None,
             variables: BTreeMap::new(),
             settings: RequestSettings::default(),
         }
@@ -97,9 +98,10 @@ pub struct FolderMeta {
     /// subfolder or the request, enabled or not, replaces it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<KeyValue>,
-    /// Auth for the folder's requests that don't set their own; none = inherit.
-    #[serde(default, skip_serializing_if = "Auth::is_none")]
-    pub auth: Auth,
+    /// Auth for the folder's requests that don't set their own. Absent = inherit;
+    /// `Auth::None` = send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<Auth>,
     /// Variable defaults for the folder's requests.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variables: BTreeMap<String, String>,
@@ -109,7 +111,8 @@ pub struct FolderMeta {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FolderDefaults {
     pub headers: Vec<KeyValue>,
-    pub auth: Auth,
+    /// `None` = inherit.
+    pub auth: Option<Auth>,
     pub variables: BTreeMap<String, String>,
 }
 
@@ -431,9 +434,9 @@ content = """
             Some(3),
             &FolderDefaults {
                 headers: vec![KeyValue::new("X-Area", "admin")],
-                auth: Auth::Bearer {
+                auth: Some(Auth::Bearer {
                     token: "{{admin_token}}".into(),
-                },
+                }),
                 variables: [("tenant".to_owned(), "acme".to_owned())].into(),
             },
         );
@@ -662,10 +665,10 @@ content_type = "image/png"
         let mut m = Manifest::new("Acme API");
         m.secrets = vec!["token".into()];
         m.headers.push(KeyValue::new("Accept", "application/json"));
-        m.auth = Auth::Basic {
+        m.auth = Some(Auth::Basic {
             username: "{{user}}".into(),
             password: "{{token}}".into(),
-        };
+        });
         let text = write_manifest(&m);
         assert_eq!(
             text,
@@ -683,6 +686,25 @@ username = "{{user}}"
 password = "{{token}}"
 "#
         );
+        assert_eq!(parse_manifest(&text), Ok(m));
+    }
+
+    /// R-HTTP-5: a project's "no auth" is written, so it can stop the workspace's auth;
+    /// a manifest without `[auth]` inherits.
+    #[test]
+    fn manifest_no_auth_round_trips() {
+        let mut m = Manifest::new("Acme API");
+        assert!(
+            !write_manifest(&m).contains("[auth]"),
+            "inherit is the default"
+        );
+        assert_eq!(
+            parse_manifest(&write_manifest(&m)).expect("parse").auth,
+            None
+        );
+        m.auth = Some(Auth::None);
+        let text = write_manifest(&m);
+        assert!(text.ends_with("\n[auth]\nkind = \"none\"\n"), "{text}");
         assert_eq!(parse_manifest(&text), Ok(m));
     }
 

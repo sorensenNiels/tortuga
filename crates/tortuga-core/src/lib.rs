@@ -14,6 +14,7 @@ pub mod history;
 pub mod http;
 pub mod http_file;
 pub mod import;
+pub mod js_format;
 pub mod json;
 pub mod jsonpath;
 pub mod model;

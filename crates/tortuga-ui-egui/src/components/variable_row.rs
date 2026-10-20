@@ -5,7 +5,7 @@ use egui::{AsIdSalt, RichText, TextEdit, Ui};
 use crate::theme;
 
 /// Room the 🔒 toggle and remove button take next to the name.
-const BUTTONS_WIDTH: f32 = 56.0;
+const BUTTONS_WIDTH: f32 = 82.0;
 
 /// Hover texts of the 🔒 toggle, which say where the values go.
 #[derive(Debug, Clone, Copy)]

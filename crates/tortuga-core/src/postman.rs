@@ -140,7 +140,7 @@ impl<'a> Importer<'a> {
             auth: !auth.is_none(),
             no_auth: false,
         };
-        manifest.auth = auth;
+        manifest.auth = Some(auth).filter(|a| !a.is_none());
         let items = self.items(self.doc.get("item"), &top);
         self.c.finish(ImportKind::Postman, manifest, items)
     }
@@ -218,7 +218,8 @@ impl<'a> Importer<'a> {
                     auth: inherited.auth || !auth.is_none(),
                     no_auth: auth.is_none(),
                 };
-                defaults.auth = auth;
+                // "No auth" reaches the requests through `no_auth`.
+                defaults.auth = Some(auth).filter(|a| !a.is_none());
                 below
             }
         };
@@ -895,9 +896,9 @@ mod tests {
         let import = import();
         assert_eq!(
             import.manifest.auth,
-            Auth::Bearer {
+            Some(Auth::Bearer {
                 token: "{{token}}".into()
-            }
+            })
         );
         assert_eq!(
             import.manifest.secrets,
@@ -923,7 +924,7 @@ mod tests {
 
         // "noauth" on a folder: its requests turn the project's auth off.
         assert_eq!(find(&import, "Health").auth, Some(Auth::None));
-        assert_eq!(folder(&import, "Public").auth, Auth::None);
+        assert_eq!(folder(&import, "Public").auth, None);
         assert_eq!(
             find(&import, "Login").auth,
             Some(Auth::Basic {
@@ -1042,10 +1043,10 @@ mod tests {
         let import = parse(text).expect("parse");
         assert_eq!(
             import.manifest.auth,
-            Auth::Basic {
+            Some(Auth::Basic {
                 username: "{{username}}".into(),
                 password: "{{pw}}".into()
-            }
+            })
         );
         assert_eq!(
             import.secret_values,

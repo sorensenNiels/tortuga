@@ -216,7 +216,7 @@ impl TortugaUi {
                     .save_workspace_defaults(tortuga_core::workspace::WorkspaceDefaults {
                         settings: d.settings,
                         headers: d.headers,
-                        auth: d.auth,
+                        auth: d.auth.unwrap_or_default(),
                     });
                 true
             }
@@ -254,10 +254,20 @@ impl TortugaUi {
             d.error = Some(e);
             return false;
         }
-        self.state
+        let old = self
+            .state
+            .collection(&d.root)
+            .map(|c| c.environments.clone())
+            .unwrap_or_default();
+        let done = self
+            .state
             .run(&d.root, |c, s| {
                 c.save_config(s, &saved.manifest, &saved.environments)
             })
-            .is_some()
+            .is_some();
+        if done {
+            self.state.follow_environment_renames(&d.root, &old);
+        }
+        done
     }
 }

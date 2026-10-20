@@ -3,7 +3,10 @@ use std::sync::{Arc, OnceLock};
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Grid, Key, Label, RichText, ScrollArea, TextEdit, TextStyle, TextWrapMode, Ui};
+use tortuga_core::script::{ConsoleEntry, ScriptKind};
 use tortuga_core::{BodyView, Response};
+
+use super::console_view::{console_view, console_went_wrong};
 
 use crate::{format, theme};
 
@@ -63,7 +66,8 @@ impl Outcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TestsView {
     pub tests: Vec<tortuga_core::script::TestResult>,
-    pub logs: Vec<String>,
+    /// Logs, tests, breakpoint hits and errors of every script, in order (R-TEST-9).
+    pub console: Vec<(ScriptKind, ConsoleEntry)>,
     pub errors: Vec<String>,
     /// Variables set (`Some`) or removed (`None`).
     pub vars: std::collections::BTreeMap<String, Option<String>>,
@@ -74,7 +78,7 @@ impl TestsView {
     pub fn from_step(o: &tortuga_core::runner::StepOutcome) -> Option<Self> {
         let view = Self {
             tests: o.tests.clone(),
-            logs: o.logs.clone(),
+            console: o.console.clone(),
             errors: o.errors.clone(),
             vars: o.vars.clone(),
         };
@@ -83,6 +87,11 @@ impl TestsView {
 
     fn failed(&self) -> usize {
         self.tests.iter().filter(|t| !t.passed).count()
+    }
+
+    /// A test failed, or a script or capture went wrong, so the Tests tab shows red.
+    fn went_wrong(&self) -> bool {
+        self.failed() > 0 || !self.errors.is_empty()
     }
 }
 
@@ -318,8 +327,10 @@ enum Tab {
     #[default]
     Body,
     Headers,
-    /// Test results, captured values and console output (R-TEST-1).
+    /// Test results and captured values (R-TEST-1).
     Tests,
+    /// What the scripts logged, breakpoint hits and errors (R-TEST-9, R-TEST-10).
+    Console,
 }
 
 /// Panel state that is not part of the response; reset for each new response.
@@ -407,6 +418,44 @@ pub enum ResponseAction {
     SaveBody,
     /// Turn wrapping long lines on or off (R-SET-7).
     SetWrap(bool),
+}
+
+/// Body, Headers, and Tests and Console when the request has scripts; Tests and Console
+/// are red when something went wrong (R-TEST-6, R-TEST-9).
+fn response_tabs(
+    ui: &mut Ui,
+    response: &Response,
+    tests: Option<&TestsView>,
+    st: &mut ResponseState,
+) {
+    let header_count = response.headers.len().to_string();
+    let mut tabs = vec![
+        (Tab::Body, "Body", None),
+        (Tab::Headers, "Headers", Some(header_count)),
+    ];
+    if let Some(t) = tests {
+        let label = if t.tests.is_empty() {
+            (!t.errors.is_empty()).then(|| "✗".to_owned())
+        } else {
+            Some(format!("{}/{}", t.tests.len() - t.failed(), t.tests.len()))
+        };
+        tabs.push((Tab::Tests, "Tests", label));
+    }
+    let console = tests.map(|t| t.console.as_slice()).unwrap_or_default();
+    if !console.is_empty() {
+        tabs.push((Tab::Console, "Console", Some(console.len().to_string())));
+    }
+    if !tabs.iter().any(|(t, ..)| *t == st.tab) {
+        st.tab = Tab::Body;
+    }
+    let mut failing = Vec::new();
+    if tests.is_some_and(TestsView::went_wrong) {
+        failing.push(Tab::Tests);
+    }
+    if console_went_wrong(console) {
+        failing.push(Tab::Console);
+    }
+    theme::tabs_flagged(ui, &mut st.tab, &tabs, &failing);
 }
 
 /// Response status, timing, size, headers and body (R-HTTP-6).
@@ -524,22 +573,8 @@ fn details(
     if st.focus_search {
         st.tab = Tab::Body;
     }
-    let header_count = response.headers.len().to_string();
-    let mut tabs = vec![
-        (Tab::Body, "Body", None),
-        (Tab::Headers, "Headers", Some(header_count)),
-    ];
-    if let Some(t) = tests {
-        let label = if t.tests.is_empty() {
-            (!t.errors.is_empty()).then(|| "✗".to_owned())
-        } else {
-            Some(format!("{}/{}", t.tests.len() - t.failed(), t.tests.len()))
-        };
-        tabs.push((Tab::Tests, "Tests", label));
-    } else if st.tab == Tab::Tests {
-        st.tab = Tab::Body;
-    }
-    theme::tabs(ui, &mut st.tab, &tabs);
+    response_tabs(ui, response, tests, st);
+    let console = tests.map(|t| t.console.as_slice()).unwrap_or_default();
 
     theme::card(ui).show(ui, |ui| match st.tab {
         Tab::Body => {
@@ -548,6 +583,12 @@ fn details(
             }
         }
         Tab::Tests => tests_tab(ui, tests),
+        Tab::Console => {
+            ScrollArea::vertical()
+                .id_salt("console")
+                .auto_shrink([false, false])
+                .show(ui, |ui| console_view(ui, console));
+        }
         Tab::Headers => {
             ScrollArea::vertical()
                 .id_salt("response-headers")
@@ -730,13 +771,6 @@ pub fn tests_details(ui: &mut Ui, t: &TestsView) {
                     ui,
                     "Kept for this project until Tortuga closes; they win over environment values.",
                 );
-            }
-            if !t.logs.is_empty() {
-                ui.add_space(8.0);
-                theme::section_label(ui, "Console");
-                for line in &t.logs {
-                    ui.add(Label::new(RichText::new(line).monospace()).wrap());
-                }
             }
         }
     }
@@ -942,6 +976,29 @@ mod tests {
     use tortuga_core::KeyValue;
 
     use super::*;
+
+    /// R-TEST-1: the Tests tab is red when a test failed or a script went wrong.
+    #[test]
+    fn tests_went_wrong_when_a_test_fails_or_a_script_errs() {
+        let test = |passed| tortuga_core::script::TestResult {
+            name: "status is 200 ü😀".into(),
+            passed,
+            message: None,
+        };
+        let mut view = TestsView {
+            tests: vec![test(true), test(true)],
+            ..TestsView::default()
+        };
+        assert!(!view.went_wrong(), "all passed");
+        view.tests.push(test(false));
+        assert!(view.went_wrong(), "one failed");
+        let only_error = TestsView {
+            errors: vec!["ReferenceError: pm is not defined".into()],
+            ..TestsView::default()
+        };
+        assert!(only_error.went_wrong(), "the script failed");
+        assert!(!TestsView::default().went_wrong(), "nothing ran");
+    }
 
     fn json_response() -> Response {
         Response {

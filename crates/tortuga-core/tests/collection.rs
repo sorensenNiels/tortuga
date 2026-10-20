@@ -352,9 +352,9 @@ fn project_with_folder_defaults() -> (tempfile::TempDir, Collection, PathBuf, Pa
         KeyValue::new("X-Team", "core"),
         KeyValue::new("Accept", "text/plain"),
     ];
-    manifest.auth = Auth::Bearer {
+    manifest.auth = Some(Auth::Bearer {
         token: "project".into(),
-    };
+    });
     manifest.variables.insert("tenant".into(), "project".into());
     manifest.variables.insert("version".into(), "v1".into());
     let env = Environment {
@@ -377,10 +377,10 @@ fn project_with_folder_defaults() -> (tempfile::TempDir, Collection, PathBuf, Pa
             &outer,
             &FolderDefaults {
                 headers: vec![KeyValue::new("Accept", "application/json")],
-                auth: Auth::Basic {
+                auth: Some(Auth::Basic {
                     username: "admin".into(),
                     password: "{{tenant}}".into(),
-                },
+                }),
                 variables: [("tenant".to_owned(), "admin".to_owned())].into(),
             },
         )
@@ -450,6 +450,37 @@ fn folder_defaults_are_inherited_nearest_first() {
     );
     let project_level = tortuga_core::vars::Context::for_collection(&col, Some("dev"));
     assert_eq!(project_level.variables["tenant"], "project");
+}
+
+/// R-COL-11, R-HTTP-5: "no auth" on a folder keeps the auth of the levels above out,
+/// and is saved as `kind = "none"`; an absent `[auth]` still inherits.
+#[test]
+fn a_folder_can_say_no_auth() {
+    use tortuga_core::format::FolderDefaults;
+    use tortuga_core::vars::{Context, prepare};
+
+    let (dir, col, outer, req) = project_with_folder_defaults();
+    let inner = req.parent().expect("in a folder").to_path_buf();
+    let mut defaults = col.folders_of(&req).last().expect("inner").defaults.clone();
+    defaults.auth = Some(tortuga_core::Auth::None);
+    col.save_folder_defaults(&FS, &inner, &defaults)
+        .expect("saved");
+    let text = std::fs::read_to_string(dir.path().join(&inner).join("_folder.toml")).expect("file");
+    assert!(text.contains("[auth]\nkind = \"none\""), "{text}");
+
+    let col = reopen(&col);
+    let ctx = Context::for_request(&col, Some("dev"), Some(&req));
+    assert_eq!(ctx.auth, Some(tortuga_core::Auth::None));
+    assert_eq!(ctx.auth_origin, "folder “Users”");
+    let sent = prepare(&col.request(&req).expect("saved").request, &ctx).expect("prepare");
+    assert!(!sent.has_header("authorization"), "{:?}", sent.headers);
+
+    // The outer folder, with no `[auth]` of its own now, inherits the project's.
+    col.save_folder_defaults(&FS, &outer, &FolderDefaults::default())
+        .expect("saved");
+    let col = reopen(&col);
+    let outer_ctx = Context::for_request(&col, Some("dev"), Some(&outer.join("x.toml")));
+    assert_eq!(outer_ctx.auth_origin, "the project");
 }
 
 /// R-COL-11: renaming, reordering and duplicating a folder keep its defaults.

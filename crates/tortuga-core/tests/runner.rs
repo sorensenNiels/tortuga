@@ -63,6 +63,7 @@ async fn pre_request_capture_and_tests() {
         Extra {
             capture: Some(&step_capture),
             tests: Some(r#"test("step check", () => expect(vars.get("status")).toBe("200"));"#),
+            breakpoints: None,
         },
     )
     .await;
@@ -89,7 +90,12 @@ async fn pre_request_capture_and_tests() {
             ("user_id".to_owned(), set("7")),
         ])
     );
-    assert_eq!(out.logs, ["logged in"]);
+    let logs: Vec<String> = out
+        .console
+        .iter()
+        .filter_map(|(_, e)| e.log_text())
+        .collect();
+    assert_eq!(logs, ["logged in"]);
     assert_eq!(
         out.sent.as_ref().map(|r| r.url.clone()),
         Some(format!("{}/tenants/acme/login", server.uri()))

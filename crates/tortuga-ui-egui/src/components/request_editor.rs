@@ -1,8 +1,10 @@
 use egui::{Color32, ComboBox, Key, Label, RichText, Stroke, TextEdit, Ui};
+use tortuga_core::script::{Breakpoints, ScriptKind};
 use tortuga_core::settings::ResolvedSettings;
 use tortuga_core::{Auth, HttpMethod, KeyValue, Request, RequestBody};
 
 use super::auth_editor::EditDefaults;
+use super::script_editor::{script_editor, script_heading};
 use super::{BodyDrafts, body_editor, key_value_table, request_auth};
 use crate::theme;
 
@@ -94,6 +96,8 @@ pub struct EditorContext<'a> {
     pub preview: Option<&'a Result<Request, String>>,
     /// Files to upload can be picked with a dialog (R-HTTP-15).
     pub can_pick_files: bool,
+    /// Breakpoints in the request's scripts, kept while the app runs (R-TEST-10).
+    pub breakpoints: &'a Breakpoints,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +110,8 @@ pub enum EditorAction {
     EditWorkspaceDefaults,
     /// A `curl` command was pasted into the URL field (R-HTTP-11).
     PasteCurl(String),
+    /// Set or clear the breakpoint on a line of one of the scripts (R-TEST-10).
+    ToggleBreakpoint(ScriptKind, u32),
     /// "Choose…" for the file of multipart part `n` (R-HTTP-15).
     ChooseFile(usize),
 }
@@ -258,7 +264,11 @@ fn tab_content(
             }
         }
         Tab::Options => request_options(ui, request, st, cx),
-        Tab::Scripts => request_scripts(ui, request, st),
+        Tab::Scripts => {
+            if let Some(toggled) = request_scripts(ui, request, st, cx.breakpoints) {
+                action = Some(toggled);
+            }
+        }
         Tab::Preview => request_preview(ui, cx.preview),
     }
     action
@@ -500,33 +510,45 @@ fn take_pasted_curl(input: &mut egui::InputState) -> Option<String> {
     }
 }
 
-/// The scripts and captures of a request (R-TEST-1, R-TEST-2, R-TEST-4).
-fn request_scripts(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
-    theme::section_label(ui, "Pre-request script");
-    code_editor(
+/// The scripts and captures of a request (R-TEST-1, R-TEST-2, R-TEST-4). Returns the
+/// breakpoint the user set or cleared (R-TEST-10).
+fn request_scripts(
+    ui: &mut Ui,
+    request: &mut Request,
+    st: &mut EditorState,
+    breakpoints: &Breakpoints,
+) -> Option<EditorAction> {
+    script_heading(ui, "Pre-request script", &mut request.scripts.pre_request);
+    let pre = script_editor(
         ui,
         "pre-request",
         &mut request.scripts.pre_request,
         4,
         "vars.set(\"now\", String(Date.now()));\nreq.setHeader(\"X-Request-Id\", vars.get(\"now\"));",
-    );
+        Some(&breakpoints.pre_request),
+    )
+    .map(|line| EditorAction::ToggleBreakpoint(ScriptKind::PreRequest, line));
     theme::hint(
         ui,
         "Runs before variables are filled in: vars.get/set/unset, req.setHeader(name, value), console.log.",
     );
     ui.add_space(10.0);
-    theme::section_label(ui, "Tests");
-    code_editor(
+    script_heading(ui, "Tests", &mut request.scripts.tests);
+    let tests = script_editor(
         ui,
         "tests",
         &mut request.scripts.tests,
         6,
         "test(\"status is 200\", () => expect(res.status).toBe(200));\ntest(\"has an id\", () => expect(res.json()).toHaveProperty(\"id\"));",
-    );
+        Some(&breakpoints.tests),
+    )
+    .map(|line| EditorAction::ToggleBreakpoint(ScriptKind::Tests, line));
     theme::hint(
         ui,
-        "Runs after the response: test(name, fn), expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not), \
-         res.status, res.json(), res.header(name), res.time, vars, console.log.",
+        "Runs after the response: test(name, fn), expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not) \
+         or Chai's expect(x).to.equal/.to.be.an(\"object\")/.to.have.property/…, \
+         res.status, res.json(), res.header(name), res.time, vars, console.log. \
+         Click a line number to set a breakpoint: the Console then shows the variables there.",
     );
     ui.add_space(10.0);
     theme::section_label(ui, "Captures");
@@ -544,17 +566,7 @@ fn request_scripts(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
          header:Name or status. \
          Captured values are kept until Tortuga closes and win over environment values.",
     );
-}
-
-fn code_editor(ui: &mut Ui, id: &str, text: &mut String, rows: usize, hint: &str) {
-    ui.add(
-        TextEdit::multiline(text)
-            .id_salt(("script", id))
-            .code_editor()
-            .desired_width(f32::INFINITY)
-            .desired_rows(rows)
-            .hint_text(hint),
-    );
+    pre.or(tests)
 }
 
 /// The request exactly as it will be sent, secrets masked (R-HTTP-14).
@@ -739,6 +751,7 @@ mod tests {
                         in_collection: false,
                         preview: None,
                         can_pick_files: false,
+                        breakpoints: &Breakpoints::default(),
                     },
                 );
             });
@@ -791,6 +804,7 @@ mod tests {
                     in_collection: false,
                     preview: Some(&preview),
                     can_pick_files: false,
+                    breakpoints: &Breakpoints::default(),
                 },
             );
         });
@@ -829,6 +843,7 @@ mod tests {
                         in_collection: false,
                         preview: None,
                         can_pick_files: false,
+                        breakpoints: &Breakpoints::default(),
                     },
                 );
             });
@@ -850,6 +865,51 @@ mod tests {
         }
         assert_eq!(request.scripts.tests, "test('ok', () => {})");
         assert_eq!(request.capture.keys().collect::<Vec<_>>(), ["token"]);
+    }
+
+    /// R-TEST-7: "Beautify" tidies a script.
+    #[test]
+    fn beautify_tidies_a_script() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/");
+        request.scripts.tests = "test('ok',()=>{expect(res.status).toBe(200);});".into();
+        let mut st = EditorState::new(&request);
+        st.focus_url = false;
+        st.tab = Tab::Scripts;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                request_editor(
+                    ui,
+                    &mut request,
+                    &mut st,
+                    EditorContext {
+                        servers: &[],
+                        server_base: None,
+                        undefined: &[],
+                        sending: false,
+                        settings: test_settings(),
+                        unverified_host: None,
+                        collection_auth: None,
+                        inherited_headers: &[],
+                        auth_origin: "the project",
+                        cookie_count: 0,
+                        in_collection: false,
+                        preview: None,
+                        can_pick_files: false,
+                        breakpoints: &Breakpoints::default(),
+                    },
+                );
+            });
+            h.run();
+            let buttons: Vec<_> = h.get_all_by_label("Beautify").collect();
+            assert_eq!(buttons.len(), 2, "pre-request and tests");
+            buttons[1].click();
+            h.run();
+        }
+        assert_eq!(
+            request.scripts.tests,
+            "test('ok', () => {\n  expect(res.status).toBe(200);\n});"
+        );
+        assert_eq!(request.scripts.pre_request, "");
     }
 
     #[test]

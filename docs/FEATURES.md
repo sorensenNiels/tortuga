@@ -258,6 +258,13 @@ file (13 requests, `@baseUrl`), against a local echo server.
 | R-COL-19 | Postman scripts are translated on import (`crates/tortuga-core/src/postman/script.rs`). **Verified:** automated tests on Linux, including a typical translated test script run by the script engine with the expected passes, failures and variables, partial translations kept as comments, and strings, comments and non-ASCII text left alone. **Not yet checked:** importing a collection with scripts in the running app and sending its requests. |
 | R-HTTP-19 | XML bodies, pretty-printed XML responses, the XPath filter and `xpath:` captures (`crates/tortuga-core/src/xml.rs`, `xpath.rs`; D40). **Verified:** automated tests on Linux: checking and formatting (errors with line and column, non-ASCII text, CDATA, comments, entities), XML content types, the file format, the automatic Content-Type sent, every XPath form and its errors, captures, imports (curl, Postman), the body editor's check and Format, the response panel's pretty and raw views and a filter on a body over 2 MB. **Not yet checked:** in the running app. |
 | R-CLI-4 | The **Release** workflow builds `tortuga-cli` on each OS, checks `--version` and attaches `tortuga-cli-<version>-<os>.tar.gz` (`.zip` on Windows) with the README and licences. **Verified:** the archive step run locally on Linux (binary needs only libc). **Not yet checked:** the workflow itself, and the Windows and macOS archives. |
+| R-SRV-7 | Environments one at a time in a resizable dialog (`components/environments.rs`, `modals::resizable_dialog`; D41). **Verified:** automated tests on Linux (only the chosen environment's URLs and values are shown, the shown environment follows moves and removes, servers and variables removed from an environment view, renaming in the Name field, a renamed environment staying chosen in the workspace, dragging the corner resizes the dialog, names are not truncated) and rendered screenshots. Not yet checked in the running app. |
+| R-SET-8 | "No auth" for project and folder defaults (`Manifest::auth` and `FolderDefaults::auth` are `Option<Auth>`, like a request's). **Verified:** automated tests on Linux (manifest round-trip, a folder's "no auth" keeps the project's out, a project's keeps the workspace's out, the dialogs' choices). Not yet checked in the running app. Older builds read `kind = "none"` as "inherit". |
+| R-TEST-6 | Tests tab in red after a failure (`theme::tabs_flagged`, `TestsView::went_wrong`). **Verified:** automated test on Linux (failed test, script error, all passed, nothing ran) and a rendered screenshot in dark mode. Not yet checked in the running app. |
+| R-TEST-7 | "Beautify" for scripts (`tortuga_core::js_format::beautify`, `request_editor::script_heading`). **Verified:** automated tests on Linux (statements and nesting, `else`/`catch`/`finally`, operators and keywords, strings/templates/regexes/comments untouched, division vs regex, `for (;;)`, blank lines, a varied script still parses, beautifying twice is stable, broken and very long scripts, the button in the Scripts tab). Not yet checked in the running app. |
+| R-TEST-8 | Chai-style `expect` in the script prelude (`crates/tortuga-core/src/script.rs`). **Verified:** automated tests on Linux: a Postman-style test with `.to.be.an('object')` passes and sets its variable; every chain, flag and assertion passes and fails with a readable reason; the Jest-style tests still pass. Not yet checked in the running app. |
+| R-TEST-9 | Console tab (`tortuga_core::script::ConsoleEntry`, `components/console_view.rs`). **Verified:** automated tests on Linux (levels, lines, values, test and error entries from real scripts; the output cap; the view shows every kind of entry; values JSON can't hold) and a rendered screenshot. Not yet checked in the running app. |
+| R-TEST-10 | Snapshot breakpoints (`script/breakpoints.rs`, `components/script_editor.rs`; D42). **Verified:** automated tests on Linux (variables in scope per pass through a loop; lines that continue, sit in strings or can't take a statement are skipped with a note; line numbers unchanged; the hit cap; clicking a line number toggles it; breakpoints follow a rename and go with a delete) and a rendered screenshot. Not yet checked in the running app. |
 
 ## Known limitations
 
@@ -364,7 +371,7 @@ Decided in D12–D15. A **project** is what earlier versions called a collection
 | R-VAR-3 | **Secrets are never written into the collection directory.** A variable can be marked secret; its value is stored only on the local machine (§6.7). Teammates see that the secret exists, not its value. |
 | R-VAR-4 | Order of precedence, highest first: local secret value, then the active environment, then collection variables. |
 | R-VAR-5 | Undefined variables are highlighted in the editor and reported before the request is sent. |
-| R-VAR-7 | Collection variables and per-environment values are edited in one table: one row per variable, one column for the collection default and one per environment. An empty cell falls back to the collection default. |
+| R-VAR-7 | Collection variables and per-environment values are edited in one table: one row per variable, one column for the collection default and one per environment. An empty cell falls back to the collection default. *Layout changed by R-SRV-7 (D41).* |
 
 #### Servers
 
@@ -374,11 +381,11 @@ Servers make that a first-class concept instead of a naming convention for varia
 | ID | Requirement |
 |---|---|
 | R-SRV-1 | A collection defines a list of named servers. Renaming a server does not break the requests that use it. |
-| R-SRV-2 | Each environment sets a base URL for each server, edited in one table: one row per server, one column per environment. Base URLs are shared data (committed to git) and may contain `{{variables}}`. |
+| R-SRV-2 | Each environment sets a base URL for each server, edited in one table: one row per server, one column per environment. Base URLs are shared data (committed to git) and may contain `{{variables}}`. *Layout changed by R-SRV-7 (D41).* |
 | R-SRV-3 | A request picks a server from a dropdown in front of the URL field; the URL field then holds only the path and query (e.g. `/users?page=2`). "No server" means the URL field holds a full URL. |
 | R-SRV-4 | When sending, the request goes to the selected server's base URL in the active environment plus the path. If the server has no URL in that environment, or no longer exists, sending stops with a message naming the server and environment. |
 | R-SRV-5 | The active environment is chosen per collection from the title bar, and remembered locally (§6.7). |
-| R-SRV-6 | In the environments dialog, environments (columns) and servers (rows) can be dragged into a new order, which is saved. Variables stay sorted by name (D23). *(IDEA-13)* |
+| R-SRV-6 | In the environments dialog, environments (columns) and servers (rows) can be dragged into a new order, which is saved. Variables stay sorted by name (D23). *(IDEA-13)* *Layout changed by R-SRV-7 (D41).* |
 
 ### Collaboration through git
 

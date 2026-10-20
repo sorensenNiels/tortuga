@@ -9,6 +9,7 @@ mod cookies;
 mod dialogs;
 mod disk;
 mod drafts;
+mod editor_actions;
 mod history;
 mod import;
 mod projects;
@@ -26,14 +27,15 @@ use egui::{
     CentralPanel, Frame, Key, KeyboardShortcut, Margin, Modifiers, Panel, RichText, TextEdit, Ui,
 };
 use futures_util::future::AbortHandle;
+use tortuga_core::script::Breakpoints;
 use tortuga_core::{Request, vars};
 
 use crate::components::{
     AddProjectsDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
-    CreateProjectDialog, DefaultsDialog, EditorAction, EditorContext, EditorState,
-    EnvironmentsDialog, Filtered, Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext,
-    ResponseAction, ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog,
-    SidebarState, TabStripState, TestsView, TextBody, request_editor, response_panel, sidebar,
+    CreateProjectDialog, DefaultsDialog, EditorContext, EditorState, EnvironmentsDialog, Filtered,
+    Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext, ResponseAction, ResponseState,
+    ResponseView, SaveToCollectionDialog, SettingsDialog, SidebarState, TabStripState, TestsView,
+    TextBody, request_editor, response_panel, sidebar,
 };
 use crate::format::sentence;
 use crate::host::{Host, SavedDrafts};
@@ -209,8 +211,9 @@ impl<T> Inbox<T> {
     }
 }
 
-/// What the last send of one request left to show. One struct, so a rename or delete
-/// can't move or drop one part and forget another.
+/// What the app keeps for one request while it runs: what its last send left to show,
+/// and how it is being debugged. One struct, so a rename or delete can't move or drop
+/// one part and forget another.
 #[derive(Debug, Default)]
 struct Sent {
     outcome: Option<Outcome>,
@@ -218,6 +221,8 @@ struct Sent {
     filter: String,
     /// What its scripts and captures did (R-TEST-1).
     tests: Option<TestsView>,
+    /// Breakpoints in its scripts (R-TEST-10).
+    breakpoints: Breakpoints,
 }
 
 /// Moves every value whose key `moved` gives a new place to that place.
@@ -539,7 +544,7 @@ impl TortugaUi {
         self.request_head(ui, key.as_ref(), current_dirty, read_only);
         ui.add_space(4.0);
 
-        let collection_auth = root.as_ref().map(|_| ctx.auth.clone());
+        let collection_auth = root.as_ref().map(|_| ctx.auth.clone().unwrap_or_default());
         let inherited_headers: Vec<(tortuga_core::KeyValue, String)> = ctx
             .inherited_headers_with_origins(&self.current)
             .map(|(h, origin)| (h.clone(), origin.to_owned()))
@@ -554,6 +559,11 @@ impl TortugaUi {
             .editor
             .shows_preview()
             .then(|| vars::preview(&self.current, &ctx).map_err(|e| sentence(&e.to_string())));
+        let no_breakpoints = Breakpoints::default();
+        let breakpoints = self
+            .sent
+            .get(&key)
+            .map_or(&no_breakpoints, |s| &s.breakpoints);
         let action = Panel::top("request")
             .frame(Frame::new().inner_margin(Margin {
                 bottom: 12,
@@ -584,28 +594,13 @@ impl TortugaUi {
                         in_collection: root.is_some(),
                         preview: preview.as_ref(),
                         can_pick_files: self.state.host.can_pick_folders(),
+                        breakpoints,
                     },
                 )
             })
             .inner;
-        match action {
-            Some(EditorAction::Send) => self.send(ui.ctx()),
-            Some(EditorAction::Cancel) => self.cancel(),
-            Some(EditorAction::PasteCurl(text)) => self.paste_curl(&text),
-            Some(EditorAction::ChooseFile(index)) => self.choose_upload(root.as_deref(), index),
-            Some(EditorAction::EditCollectionDefaults) => {
-                if let Some(root) = root {
-                    self.modal = Some(Modal::Defaults(
-                        DefaultsDialog::new(&self.state, root).on_auth(),
-                    ));
-                }
-            }
-            Some(EditorAction::EditWorkspaceDefaults) => {
-                self.modal = Some(Modal::Defaults(
-                    DefaultsDialog::for_workspace(&self.state).on_auth(),
-                ));
-            }
-            None => {}
+        if let Some(action) = action {
+            self.apply_editor_action(ui.ctx(), action, &key);
         }
 
         ui.add_space(14.0);
@@ -635,6 +630,7 @@ impl TortugaUi {
             outcome,
             filter,
             tests,
+            breakpoints: _,
         } = self.sent.entry(key.clone()).or_default();
         let outcome = outcome.as_ref();
         let cx = PanelContext {
@@ -1296,8 +1292,8 @@ mod tests {
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
-    /// R-HTTP-13, R-TEST-1: a request's filter and test results follow a rename, and
-    /// are gone with the request.
+    /// R-HTTP-13, R-TEST-1, R-TEST-10: a request's filter, test results and breakpoints
+    /// follow a rename, and are gone with the request.
     #[test]
     fn last_send_follows_renames_and_deletes() {
         let (mut ui, root, first) = setup("sent-disk");
@@ -1308,6 +1304,10 @@ mod tests {
             Sent {
                 filter: "$.id".into(),
                 tests: Some(TestsView::default()),
+                breakpoints: Breakpoints {
+                    tests: [3].into(),
+                    ..Breakpoints::default()
+                },
                 ..Sent::default()
             },
         );
@@ -1318,6 +1318,7 @@ mod tests {
         let sent = ui.sent.get(&renamed).expect("moved with the request");
         assert_eq!(sent.filter, "$.id");
         assert!(sent.tests.is_some());
+        assert_eq!(sent.breakpoints.tests, [3].into());
         assert!(!ui.sent.contains_key(&Some(second.clone())));
 
         let renamed = renamed.expect("a request");

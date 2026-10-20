@@ -80,7 +80,7 @@ impl StepView {
             elapsed_ms: response.map(|r| u64::try_from(r.elapsed.as_millis()).unwrap_or(u64::MAX)),
             tests: TestsView {
                 tests: o.tests.clone(),
-                logs: o.logs.clone(),
+                console: o.console.clone(),
                 errors,
                 vars: o.vars.clone(),
             },
@@ -461,14 +461,15 @@ fn step_details(
                      steps.",
                 );
                 ui.add_space(4.0);
-                theme::section_label(ui, "Tests");
-                ui.add(
-                    TextEdit::multiline(&mut step.tests)
-                        .id_salt("step-tests")
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(4)
-                        .hint_text("test(\"created\", () => expect(res.status).toBe(201));"),
+                super::script_editor::script_heading(ui, "Tests", &mut step.tests);
+                // Line numbers, to find the lines the Console names; no breakpoints here.
+                super::script_editor::script_editor(
+                    ui,
+                    "step-tests",
+                    &mut step.tests,
+                    4,
+                    "test(\"created\", () => expect(res.status).toBe(201));",
+                    None,
                 );
                 theme::hint(ui, "Runs after the request's own tests.");
             });
@@ -693,6 +694,11 @@ fn step_detail(ui: &mut Ui, step: &StepView) {
             }
             ui.add_space(4.0);
             tests_details(ui, &step.tests);
+            if !step.tests.console.is_empty() {
+                ui.add_space(8.0);
+                theme::section_label(ui, "Console");
+                super::console_view::console_view(ui, &step.tests.console);
+            }
             if let Some(body) = &step.body {
                 ui.add_space(8.0);
                 theme::section_label(ui, "Response body");

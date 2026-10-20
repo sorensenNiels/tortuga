@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::cookies::CookieJar;
 use crate::jsonpath::JsonPath;
 use crate::model::{Request, Response};
-use crate::script::{self, Phase, ScriptRun, TestResult};
+use crate::script::{self, Breakpoints, ConsoleEntry, Phase, ScriptKind, ScriptRun, TestResult};
 use crate::{Client, vars};
 
 /// A capture or `vars.set` name starting with this goes to the workspace (R-WS-8):
@@ -24,11 +24,13 @@ pub fn target(name: &str) -> (bool, &str) {
     }
 }
 
-/// Captures and a test script added on top of the request's own (a workflow step, R-FLOW-1).
+/// Captures and a test script added on top of the request's own (a workflow step, R-FLOW-1),
+/// and breakpoints in the request's scripts (R-TEST-10).
 #[derive(Debug, Clone, Default)]
 pub struct Extra<'a> {
     pub capture: Option<&'a BTreeMap<String, String>>,
     pub tests: Option<&'a str>,
+    pub breakpoints: Option<&'a Breakpoints>,
 }
 
 /// What happened when a request was run.
@@ -42,8 +44,8 @@ pub struct StepOutcome {
     pub pre_request: Option<ScriptRun>,
     /// The test scripts' results (the request's, then the step's).
     pub tests: Vec<TestResult>,
-    /// `console.log` output of all scripts, in order.
-    pub logs: Vec<String>,
+    /// The console of all scripts, in order, with the script each line came from (R-TEST-9).
+    pub console: Vec<(ScriptKind, ConsoleEntry)>,
     /// Errors from scripts and captures.
     pub errors: Vec<String>,
     /// Variables set (`Some`) or unset (`None`) by scripts and captures (R-TEST-5), by
@@ -101,24 +103,32 @@ pub async fn run_step(
     extra: Extra<'_>,
 ) -> StepOutcome {
     let mut out = StepOutcome::default();
+    let no_breakpoints = std::collections::BTreeSet::new();
+    let default_breakpoints = Breakpoints::default();
+    let breakpoints = extra.breakpoints.unwrap_or(&default_breakpoints);
     // The app's settings are the last level under the workspace's and project's (R-SET-1).
     let mut ctx = ctx.clone().with_app_settings(client.settings());
     let mut request = request.clone();
 
     if !request.scripts.pre_request.trim().is_empty() {
-        let run = script::run(
+        let run = script::run_with_breakpoints(
             &request.scripts.pre_request,
             Phase::PreRequest,
             &ctx.variables,
             &request,
             None,
+            &breakpoints.pre_request,
         );
         apply_vars(&mut ctx, &mut out, &run.vars);
         for header in &run.headers {
             request.headers.retain(|h| !h.is_named(&header.name));
             request.headers.push(header.clone());
         }
-        out.logs.extend(run.logs.iter().cloned());
+        out.console.extend(
+            run.console
+                .iter()
+                .map(|e| (ScriptKind::PreRequest, e.clone())),
+        );
         let error = run.error.clone();
         out.pre_request = Some(run);
         if let Some(e) = error {
@@ -164,10 +174,23 @@ pub async fn run_step(
         if tests.trim().is_empty() {
             continue;
         }
-        let run = script::run(tests, Phase::Test, &ctx.variables, &sent, Some(&response));
+        let (kind, lines) = if n == 0 {
+            (ScriptKind::Tests, &breakpoints.tests)
+        } else {
+            (ScriptKind::StepTests, &no_breakpoints)
+        };
+        let run = script::run_with_breakpoints(
+            tests,
+            Phase::Test,
+            &ctx.variables,
+            &sent,
+            Some(&response),
+            lines,
+        );
         apply_vars(&mut ctx, &mut out, &run.vars);
         out.tests.extend(run.tests);
-        out.logs.extend(run.logs);
+        out.console
+            .extend(run.console.into_iter().map(|e| (kind, e)));
         if let Some(e) = run.error {
             let which = if n == 0 {
                 "Test script"

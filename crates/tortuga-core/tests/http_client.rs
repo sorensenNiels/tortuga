@@ -341,9 +341,9 @@ async fn sends_inherited_auth_and_headers_with_secret_values() {
     let server = server_replying(200).await;
     let ctx = Context {
         headers: vec![KeyValue::new("X-Team", "tortuga")],
-        auth: Auth::Bearer {
+        auth: Some(Auth::Bearer {
             token: "{{token}}".into(),
-        },
+        }),
         ..Context::default()
     }
     .with_secrets(BTreeMap::from([("token".into(), "s3cret".into())]));

@@ -29,8 +29,9 @@ pub struct Context {
     pub headers: Vec<KeyValue>,
     /// Where each of `headers` comes from, e.g. "the project" or "folder “Users”".
     pub header_origins: Vec<String>,
-    /// Auth for requests that don't set their own (R-HTTP-5).
-    pub auth: Auth,
+    /// Auth for requests that don't set their own (R-HTTP-5); `None` when no level sets
+    /// any, so none is sent. `Some(Auth::None)` is a level saying "no auth".
+    pub auth: Option<Auth>,
     /// Where `auth` comes from.
     pub auth_origin: String,
     /// The project folder, which relative paths of files to upload start from (R-HTTP-15, D21).
@@ -110,14 +111,15 @@ impl Context {
                 }
             }
         }
+        // The nearest level that says anything wins, also when it says "no auth".
         let (auth, auth_origin) = folders
             .iter()
             .rev()
-            .find(|f| !f.defaults.auth.is_none())
-            .map_or_else(
-                || (collection.manifest.auth.clone(), "the project".to_owned()),
-                |f| (f.defaults.auth.clone(), format!("folder “{}”", f.name)),
-            );
+            .find_map(|f| {
+                let auth = f.defaults.auth.clone()?;
+                Some((Some(auth), format!("folder “{}”", f.name)))
+            })
+            .unwrap_or_else(|| (collection.manifest.auth.clone(), "the project".to_owned()));
         Self {
             environment: env.map(|e| e.name.clone()),
             server_names: crate::collection::server_names(&collection.manifest),
@@ -149,7 +151,7 @@ impl Context {
         self.headers.splice(0..0, inherited);
         self.header_origins.splice(0..0, origins);
         if self.auth.is_none() && !defaults.auth.is_none() {
-            self.auth = defaults.auth.clone();
+            self.auth = Some(defaults.auth.clone());
             "the workspace".clone_into(&mut self.auth_origin);
         }
         self
@@ -190,9 +192,14 @@ impl Context {
         self
     }
 
-    /// The auth `request` uses: its own, or the collection's.
+    /// The auth `request` uses: its own, or what it inherits.
     pub fn auth_for<'a>(&'a self, request: &'a Request) -> &'a Auth {
-        request.auth.as_ref().unwrap_or(&self.auth)
+        static NO_AUTH: Auth = Auth::None;
+        request
+            .auth
+            .as_ref()
+            .or(self.auth.as_ref())
+            .unwrap_or(&NO_AUTH)
     }
 
     /// Collection headers `request` inherits: those it doesn't name itself.
@@ -636,9 +643,9 @@ mod tests {
     #[test]
     fn auth_is_inherited_overridden_and_substituted() {
         let ctx = Context {
-            auth: Auth::Bearer {
+            auth: Some(Auth::Bearer {
                 token: "{{id}}".into(),
-            },
+            }),
             ..ctx()
         };
         let auth_header = |req: &Request| {
@@ -773,14 +780,23 @@ mod tests {
 
         // The project's own auth wins.
         let mut own = super::tests::ctx();
-        own.auth = Auth::Bearer {
+        own.auth = Some(Auth::Bearer {
             token: "project".into(),
-        };
+        });
         own.auth_origin = "the project".into();
         assert_eq!(
             own.with_workspace_defaults(&workspace).auth_origin,
             "the project"
         );
+
+        // "No auth" in the project keeps the workspace's out.
+        let mut none = super::tests::ctx();
+        none.auth = Some(Auth::None);
+        none.auth_origin = "the project".into();
+        let none = none.with_workspace_defaults(&workspace);
+        assert_eq!(none.auth_origin, "the project");
+        let out = prepare(&req, &none).expect("prepared");
+        assert!(!out.has_header("authorization"), "{:?}", out.headers);
     }
 
     #[test]
@@ -834,9 +850,9 @@ mod tests {
                 ("token".into(), "s3cret".into()),
             ]),
             secrets: ["token".into()].into(),
-            auth: Auth::Bearer {
+            auth: Some(Auth::Bearer {
                 token: "{{token}}".into(),
-            },
+            }),
             ..Context::default()
         };
         let mut r = Request::new(crate::HttpMethod::Post, "https://{{host}}/u/{{missing}}");

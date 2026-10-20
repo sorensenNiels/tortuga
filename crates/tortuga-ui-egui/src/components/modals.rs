@@ -41,6 +41,80 @@ pub(super) fn dialog<T>(
     }
 }
 
+/// Width and height of the grip in a resizable dialog's bottom-right corner.
+const GRIP: f32 = 14.0;
+
+/// Like [`dialog`] (not dismissable), but the user resizes it by dragging its bottom-right
+/// corner (R-SRV-7). `content` gets exactly the dialog's size below the heading; the size is
+/// kept for the rest of the session.
+pub(super) fn resizable_dialog<T>(
+    ctx: &Context,
+    id: &str,
+    title: &str,
+    default_size: egui::Vec2,
+    min_size: egui::Vec2,
+    content: impl FnOnce(&mut Ui) -> DialogResult<T>,
+) -> DialogResult<T> {
+    const MARGIN: i8 = 22;
+    let size_id = Id::unique(("dialog-size", id));
+    let max_size = ctx.content_rect().size() - egui::Vec2::splat(2.0 * f32::from(MARGIN) + 48.0);
+    let size = ctx.data(|d| d.get_temp(size_id)).unwrap_or(default_size);
+    let size = clamp_size(size, min_size, max_size);
+    let frame = egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::same(MARGIN));
+    Modal::new(Id::unique(id))
+        .frame(frame)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let mut body = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            body.set_clip_rect(rect.expand(f32::from(MARGIN)));
+            body.heading(title);
+            body.add_space(10.0);
+            let result = content(&mut body);
+
+            // The grip sits in the frame's margin, so it never covers the dialog's buttons.
+            let corner = rect.max + egui::Vec2::splat(f32::from(MARGIN) - GRIP - 4.0);
+            let grip_rect = egui::Rect::from_min_size(corner, egui::Vec2::splat(GRIP));
+            let grip = ui
+                .interact(grip_rect, size_id.with("grip"), egui::Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
+                .on_hover_text("Drag to resize");
+            paint_grip(ui, grip_rect, grip.hovered() || grip.dragged());
+            if grip.dragged() {
+                // The dialog stays centred, so it grows on both sides: twice the pointer's move
+                // keeps the corner under the pointer.
+                let resized = clamp_size(size + 2.0 * grip.drag_delta(), min_size, max_size);
+                ui.ctx().data_mut(|d| d.insert_temp(size_id, resized));
+            }
+            result
+        })
+        .inner
+}
+
+/// `size` within `min` and `max`; `min` wins on a window too small for it.
+fn clamp_size(size: egui::Vec2, min: egui::Vec2, max: egui::Vec2) -> egui::Vec2 {
+    size.min(max).max(min)
+}
+
+/// Three diagonal lines, like the corner of a resizable window.
+fn paint_grip(ui: &Ui, rect: egui::Rect, active: bool) {
+    let p = theme::palette(ui);
+    let stroke = egui::Stroke::new(1.0, if active { p.accent } else { p.muted });
+    for i in 1..=3u8 {
+        let d = f32::from(i) * GRIP / 3.0;
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.max.x - d, rect.max.y),
+                egui::pos2(rect.max.x, rect.max.y - d),
+            ],
+            stroke,
+        );
+    }
+}
+
 /// Cancel and confirm buttons, right-aligned. Returns (cancel clicked, confirm clicked).
 fn actions(ui: &mut Ui, confirm: egui::Button<'_>, confirm_enabled: bool) -> (bool, bool) {
     ui.add_space(16.0);
@@ -1024,6 +1098,25 @@ mod tests {
 
     use super::*;
     use crate::test_host::TestHost;
+
+    /// R-SRV-7
+    #[test]
+    fn a_resized_dialog_stays_between_its_minimum_and_the_window() {
+        let (min, max) = (egui::vec2(560.0, 360.0), egui::vec2(1000.0, 700.0));
+        assert_eq!(
+            clamp_size(egui::vec2(10.0, 900.0), min, max),
+            egui::vec2(560.0, 700.0)
+        );
+        assert_eq!(
+            clamp_size(egui::vec2(800.0, 500.0), min, max),
+            egui::vec2(800.0, 500.0)
+        );
+        // A window smaller than the minimum keeps the minimum.
+        assert_eq!(
+            clamp_size(egui::vec2(800.0, 500.0), min, egui::vec2(300.0, 200.0)),
+            min
+        );
+    }
 
     /// R-CK-5: the cookie viewer lists cookies with where they go and when they expire;
     /// 🗙 removes one, "Clear all" empties the jar.

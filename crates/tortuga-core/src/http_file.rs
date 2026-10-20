@@ -241,7 +241,7 @@ impl Importer {
             for (_, request) in &mut requests {
                 request.auth = None;
             }
-            manifest.auth = auth;
+            manifest.auth = Some(auth);
         }
         let items = requests
             .into_iter()
@@ -720,7 +720,7 @@ X-Id: {{$uuid}}
             import.manifest.variables.is_empty(),
             "baseUrl is the server"
         );
-        assert_eq!(import.manifest.auth, Auth::None);
+        assert_eq!(import.manifest.auth, None);
         assert_eq!(import.warnings, Vec::<String>::new());
     }
 
@@ -868,9 +868,9 @@ X-Id: {{$uuid}}
         let import = parse(text, "a.http").expect("parse");
         assert_eq!(
             import.manifest.auth,
-            Auth::Bearer {
+            Some(Auth::Bearer {
                 token: "{{token}}".into()
-            }
+            })
         );
         assert!(requests(&import.items).iter().all(|r| r.auth.is_none()));
         assert_eq!(import.secret_values["token"], "abc");

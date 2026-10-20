@@ -186,7 +186,9 @@ impl TortugaUi {
         let edit = if names.is_empty() {
             ui.button("Add environments…").clicked()
         } else {
-            let shown = self.state.workspace().environment.clone().or_else(|| {
+            // A name no project has any more (renamed or removed) is not shown.
+            let chosen = self.state.workspace().environment.clone();
+            let shown = chosen.filter(|n| names.contains(n)).or_else(|| {
                 let c = self.state.collection(&root)?;
                 let id = self.state.active_environment(&root)?;
                 c.environment(&id).map(|e| e.name.clone())

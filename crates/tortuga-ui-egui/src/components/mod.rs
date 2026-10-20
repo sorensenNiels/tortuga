@@ -3,6 +3,7 @@
 
 mod auth_editor;
 mod body_editor;
+mod console_view;
 mod defaults_dialog;
 mod environments;
 mod history_list;
@@ -12,6 +13,7 @@ mod modals;
 mod palette;
 mod request_editor;
 mod response_panel;
+mod script_editor;
 mod sidebar;
 mod tab_strip;
 mod variable_row;
@@ -25,12 +27,12 @@ pub use environments::{EnvironmentsDialog, SavedConfig};
 pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, history_list};
 pub use import_dialog::{ImportDialog, ImportTarget};
 pub use key_value_table::key_value_table;
-use modals::dialog;
 pub use modals::{
     AddProjects, AddProjectsDialog, ConfirmDialog, CookieAction, CookiesDialog, CopyCurlDialog,
     CreateProjectDialog, DialogResult, MoveDialog, NameDialog, RuntimeVarsDialog,
     SaveToCollectionDialog, SettingsDialog,
 };
+use modals::{dialog, resizable_dialog};
 pub use palette::{Palette, PaletteItem};
 pub use request_editor::{EditorAction, EditorContext, EditorState, request_editor};
 pub use response_panel::{
