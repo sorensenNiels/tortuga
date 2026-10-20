@@ -26,7 +26,8 @@ make package      # installers for this OS in target/packages/
 
 ## Make a release
 
-1. Make sure `main` is green in CI and `docs/FEATURES.md` is up to date.
+1. Make sure `docs/FEATURES.md` is up to date. CI runs only on release tags (or by hand from the Actions tab),
+   so `make verify` locally is the check before a release; the release script runs it too.
 2. Run one of these on an up-to-date, clean `main`:
 
    ```sh

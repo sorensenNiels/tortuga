@@ -1,9 +1,11 @@
 name: CI
 
+# Runs only for a release (a pushed `vX.Y.Z` tag, see docs/RELEASING.md) or by hand
+# (Actions → CI → Run workflow). Day to day, `make verify` runs the same checks locally.
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags: ["v*"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
