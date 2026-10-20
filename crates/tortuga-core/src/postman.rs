@@ -31,7 +31,13 @@ use crate::model::{
 };
 use crate::{Error, Result};
 
+mod environment;
 mod script;
+
+pub(crate) use environment::looks_like_environment;
+pub use environment::{
+    EnvironmentImport, PostmanEnvironment, import_environments, parse_environment,
+};
 
 /// Reads a Postman collection (v2.0 or v2.1 JSON) into a project (R-COL-16).
 pub fn parse(text: &str) -> Result<Import> {
@@ -64,7 +70,19 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidPostman(message.into())
 }
 
+/// The error for a Postman environment file given where a collection was expected.
+pub(crate) fn environment_file_error() -> Error {
+    invalid(
+        "this is a Postman environment, not a collection. Add it with “Add environment \
+         files…” while importing its collection, or with “Import Postman environments…” in \
+         a project's menu",
+    )
+}
+
 fn check_version(doc: &Value) -> Result<()> {
+    if looks_like_environment(doc) {
+        return Err(environment_file_error());
+    }
     let schema = doc
         .pointer("/info/schema")
         .and_then(Value::as_str)

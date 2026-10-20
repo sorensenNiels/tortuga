@@ -268,6 +268,10 @@ impl Host for DesktopHost {
         dialogs::pick_any_file(title)
     }
 
+    fn pick_any_files(&self, title: &str) -> Vec<PathBuf> {
+        dialogs::pick_any_files(title)
+    }
+
     fn keeps_history(&self) -> bool {
         true
     }

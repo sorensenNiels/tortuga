@@ -1,12 +1,14 @@
 //! The import dialog for OpenAPI descriptions (R-COL-15), Postman collections
-//! (R-COL-16) and `.http` files (R-COL-17): what the file becomes, where the new project goes, and what could not
-//! be imported as written.
+//! (R-COL-16, with environment files, R-COL-20) and `.http` files (R-COL-17): what the
+//! file becomes, where the new project goes, and what could not be imported as written.
+//! Also the dialog for Postman environments imported into a project (R-COL-20).
 
 use std::path::{Path, PathBuf};
 
 use egui::{Context, RichText, Ui};
 use tortuga_core::NewItem;
 use tortuga_core::import::{Import, ImportKind};
+use tortuga_core::postman::EnvironmentImport;
 
 use super::{DialogResult, dialog};
 use crate::format::count;
@@ -20,6 +22,15 @@ pub struct ImportTarget<'a> {
     /// The git repository the folder is in, if any.
     pub repository: Option<&'a Path>,
     pub can_pick_folders: bool,
+}
+
+/// What the import dialog asks the shell for, besides importing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportAction {
+    /// "Choose…": another folder for the project.
+    ChooseFolder,
+    /// Postman environment files for the new project (R-COL-20).
+    AddEnvironments,
 }
 
 /// Reviews an import before the project is written.
@@ -47,9 +58,13 @@ impl ImportDialog {
         }
     }
 
-    /// Done means "import"; the flag is set when "Choose…" was clicked.
-    pub fn show(&self, ctx: &Context, target: ImportTarget<'_>) -> (DialogResult<()>, bool) {
-        let mut choose = false;
+    /// Done means "import"; the action is what else was clicked.
+    pub fn show(
+        &self,
+        ctx: &Context,
+        target: ImportTarget<'_>,
+    ) -> (DialogResult<()>, Option<ImportAction>) {
+        let mut action = None;
         let title = match self.import.kind {
             ImportKind::OpenApi => "Import OpenAPI",
             ImportKind::Postman => "Import Postman collection",
@@ -71,12 +86,24 @@ impl ImportDialog {
             );
             ui.add_space(8.0);
             self.summary(ui);
+            if self.import.kind == ImportKind::Postman
+                && target.can_pick_folders
+                && ui
+                    .button("Add environment files…")
+                    .on_hover_text(
+                        "Postman environments exported as JSON become this project's \
+                         environments",
+                    )
+                    .clicked()
+            {
+                action = Some(ImportAction::AddEnvironments);
+            }
 
             ui.add_space(12.0);
             theme::section_label(ui, "Project folder");
             ui.horizontal(|ui| {
                 if target.can_pick_folders && ui.button("Choose…").clicked() {
-                    choose = true;
+                    action = Some(ImportAction::ChooseFolder);
                 }
                 let full = self.dir.display().to_string();
                 ui.add(egui::Label::new(path_end(&full, 60)).truncate())
@@ -129,7 +156,7 @@ impl ImportDialog {
             })
             .inner
         });
-        (result, choose)
+        (result, action)
     }
 
     fn summary(&self, ui: &mut Ui) {
@@ -190,7 +217,7 @@ fn secrets_hint(import: &Import) -> Option<String> {
     let secrets = &import.manifest.secrets;
     let found = secrets
         .iter()
-        .filter(|s| import.secret_values.contains_key(*s))
+        .filter(|s| import.has_secret_value(s))
         .count();
     let missing = secrets.len() - found;
     let kept = "they are kept on this computer, not in the project files";
@@ -206,6 +233,95 @@ fn secrets_hint(import: &Import) -> Option<String> {
             "Values for {found} of these were found in the file: {kept}. Fill in the other \
              {missing} under Environments… after the import."
         )),
+    }
+}
+
+/// Reviews Postman environments before they are imported into a project (R-COL-20).
+#[derive(Debug, Clone)]
+pub struct EnvironmentImportDialog {
+    pub root: PathBuf,
+    pub project: String,
+    /// The files' names.
+    pub sources: Vec<String>,
+    pub preview: EnvironmentImport,
+}
+
+impl EnvironmentImportDialog {
+    /// Done means "import".
+    pub fn show(&self, ctx: &Context) -> DialogResult<()> {
+        dialog(
+            ctx,
+            "import-environments",
+            "Import Postman environments",
+            480.0,
+            true,
+            |ui| {
+                theme::hint(
+                    ui,
+                    format!(
+                        "From {}. Base URLs go to the project's servers; secret values stay on \
+                         this computer.",
+                        self.sources.join(", ")
+                    ),
+                );
+                ui.add_space(8.0);
+                let preview = &self.preview;
+                let list = |names: &[String]| {
+                    if names.is_empty() {
+                        "None".to_owned()
+                    } else {
+                        names.join(", ")
+                    }
+                };
+                let mut secrets: Vec<String> = preview
+                    .secret_values
+                    .keys()
+                    .map(|(_, name)| name.clone())
+                    .collect();
+                secrets.sort();
+                secrets.dedup();
+                egui::Grid::new("environment-import-summary")
+                    .num_columns(2)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        let row = |ui: &mut Ui, label: &str, value: &str| {
+                            ui.label(RichText::new(label).color(theme::palette(ui).muted));
+                            ui.label(value);
+                            ui.end_row();
+                        };
+                        row(ui, "Project", &self.project);
+                        row(ui, "Adds", &list(&preview.added));
+                        row(ui, "Updates", &list(&preview.updated));
+                        row(ui, "Secret values", &list(&secrets));
+                    });
+                if !preview.updated.is_empty() {
+                    theme::hint(
+                        ui,
+                        "Environments that are updated keep what the files don't set.",
+                    );
+                }
+                if !secrets.is_empty() {
+                    theme::hint(
+                        ui,
+                        "These were found in the files: they are kept on this computer, not in \
+                         the project files.",
+                    );
+                }
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let import = ui.add(theme::primary_button(ui, "Import")).clicked();
+                    let cancel = ui.button("Cancel").clicked();
+                    if import {
+                        DialogResult::Done(())
+                    } else if cancel {
+                        DialogResult::Close
+                    } else {
+                        DialogResult::Open
+                    }
+                })
+                .inner
+            },
+        )
     }
 }
 
@@ -261,7 +377,11 @@ mod tests {
             h.get_by_label("Import").click();
             h.run();
         }
-        assert!(results.iter().any(|(_, choose)| *choose));
+        assert!(
+            results
+                .iter()
+                .any(|(_, action)| *action == Some(ImportAction::ChooseFolder))
+        );
         assert!(results.iter().any(|(r, _)| *r == DialogResult::Done(())));
 
         taken = true;
@@ -304,6 +424,87 @@ mod tests {
             "Values for these were found in the file: they are kept on this computer, not in \
              the project files.",
         );
+    }
+
+    /// R-COL-20: a Postman collection import offers environment files; other imports
+    /// don't.
+    #[test]
+    fn import_dialog_adds_postman_environments() {
+        let collection = r#"{"info": {"name": "Shop"},
+            "item": [{"name": "Ping", "request": "https://shop.test/ping"}]}"#;
+        let target = ImportTarget {
+            can_pick_folders: true,
+            ..ImportTarget::default()
+        };
+        for (text, file, offered) in [
+            (collection, "shop.json", true),
+            (SPEC, "openapi.json", false),
+        ] {
+            let import =
+                tortuga_core::import::parse(text, file, ImportKind::Postman).expect("parse");
+            let dialog = ImportDialog::new(import, PathBuf::from("/repo").join(file));
+            let mut actions = Vec::new();
+            {
+                let mut h = crate::test_host::harness(|ui| {
+                    actions.push(dialog.show(ui.ctx(), target).1);
+                });
+                h.run();
+                let button = h.query_by_label("Add environment files…");
+                assert_eq!(button.is_some(), offered, "{file}");
+                if let Some(button) = button {
+                    button.click();
+                    h.run();
+                }
+            }
+            assert_eq!(
+                actions.contains(&Some(ImportAction::AddEnvironments)),
+                offered
+            );
+        }
+    }
+
+    /// R-COL-20: the dialog for a project says what is added, what is updated and
+    /// which secret values were found, without showing them.
+    #[test]
+    fn environment_import_dialog_summarises() {
+        let env = tortuga_core::postman::parse_environment(
+            r#"{"name": "Staging", "values": [{"key": "token", "value": "s3cret", "type": "secret"}]}"#,
+        )
+        .expect("parse");
+        let existing = tortuga_core::Environment {
+            id: "default".into(),
+            name: "Default".into(),
+            ..tortuga_core::Environment::default()
+        };
+        let default = tortuga_core::postman::parse_environment(
+            r#"{"name": "Default", "values": [{"key": "limit", "value": "5"}]}"#,
+        )
+        .expect("parse");
+        let preview = tortuga_core::postman::import_environments(
+            &tortuga_core::Manifest::new("Shop"),
+            &[existing],
+            &[env, default],
+        );
+        let dialog = EnvironmentImportDialog {
+            root: PathBuf::from("/repo/shop"),
+            project: "Shop".into(),
+            sources: vec!["staging.json".into(), "default.json".into()],
+            preview,
+        };
+        let mut results = Vec::new();
+        {
+            let mut h = crate::test_host::harness(|ui| results.push(dialog.show(ui.ctx())));
+            h.run();
+            h.get_by_label("Import Postman environments");
+            h.get_by_label("Staging");
+            h.get_by_label("Default");
+            h.get_by_label("token");
+            h.get_by_label("Environments that are updated keep what the files don't set.");
+            assert!(h.query_by_label_contains("s3cret").is_none());
+            h.get_by_label("Import").click();
+            h.run();
+        }
+        assert!(results.contains(&DialogResult::Done(())));
     }
 
     /// R-COL-17: a `.http` file is named after the file and gets its own title.

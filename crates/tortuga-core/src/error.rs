@@ -103,6 +103,10 @@ pub enum Error {
     #[error("could not import the Postman collection: {0}")]
     InvalidPostman(String),
 
+    /// R-COL-20
+    #[error("could not import the Postman environment: {0}")]
+    InvalidPostmanEnvironment(String),
+
     /// R-COL-17
     #[error("could not import the HTTP file: {0}")]
     InvalidHttpFile(String),

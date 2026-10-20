@@ -29,7 +29,7 @@ pub use body_editor::{BodyDrafts, body_editor};
 pub use defaults_dialog::{DefaultsDialog, DefaultsTarget, EditedDefaults};
 pub use environments::{EnvironmentsDialog, SavedConfig};
 pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, history_list};
-pub use import_dialog::{ImportDialog, ImportTarget};
+pub use import_dialog::{EnvironmentImportDialog, ImportAction, ImportDialog, ImportTarget};
 pub use key_value_table::key_value_table;
 pub use mock_dialog::{MockAction, MockDialog, MockView};
 pub use modals::{

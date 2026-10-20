@@ -83,6 +83,7 @@ impl TortugaUi {
             Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
             Modal::Mock(d) => self.show_mock_dialog(ctx, d),
             Modal::Import(open) => self.show_import_dialog(ctx, open),
+            Modal::EnvironmentImport(open) => self.show_environment_import(ctx, open),
             Modal::ClearHistory(target, d) => match d.show(ctx) {
                 DialogResult::Done(()) => {
                     self.clear_history(target);

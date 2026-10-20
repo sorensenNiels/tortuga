@@ -50,6 +50,8 @@ pub(super) enum Command {
     AddProjects,
     NewProject,
     Import(ImportKind),
+    /// Postman environments into a project (R-COL-20).
+    ImportEnvironments(PathBuf),
     /// A project's mock server (R-MOCK-2, R-MOCK-4).
     StartMock(PathBuf),
     StopMock(PathBuf),
@@ -231,6 +233,19 @@ impl TortugaUi {
                 )
                 .detail(c.name()),
             );
+            if !c.read_only
+                && self.state.settings.importers.enabled(ImportKind::Postman)
+                && self.state.host.can_pick_folders()
+            {
+                items.push(
+                    run(
+                        "Import Postman environments…",
+                        Command::ImportEnvironments(c.root.clone()),
+                    )
+                    .detail(c.name())
+                    .keywords("postman environment json"),
+                );
+            }
             items.push(
                 run(
                     "Project defaults…",
@@ -341,6 +356,7 @@ impl TortugaUi {
             Command::AddProjects => self.add_projects(),
             Command::NewProject => self.new_project(),
             Command::Import(kind) => self.import_file(kind),
+            Command::ImportEnvironments(root) => self.import_environments(root),
         }
     }
 }

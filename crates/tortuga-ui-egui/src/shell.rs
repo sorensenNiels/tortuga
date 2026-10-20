@@ -89,6 +89,8 @@ enum Modal {
     Mock(crate::components::MockDialog),
     /// Reviewing an OpenAPI or Postman import (R-COL-15, R-COL-16).
     Import(Box<import::OpenImport>),
+    /// Reviewing Postman environments for a project (R-COL-20).
+    EnvironmentImport(Box<import::OpenEnvironmentImport>),
 }
 
 /// What the user picked in the workspace menu (R-WS-1, R-WS-5).

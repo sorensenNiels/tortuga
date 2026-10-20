@@ -80,6 +80,8 @@ pub enum SidebarAction {
     /// Create a project from an OpenAPI description (R-COL-15), a Postman collection
     /// (R-COL-16) or a `.http` file (R-COL-17).
     Import(ImportKind),
+    /// Import Postman environments into a project (R-COL-20).
+    ImportEnvironments(PathBuf),
     /// Start the project's mock server, or show it when it runs (R-MOCK-2).
     StartMock(PathBuf),
     StopMock(PathBuf),
@@ -129,6 +131,16 @@ impl Rename {
     }
 }
 
+/// Entries a project's menu shows only when they work here.
+#[derive(Debug, Clone, Copy, Default)]
+struct MenuOffers {
+    /// "Open in file manager" and "Open in terminal" (R-GIT-13).
+    open_folders: bool,
+    /// The Postman importer is on (R-COL-18) and files can be picked, so projects offer
+    /// to import its environments (R-COL-20).
+    postman_environments: bool,
+}
+
 struct Tree<'a> {
     st: &'a mut SidebarState,
     selected: Option<&'a ItemKey>,
@@ -145,7 +157,7 @@ struct Tree<'a> {
     env_note: Option<EnvNote>,
     /// The port of the project's running mock server (R-MOCK-2).
     mock_port: Option<u16>,
-    can_open_folders: bool,
+    offers: MenuOffers,
     /// Projects show their tab-group colour when there are several (R-COL-14).
     color_dots: bool,
     actions: Vec<SidebarAction>,
@@ -226,7 +238,11 @@ pub fn sidebar(
         show_branch: true,
         env_note: None,
         mock_port: None,
-        can_open_folders: state.host.can_open_folders(),
+        offers: MenuOffers {
+            open_folders: state.host.can_open_folders(),
+            postman_environments: state.settings.importers.enabled(ImportKind::Postman)
+                && state.host.can_pick_folders(),
+        },
         color_dots: state.collections.len() > 1,
         actions: Vec::new(),
     };
@@ -336,7 +352,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
     let collapsed = tree.st.collapsed.contains(&key);
     let read_only = c.read_only;
 
-    let can_open = tree.can_open_folders;
+    let offers = tree.offers;
     let environments = tree.env_note.as_ref().map(|n| n.environments.clone());
     let mock_port = tree.mock_port;
     let menu = |ui: &mut Ui| {
@@ -344,7 +360,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
             ui,
             c,
             cookie_count,
-            can_open,
+            offers,
             environments.as_deref(),
             mock_port,
         )
@@ -875,7 +891,7 @@ fn collection_menu(
     ui: &mut Ui,
     c: &Collection,
     cookie_count: usize,
-    can_open_folders: bool,
+    offers: MenuOffers,
     // Set when the project doesn't follow the workspace's environment (R-WS-6).
     environments: Option<&[(String, String)]>,
     // The port of its running mock server (R-MOCK-2).
@@ -917,6 +933,11 @@ fn collection_menu(
     item(ui, environments, &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
     });
+    if offers.postman_environments && !c.read_only {
+        item(ui, "Import Postman environments…".into(), &|| {
+            MenuChoice::Action(SidebarAction::ImportEnvironments(root.clone()))
+        });
+    }
     item(ui, "Defaults (headers, auth, requests)…".into(), &|| {
         MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
     });
@@ -948,7 +969,7 @@ fn collection_menu(
         MenuChoice::Action(SidebarAction::Reload(root.clone()))
     });
     // R-GIT-13: commit, pull and push happen outside the app.
-    if can_open_folders {
+    if offers.open_folders {
         item(ui, "Open in file manager".into(), &|| {
             MenuChoice::Action(SidebarAction::OpenInFileManager(root.clone()))
         });
@@ -1310,6 +1331,40 @@ mod tests {
         h.get_by_label("Import OpenAPI…");
         h.get_by_label("Import .http file…");
         assert!(h.query_by_label("Import Postman collection…").is_none());
+    }
+
+    /// R-COL-20: a project's menu offers its Postman environments only while the
+    /// Postman importer is on.
+    #[test]
+    fn project_menu_imports_postman_environments() {
+        use egui_kittest::kittest::Queryable;
+
+        let dir = tempfile::tempdir().expect("dir");
+        let storage = tortuga_core::storage::FsStorage;
+        let c = Collection::create(&storage, dir.path(), "Shop").expect("project");
+        for on in [true, false] {
+            let mut choices = Vec::new();
+            {
+                let mut h = crate::test_host::harness(|ui| {
+                    let offers = MenuOffers {
+                        postman_environments: on,
+                        ..MenuOffers::default()
+                    };
+                    choices.push(collection_menu(ui, &c, 0, offers, None, None));
+                });
+                h.run();
+                let entry = h.query_by_label("Import Postman environments…");
+                assert_eq!(entry.is_some(), on);
+                if let Some(entry) = entry {
+                    entry.click();
+                    h.run();
+                }
+            }
+            let picked = choices.iter().flatten().any(|c| {
+                matches!(c, MenuChoice::Action(SidebarAction::ImportEnvironments(r)) if *r == dir.path())
+            });
+            assert_eq!(picked, on);
+        }
     }
 
     /// R-NF-1: a skipped row takes exactly the space of a drawn one, so the scroll bar doesn't jump.

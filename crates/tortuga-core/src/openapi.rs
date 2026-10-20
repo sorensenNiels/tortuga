@@ -196,6 +196,7 @@ impl<'a> Importer<'a> {
             items,
             requests,
             secret_values: BTreeMap::new(),
+            environment_secret_values: BTreeMap::new(),
             warnings: self.warnings,
         }
     }

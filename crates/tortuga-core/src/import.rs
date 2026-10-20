@@ -65,7 +65,7 @@ impl ImportKind {
 }
 
 /// A project made from an imported file, ready for [`create_project`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Import {
     pub kind: ImportKind,
     pub manifest: Manifest,
@@ -77,8 +77,46 @@ pub struct Import {
     /// them in this machine's secret store as the default for every environment.
     /// They are never written to the project.
     pub secret_values: BTreeMap<String, String>,
+    /// Values for secret variables in one environment, from Postman environment files
+    /// (R-COL-20): (environment id, variable name) → value. Kept like `secret_values`.
+    pub environment_secret_values: BTreeMap<(String, String), String>,
     /// What could not be imported as written, as sentences for the user.
     pub warnings: Vec<String>,
+}
+
+// Hand-written: the secret values must not show.
+impl std::fmt::Debug for Import {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Import")
+            .field("kind", &self.kind)
+            .field("manifest", &self.manifest)
+            .field("environments", &self.environments)
+            .field("items", &self.items)
+            .field("requests", &self.requests)
+            .field(
+                "secret_values",
+                &self.secret_values.keys().collect::<Vec<_>>(),
+            )
+            .field(
+                "environment_secret_values",
+                &self.environment_secret_values.keys().collect::<Vec<_>>(),
+            )
+            .field("warnings", &self.warnings)
+            .finish()
+    }
+}
+
+impl Import {
+    /// Whether the secret variable `name` has a value from the file(s) for every
+    /// environment: one for all of them, or one in each.
+    pub fn has_secret_value(&self, name: &str) -> bool {
+        self.secret_values.get(name).is_some_and(|v| !v.is_empty())
+            || self.environments.iter().all(|e| {
+                self.environment_secret_values
+                    .get(&(e.id.clone(), name.to_owned()))
+                    .is_some_and(|v| !v.is_empty())
+            })
+    }
 }
 
 /// Reads a Postman collection, a `.http` file or an OpenAPI description, whichever the
@@ -92,6 +130,9 @@ pub fn parse(text: &str, file_name: &str, expected: ImportKind) -> Result<Import
         .flatten();
     if doc.as_ref().is_some_and(postman::looks_like_collection) {
         return postman::parse(text);
+    }
+    if doc.as_ref().is_some_and(postman::looks_like_environment) {
+        return Err(postman::environment_file_error());
     }
     let extension = Path::new(file_name)
         .extension()
@@ -170,18 +211,9 @@ impl Collected {
         if let Some(base) = self.servers.iter().find(|b| b.variable == variable) {
             return Some((base.server.id.clone(), rest));
         }
-        let mut url = value.unwrap_or_default();
+        let url = base_url(&value.unwrap_or_default());
         if url.is_empty() {
-            self.warn(format!(
-                "{{{{{variable}}}}} has no value in the file: set the base URL of server \
-                 “{variable}” under Environments…."
-            ));
-        } else if !url.contains("://") {
-            // Postman and the HTTP clients send a URL without a scheme over http.
-            url = format!("http://{url}");
-        }
-        while url.ends_with('/') && !url.ends_with("://") {
-            url.pop();
+            self.warn(no_base_url(variable));
         }
         let servers: Vec<Server> = self.servers.iter().map(|b| b.server.clone()).collect();
         let server = Server {
@@ -284,6 +316,7 @@ impl Collected {
             requests: requests(&items).len(),
             items,
             secret_values: self.secret_values,
+            environment_secret_values: BTreeMap::new(),
             warnings: self.warnings,
         }
     }
@@ -323,6 +356,27 @@ impl Collected {
             )),
         }
     }
+}
+
+/// A base URL variable's value as a server's base URL: without trailing slashes, and
+/// with `http://` when it has no scheme, as Postman and the HTTP clients send it.
+pub(crate) fn base_url(value: &str) -> String {
+    let mut url = value.trim().to_owned();
+    if !url.is_empty() && !url.contains("://") && !url.starts_with("{{") {
+        url = format!("http://{url}");
+    }
+    while url.ends_with('/') && !url.ends_with("://") {
+        url.pop();
+    }
+    url
+}
+
+/// The warning for a base URL variable without a value.
+pub(crate) fn no_base_url(variable: &str) -> String {
+    format!(
+        "{{{{{variable}}}}} has no value in the file: set the base URL of server \
+         “{variable}” under Environments…."
+    )
 }
 
 /// Every request in `items`, depth first.

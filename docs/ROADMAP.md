@@ -85,6 +85,7 @@ Picked by demand, not in a fixed order. Done so far: imports from OpenAPI, Postm
 R-COL-17, D7), settings on three levels (R-SET-1 to R-SET-7, D39), and mock APIs with the contract check (R-MOCK-1 to
 R-MOCK-8, D43 to D47). Still open:
 
+- More from the importers, and new ones (see [Importers](#importers) below).
 - GraphQL, WebSockets, Server-Sent Events, gRPC (IDEA-25).
 - Client certificates / mTLS (IDEA-20).
 - Code snippets for other languages (IDEA-22).
@@ -95,6 +96,71 @@ R-MOCK-8, D43 to D47). Still open:
 
 Accounts, cloud sync, real-time co-editing (IDEA-40); documentation generation, monitors (IDEA-41). They conflict
 with P4/P5 or are outside the purpose of an API client. Mock servers were here until D43. See [§7](#7-ideas).
+
+### Importers
+
+What each import already does and the ideas for it, in one place. Every import creates a new project (D34), lists
+what it can't import as written before importing, keeps credential values in this machine's secret store only (D35),
+and can be turned off in Settings (R-COL-18). The idea rows here are ideas like those in [§7](#7-ideas) and share
+its numbering; one that gets a phase becomes an `R-COL-` requirement in [§6](#6-requirements).
+
+#### `curl` — done
+
+**Done:** paste a `curl` command into the URL field (R-HTTP-11).
+
+#### OpenAPI — done
+
+**Done:** OpenAPI 3.0 and 3.1, JSON or YAML (R-COL-15, D33); responses become the requests' examples for the mock
+(R-MOCK-6).
+
+| ID | Idea | Notes |
+|---|---|---|
+| IDEA-45 | Import again: update a project from a changed OpenAPI description, keeping local changes. | An import always creates a new project today (D34). |
+| IDEA-46 | Import Swagger 2.0 descriptions. | Today they are refused with a hint to convert them (D33). |
+
+#### Postman — done
+
+**Done:** collections v2.0 and v2.1 with folders, variables, servers, auth, bodies and scripts (R-COL-16, D36);
+scripts translated to Tortuga's API (R-COL-19), with Chai-style assertions to translate to (R-TEST-8);
+environment files into a new or an existing project (R-COL-20, D49).
+
+| ID | Idea | Notes |
+|---|---|---|
+| IDEA-58 | Import a request's saved responses (`response[]`) as its examples (R-MOCK-1): name, status, headers and body, so an imported collection can be mocked and contract-checked (R-MOCK-8) like an OpenAPI import (R-MOCK-6). | Ignored today. Small: the examples already exist in the file format. |
+| IDEA-59 | Import a request's settings (`protocolProfileBehavior`): `followRedirects` as its follow-redirects choice, `disableCookies` as its cookies switch (R-SET-1). | Ignored today. Small. `strictSSL: false` has no shared counterpart: hosts not to verify are an app setting only (R-SET-3). |
+| IDEA-60 | Keep collection- and folder-level scripts: as project and folder scripts in Tortuga, or copied into each request below them. | Left out with a warning today (D36). They often get or refresh a token. Project and folder scripts would need a new decision. |
+| IDEA-61 | Translate more of Postman's API: `pm.sendRequest`, `pm.cookies`, `pm.info`, `pm.variables.replaceIn`, `pm.iterationData` (as workflow data, R-FLOW-4), `postman.setNextRequest` (as a workflow), `require('crypto-js')` and `require('lodash')`. | Scripts using them are kept as comments today (R-COL-19). Each needs Tortuga's script API to offer it first; sending a request from a script (`pm.sendRequest`, mostly to get a token) is the one used most. |
+| IDEA-62 | Import Postman's data export (all collections, environments and globals in one archive) as a workspace: a project per collection, environments as in R-COL-20, globals as workspace variables (R-WS-8). | Builds on R-COL-20. For a team moving over all at once. |
+| IDEA-63 | Import again: update a project from a changed Postman collection, keeping local changes. | As IDEA-45 for OpenAPI. For a team moving over gradually, with the collection still changed in Postman for a while. |
+| IDEA-71 | Fetch a collection from Postman's API with an API key instead of from an exported file. | **Not planned**: it contacts a third-party host and needs a Postman account (R-P-4, P5). Exporting a file does the same. |
+
+#### `.http` files — done
+
+**Done:** VS Code REST Client and JetBrains HTTP Client files (R-COL-17, D37).
+
+| ID | Idea | Notes |
+|---|---|---|
+| IDEA-49 | Import `.http` environment files (`http-client.env.json` and its private twin, REST Client's `rest-client.environmentVariables`) into environments and the secret store, and several `.http` files at once as a folder each. | A `.http` import reads one file and makes one "Default" environment today (R-COL-17). |
+
+#### Not done yet
+
+| ID | Idea | Notes |
+|---|---|---|
+| IDEA-68 | Import an Insomnia export (v4 JSON, v5 YAML): workspaces, folders, requests, environments. | Insomnia is one of the clients the vision names. |
+| IDEA-69 | Import a Bruno collection (a folder of `.bru` files with its environments). | Bruno is also file-based and git-friendly, so its users are close to Tortuga's. |
+| IDEA-70 | Import a HAR file saved from a browser's dev tools: a request per entry, its response as the request's example. | Fits S1 (explore); `curl` paste takes one request at a time (R-HTTP-11). |
+
+#### Engine features the importers need
+
+Gaps the imports can only warn about today, because Tortuga has nothing to map them to. Each is a feature in its own
+right; the imports would use it once it exists.
+
+| ID | Idea | Notes |
+|---|---|---|
+| IDEA-64 | Built-in dynamic variables: a new UUID, timestamps and random numbers, under Postman's names (`{{$guid}}`, `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$randomInt}}`) and the `.http` clients' (`{{$uuid}}`, `{{$random.integer()}}`). | The Postman and `.http` imports warn about them today (R-COL-16, R-COL-17). Could also serve dynamic mock answers (IDEA-54). |
+| IDEA-65 | Descriptions on projects, folders and requests (Markdown, in the files), filled by the imports from Postman's descriptions and OpenAPI's summaries and descriptions. | Lost on import today: the file format has no place for them. |
+| IDEA-66 | More auth types: Digest, AWS Signature v4, OAuth 1, NTLM, Hawk; and getting an OAuth 2 token in the app (client credentials, authorization code with PKCE). | Today auth is Basic, Bearer and API key (R-HTTP-5). The Postman import leaves the others out with a warning, and OAuth 2 becomes `Bearer {{access_token}}` (R-COL-16). |
+| IDEA-67 | Send a file as the whole request body. | Postman's `file` bodies are left out today (R-COL-16). Multipart bodies can already upload files (R-HTTP-15). |
 
 ## 6. Requirements
 
@@ -114,6 +180,7 @@ Requirements still open: not built yet, or implemented but not yet verified ever
 ## 7. Ideas
 
 Candidates that are not requirements yet. To add one, append a row with the next free `IDEA-n` (see [§9](#9-how-to-change-this-roadmap)).
+Ideas for importing from other tools are listed per importer under [Importers](#importers) instead.
 
 ### Planned for later
 
@@ -137,13 +204,9 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-21 | In-app commit, pull, push, and branch switching. | Large scope: needs git credential handling on three OSes. |
 | IDEA-22 | Code snippets for other languages (Python, JavaScript, …). | |
 | IDEA-25 | Other protocols: GraphQL tooling, WebSockets, SSE, gRPC. | |
-| IDEA-45 | Import again: update a project from a changed OpenAPI description, keeping local changes. | An import always creates a new project today (D34). |
-| IDEA-46 | Import Swagger 2.0 descriptions. | Today they are refused with a hint to convert them (D33). |
-| IDEA-47 | Import Postman environment files into a project's environments (base URLs into servers, secrets into the secret store). | A Postman import makes one "Default" environment today (R-COL-16). |
 | IDEA-54 | Dynamic mock answers: templates that read the incoming request (`{{request.path.id}}`, `{{request.body.$.name}}`, a timestamp, a random id), or a response script in the script engine. | Static examples first (D46, R-MOCK-3). |
 | IDEA-55 | Stateful mocks: a `POST` that later `GET`s return, reset on restart. | Turns the mock into a fake backend; only if static examples prove too little. |
 | IDEA-57 | Fault injection in the mock: drop the connection, answer slowly, return 5xx for a share of calls. | `delay_ms` (R-MOCK-3) covers slow answers. |
-| IDEA-49 | Import `.http` environment files (`http-client.env.json` and its private twin, REST Client's `rest-client.environmentVariables`) into environments and the secret store, and several `.http` files at once as a folder each. | A `.http` import reads one file and makes one "Default" environment today (R-COL-17). |
 
 ### Not planned
 
@@ -212,16 +275,17 @@ Not decided. Needs a real user need before it moves up.
 | D46 | Static or dynamic answers, and where does the listener run (R-MOCK-2, R-MOCK-3)? | **Static examples with match conditions first** (2026-10-20) (dynamic answers are IDEA-54), and **a listener in `tortuga-core` for native targets only** on `hyper`, which is already in the build through `reqwest`, so the app and `tortuga-cli` share it (P7). | Response scripts in the script engine from the start; an `axum` dependency; a listener per binary. |
 | D47 | How does the contract check judge a response (R-MOCK-8)? | **By shape, not values**, against the one example that fits the response's status (and the request, through its `match` conditions): status, media type, and JSON keys and value types, with keys missing from either side both counting, since an undocumented field is drift too. **A test result**, so the Tests tab, the CLI's exit code and the reports show it with nothing new to learn. **On for a send in the app, opt-in for workflows** (`--check-examples`), so a workflow passes or fails the same way in the app and in CI unless CI asks for more (2026-10-20). | Compare values too (fails on every real id and date); ignore keys the example lacks (misses fields added without updating the design); a separate "Contract" tab; a per-project switch; on for workflows by default. |
 | D48 | Where is an environment's colour kept, and which colours (R-SRV-8)? | **In the environment file, from a fixed set of named colours** (2026-10-20). Shared, because the point is that everyone sees production in red (P5); named rather than RGB, so each theme draws a shade that reads on it and the file stays readable. | Local only, per machine (like the active environment); any RGB colour from a colour picker; colours worked out from the name, like projects' (D32). |
+| D49 | How are Postman environment files imported (R-COL-20)? | **Into the new project while importing its collection, and into an existing project from its menu**; an environment with the file's name is **updated** (what the file sets replaces, the rest is kept), so importing a newer export again just works (2026-10-20). | Only while importing a collection; only into an existing project; always add a copy ("Staging 2"). |
 
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
 ## 9. How to change this roadmap
 
-- New idea: add a row to [§7](#7-ideas) with the next free `IDEA-n`.
+- New idea: add a row to [§7](#7-ideas) with the next free `IDEA-n`, or under [Importers](#importers) for an import.
 - Open question: add it to [§8](#8-decisions) as the next `Dn` with options; record the choice and date when decided.
 - When an idea gets a phase, give it a requirement ID in [§6](#6-requirements) (next free number in its area) and
   remove the idea row; the requirement says *(IDEA-n)*.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-20` · `R-CK-6` · `R-COL-20` · `R-WS-9` · `R-VAR-8` · `R-SRV-9` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-58` · `D49` · `R-TEST-16` · `R-FLOW-6` · `R-CLI-5` · `R-SET-9` · `R-MOCK-9`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-20` · `R-CK-6` · `R-COL-21` · `R-WS-9` · `R-VAR-8` · `R-SRV-9` · `R-GIT-15` · `R-HIST-4` · `R-LOC-3` · `R-NF-5` · `IDEA-72` · `D50` · `R-TEST-16` · `R-FLOW-6` · `R-CLI-5` · `R-SET-9` · `R-MOCK-9`.

@@ -346,6 +346,12 @@ pub trait Host {
         None
     }
 
+    /// Asks for one or more files (e.g. Postman environments to import, R-COL-20).
+    /// Empty if cancelled or not possible here.
+    fn pick_any_files(&self, _title: &str) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
     /// Removes all history, of every project (R-HIST-3).
     fn clear_all_history(&self) -> Result<(), String> {
         Ok(())
