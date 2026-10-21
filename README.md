@@ -162,6 +162,10 @@ In a request, pick the server in front of the URL field and type only the path (
 picker in the title bar switches every project in the workspace that has an environment with that name. Variables
 that aren't defined are highlighted, and the request isn't sent until they are.
 
+**Dynamic variables** get a new value wherever they are used, on every send: `{{$guid}}` (or `{{$uuid}}`),
+`{{$timestamp}}` (seconds), `{{$isoTimestamp}}`, `{{$randomInt}}` (0–1000), and `{{$randomInt 1 10}}` or
+`{{$random.integer(1, 10)}}` (1 to 9). They work in the mock's example responses too.
+
 The scratch request (top of the sidebar) is for quick one-off calls; **Save to project…** keeps it.
 
 **Moving around.** **Ctrl+P** (or **Go to request…**) finds any request in the workspace by typing part of its name,

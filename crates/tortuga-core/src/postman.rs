@@ -1047,7 +1047,6 @@ mod tests {
             "“Trace” was left out: Tortuga does not send TRACE requests.",
             "{{otherHost}} has no value in the file",
             "“Upload avatar” uploads files",
-            "variables such as {{$guid}}",
             "1 script was kept as a comment",
             "1 script was translated from Postman's pm API to Tortuga's",
         ];

@@ -846,7 +846,6 @@ X-Id: {{$uuid}}
             "“Trace it” was left out: Tortuga does not send TRACE requests.",
             "The body of “Upload” is read from the file ./avatar.png",
             "“Old” uses Digest auth",
-            "variables such as {{$uuid}}",
             "1 script was kept as a comment: the HTTP Client's client API",
         ];
         for text in expect {
@@ -856,6 +855,21 @@ X-Id: {{$uuid}}
             );
         }
         assert_eq!(warnings.len(), expect.len(), "{warnings:#?}");
+    }
+
+    /// R-VAR-8: dynamic variables Tortuga knows are kept without a warning; others warn.
+    #[test]
+    fn dynamic_variables() {
+        let known =
+            "### A\nGET https://a.test/{{$uuid}}?n={{$random.integer(1, 5)}}&t={{$timestamp}}\n";
+        assert_eq!(
+            parse(known, "a.http").expect("parse").warnings,
+            Vec::<String>::new()
+        );
+        let unknown = "### A\nGET https://a.test/?e={{$random.email}}\n";
+        let warnings = parse(unknown, "a.http").expect("parse").warnings;
+        assert_eq!(warnings.len(), 1, "{warnings:#?}");
+        assert!(warnings[0].starts_with("Tortuga has no dynamic variable {{$random.email}}"));
     }
 
     /// The same auth on every request is the project's; a request variable of a

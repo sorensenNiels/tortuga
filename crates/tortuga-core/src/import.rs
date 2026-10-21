@@ -322,15 +322,14 @@ impl Collected {
     }
 
     fn final_warnings(&mut self, texts: &str, kind: ImportKind) {
-        if let Some(start) = texts.find("{{$") {
-            let name = texts[start + 2..]
-                .split("}}")
-                .next()
-                .unwrap_or_default()
-                .to_owned();
+        // Tortuga fills in the dynamic variables the tools share (R-VAR-8), not the rest.
+        let unknown = crate::vars::names(texts)
+            .into_iter()
+            .find(|n| n.starts_with('$') && !crate::vars::dynamic::is_dynamic(n));
+        if let Some(name) = unknown {
             self.warn(format!(
-                "Dynamic variables such as {{{{{name}}}}} don't exist in Tortuga: set them with \
-                 vars.set(…) in a pre-request script."
+                "Tortuga has no dynamic variable {{{{{name}}}}} (it knows $guid, $timestamp, \
+                 $isoTimestamp and $randomInt): set it with vars.set(…) in a pre-request script."
             ));
         }
         let api = kind.script_api().replace('`', "");

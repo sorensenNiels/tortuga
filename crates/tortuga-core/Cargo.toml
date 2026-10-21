@@ -18,6 +18,9 @@ url.workspace = true
 toml.workspace = true
 # `std::time::Instant` panics on wasm32; this is a drop-in that works everywhere.
 web-time.workspace = true
+# Dynamic variables (R-VAR-8): random values and ISO timestamps.
+rand.workspace = true
+chrono.workspace = true
 # Cookie jars (R-CK-1).
 cookie_store.workspace = true
 # Pre-request and test scripts (R-TEST-3).

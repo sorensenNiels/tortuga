@@ -380,6 +380,29 @@ fn answers_fill_variables_and_content_type() {
     assert_eq!(content_type("/typed"), "text/csv");
 }
 
+/// R-VAR-8: dynamic variables in an example get a new value in every answer.
+#[test]
+fn answers_fill_dynamic_variables() {
+    let example = json_example(
+        "created",
+        201,
+        "{\"id\": \"{{$guid}}\", \"n\": {{$randomInt 4 5}}}",
+    );
+    let collection = project(vec![request(
+        HttpMethod::Post,
+        "/orders",
+        "Create",
+        vec![example],
+    )]);
+    let api = MockApi::new(&collection, None);
+    let first = body(&answer(&api, "POST", "/orders"));
+    let second = body(&answer(&api, "POST", "/orders"));
+    assert_ne!(first, second, "a new id in each answer");
+    let json: serde_json::Value = serde_json::from_str(&first).expect("json");
+    assert_eq!(json["id"].as_str().map(str::len), Some(36));
+    assert_eq!(json["n"], 4);
+}
+
 /// R-MOCK-2, R-MOCK-4: requests of folders are served too, and with several servers each
 /// is reached under `/<server id>`; a path without the prefix still matches.
 #[test]

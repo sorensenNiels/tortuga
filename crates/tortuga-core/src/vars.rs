@@ -1,5 +1,6 @@
 //! Environments, servers, `{{variables}}`, collection defaults and auth
-//! (R-VAR-1..5, R-SRV-1..4, R-COL-4, R-HTTP-5).
+//! (R-VAR-1..5, R-SRV-1..4, R-COL-4, R-HTTP-5), and dynamic variables such as
+//! `{{$guid}}` (R-VAR-8, [`dynamic`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,6 +10,8 @@ use crate::model::{Auth, KeyValue, Request, RequestBody};
 use crate::settings::RequestSettings;
 use crate::workspace::WorkspaceDefaults;
 use crate::{Error, Result, query};
+
+pub mod dynamic;
 
 /// Everything needed to turn a stored request into one that can be sent.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -239,8 +242,9 @@ impl Context {
             })
     }
 
+    /// Whether `{{name}}` gets a value: a variable, or a dynamic variable (R-VAR-8).
     pub fn is_defined(&self, name: &str) -> bool {
-        self.variables.contains_key(name)
+        self.variables.contains_key(name) || dynamic::is_dynamic(name)
     }
 
     /// This context with every secret value replaced by `<secret:name>` (P6).
@@ -260,12 +264,13 @@ impl Context {
 
 /// The request as it will be sent, to show it (R-HTTP-14): like [`prepare`], with the
 /// Content-Type that sending adds, secret values shown as `<secret:name>`, and
-/// undefined variables left as `{{name}}`. Cookies from the jar are not included.
+/// undefined and dynamic variables left as `{{name}}` (a dynamic one gets a new value
+/// on every send, R-VAR-8). Cookies from the jar are not included.
 pub fn preview(request: &Request, ctx: &Context) -> Result<Request> {
     let mut ctx = ctx.masked();
-    for name in undefined_in(request, &ctx) {
+    for name in used_in(request, &ctx) {
         let placeholder = format!("{{{{{name}}}}}");
-        ctx.variables.insert(name, placeholder);
+        ctx.variables.entry(name).or_insert(placeholder);
     }
     let mut out = prepare(request, &ctx)?;
     if matches!(out.body, RequestBody::Multipart(_)) {
@@ -407,6 +412,14 @@ pub fn prepare(request: &Request, ctx: &Context) -> Result<Request> {
 
 /// Undefined variables used anywhere in the request (for live warnings, R-VAR-5).
 pub fn undefined_in(request: &Request, ctx: &Context) -> Vec<String> {
+    used_in(request, ctx)
+        .into_iter()
+        .filter(|n| !ctx.is_defined(n))
+        .collect()
+}
+
+/// Every variable name used anywhere in the request, sorted.
+fn used_in(request: &Request, ctx: &Context) -> Vec<String> {
     let mut texts: Vec<&str> = vec![&request.url];
     texts.extend(ctx.auth_for(request).fields());
     texts.extend(request.path_vars.iter().map(|v| v.value.as_str()));
@@ -437,7 +450,6 @@ pub fn undefined_in(request: &Request, ctx: &Context) -> Vec<String> {
     let set: BTreeSet<String> = texts
         .into_iter()
         .flat_map(names)
-        .filter(|n| !ctx.is_defined(n))
         .map(str::to_owned)
         .collect();
     set.into_iter().collect()
@@ -454,8 +466,9 @@ pub fn names(text: &str) -> Vec<&str> {
     found
 }
 
-/// Replaces `{{name}}` with its value. Unknown names are left as written and
-/// added to `undefined`. `{{` without a valid name and `}}` is kept literally.
+/// Replaces `{{name}}` with its value, or a dynamic variable with a new value (R-VAR-8;
+/// a variable of that name wins). Unknown names are left as written and added to
+/// `undefined`. `{{` without a valid name and `}}` is kept literally.
 pub fn substitute(
     text: &str,
     vars: &BTreeMap<String, String>,
@@ -467,6 +480,8 @@ pub fn substitute(
         Part::Var(name) => {
             if let Some(value) = vars.get(name) {
                 out.push_str(value);
+            } else if let Some(value) = dynamic::value(name) {
+                out.push_str(&value);
             } else {
                 undefined.insert(name.to_owned());
                 out.push_str("{{");
@@ -550,6 +565,38 @@ mod tests {
             variables: BTreeMap::from([("port".into(), "8080".into()), ("id".into(), "42".into())]),
             ..Context::default()
         }
+    }
+
+    /// R-VAR-8: dynamic variables get a new value at every place; a variable of the
+    /// same name wins; names Tortuga doesn't know stay undefined.
+    #[test]
+    fn dynamic_variables_are_filled_in() {
+        let mut undefined = BTreeSet::new();
+        let text = "{{$guid}} {{ $guid }} {{$randomInt 7 8}} {{$randomFirstName}} ü😀";
+        let out = substitute(text, &BTreeMap::new(), &mut undefined);
+        let words: Vec<&str> = out.split(' ').collect();
+        assert_eq!(words[0].len(), 36);
+        assert_ne!(words[0], words[1], "a new value each time");
+        assert_eq!(words[2], "7");
+        assert_eq!(words[3], "{{$randomFirstName}}");
+        assert_eq!(undefined, BTreeSet::from(["$randomFirstName".to_owned()]));
+        let own = BTreeMap::from([("$guid".to_owned(), "mine".to_owned())]);
+        assert_eq!(substitute("{{$guid}}", &own, &mut BTreeSet::new()), "mine");
+
+        let mut request = Request::new(crate::model::HttpMethod::Post, "https://a.test/{{$uuid}}");
+        request.headers.push(KeyValue::new("X-Id", "{{$guid}}"));
+        request.body =
+            RequestBody::Json(r#"{"at": "{{$isoTimestamp}}", "who": "{{$nobody}}"}"#.into());
+        let ctx = Context::default();
+        assert_eq!(undefined_in(&request, &ctx), ["$nobody"]);
+        // The Preview shows them as written: they change on every send.
+        request.body = RequestBody::Json(r#"{"at": "{{$isoTimestamp}}"}"#.into());
+        let preview = preview(&request, &ctx).expect("preview");
+        assert_eq!(preview.url, "https://a.test/{{$uuid}}");
+        assert_eq!(preview.header("x-id"), Some("{{$guid}}"));
+        let sent = prepare(&request, &ctx).expect("prepare");
+        assert!(!sent.url.contains("{{"), "{}", sent.url);
+        assert_eq!(sent.header("x-id").map(str::len), Some(36));
     }
 
     #[test]

@@ -42,7 +42,10 @@ notify = "8.2"
 gix = { version = "0.89", default-features = false, features = ["status", "sha1", "max-performance-safe"] }
 open = "5"
 # The local UTC offset, to show history times (R-HIST-2).
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Formatting times; the clock is the app's only (core reads the time with web-time).
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# Random values for dynamic variables (R-VAR-8); already in the build through Boa.
+rand = "0.10"
 wasm-bindgen-futures = "0.4"
 # JavaScript for pre-request and test scripts (R-TEST-3, D24): pure Rust, sandboxed.
 boa_engine = { version = "0.22", default-features = false }

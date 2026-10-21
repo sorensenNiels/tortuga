@@ -27,7 +27,7 @@ gix = { workspace = true, optional = true }
 open = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true, features = ["clock"] }
 
 # GTK backend on Linux: the xdg-desktop-portal backend fails silently where no portal runs (e.g. WSL).
 [target.'cfg(target_os = "linux")'.dependencies]
