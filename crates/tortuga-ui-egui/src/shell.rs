@@ -1895,6 +1895,49 @@ mod tests {
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
+    /// R-COL-22: saving the defaults dialog writes a project's and a folder's
+    /// description to their files and keeps their other defaults.
+    #[test]
+    fn descriptions_are_saved_in_the_files() {
+        use crate::components::{DefaultsTarget, EditedDefaults};
+
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path().to_path_buf();
+        let col = Collection::create(&FsStorage, &root, "C").expect("create");
+        let folder = col
+            .new_folder(&FsStorage, Path::new(""), "Admin")
+            .expect("folder");
+        let mut ui = TortugaUi::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let headers = vec![tortuga_core::KeyValue::new("X-Area", "admin")];
+        for target in [
+            DefaultsTarget::Project(root.clone()),
+            DefaultsTarget::Folder(root.clone(), folder.clone()),
+        ] {
+            let saved = ui.save_defaults(
+                &target,
+                EditedDefaults {
+                    description: "# Shop ü😀\n\nThe *orders* API.\n".into(),
+                    headers: headers.clone(),
+                    ..EditedDefaults::default()
+                },
+            );
+            assert!(saved);
+        }
+        let c = ui.state.collection(&root).expect("project");
+        assert_eq!(c.manifest.description, "# Shop ü😀\n\nThe *orders* API.\n");
+        assert_eq!(c.manifest.headers, headers);
+        let Some(tortuga_core::Item::Folder(f)) = c.find(&folder) else {
+            panic!("the folder");
+        };
+        assert_eq!(f.defaults.description, "# Shop ü😀\n\nThe *orders* API.\n");
+        assert_eq!(f.defaults.headers, headers);
+        let file = std::fs::read_to_string(root.join(&folder).join("_folder.toml")).expect("file");
+        assert!(file.contains("description = \"\"\"\n# Shop ü😀"), "{file}");
+    }
+
     /// R-COL-11: a request in a folder uses the folder's variables and headers.
     #[test]
     fn requests_inherit_folder_defaults() {

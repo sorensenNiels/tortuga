@@ -147,6 +147,7 @@ impl<'a> Importer<'a> {
             .unwrap_or("Imported collection")
             .to_owned();
         let mut manifest = Manifest::new(name);
+        manifest.description = description(self.doc.pointer("/info/description"));
         self.c.variables = self.variables_of(self.doc.get("variable"));
         self.level_scripts(self.doc.get("event"), "the collection");
         let creds = self.credentials(self.doc.get("auth"), "the collection");
@@ -222,6 +223,7 @@ impl<'a> Importer<'a> {
         self.level_scripts(item.get("event"), &place);
         let creds = self.credentials(item.get("auth"), &place);
         let mut defaults = FolderDefaults {
+            description: description(item.get("description")),
             variables: self.variables_of(item.get("variable")),
             ..FolderDefaults::default()
         };
@@ -275,6 +277,12 @@ impl<'a> Importer<'a> {
 
         let mut request = Request::new(method, &raw);
         request.name = name;
+        // The request's own description, else the item's (R-COL-22).
+        request.description = [req.get("description"), item.get("description")]
+            .into_iter()
+            .map(description)
+            .find(|d| !d.is_empty())
+            .unwrap_or_default();
         if let Some(query) = url.and_then(|u| u.get("query")).and_then(Value::as_array) {
             request.params = query.iter().filter_map(key_value).collect();
         }
@@ -635,6 +643,16 @@ fn item_name(item: &Value) -> Option<&str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|n| !n.is_empty())
+}
+
+/// A description (R-COL-22): text, or `{"content": …, "type": "text/markdown"}`.
+fn description(value: Option<&Value>) -> String {
+    let text = match value {
+        Some(Value::Object(o)) => o.get("content").and_then(Value::as_str),
+        Some(v) => v.as_str(),
+        None => None,
+    };
+    text.map(str::trim).unwrap_or_default().to_owned()
 }
 
 fn is_disabled(value: &Value) -> bool {
@@ -1040,6 +1058,35 @@ mod tests {
             );
         }
         assert_eq!(warnings.len(), expect.len(), "{warnings:#?}");
+    }
+
+    /// R-COL-22: the collection's, folders' and requests' descriptions, as text or as
+    /// `{content, type}`, and on the request or its item.
+    #[test]
+    fn descriptions() {
+        let import = parse(
+            r##"{"info": {"name": "Shop", "description": {"content": "# Shop\n\nThe **shop** API ü😀.\n", "type": "text/markdown"}},
+                "item": [
+                  {"name": "Orders", "description": "  Everything about orders.  ",
+                   "item": [
+                     {"name": "List", "request": {"method": "GET", "url": "https://shop.test/orders", "description": "Lists *all* orders."}},
+                     {"name": "Get", "description": "On the item.", "request": {"method": "GET", "url": "https://shop.test/orders/1"}}
+                   ]},
+                  {"name": "Ping", "request": "https://shop.test/ping"}
+                ]}"##,
+        )
+        .expect("parse");
+        assert_eq!(
+            import.manifest.description,
+            "# Shop\n\nThe **shop** API ü😀."
+        );
+        assert_eq!(
+            folder(&import, "Orders").description,
+            "Everything about orders."
+        );
+        assert_eq!(find(&import, "List").description, "Lists *all* orders.");
+        assert_eq!(find(&import, "Get").description, "On the item.");
+        assert_eq!(find(&import, "Ping").description, "");
     }
 
     /// v2.0 auth parameters are objects; Postman's API wraps the collection; a request

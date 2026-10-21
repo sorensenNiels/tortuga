@@ -224,6 +224,7 @@ impl TortugaUi {
             }
             DefaultsTarget::Folder(root, folder) => {
                 let defaults = tortuga_core::format::FolderDefaults {
+                    description: d.description,
                     headers: d.headers,
                     auth: d.auth,
                     variables: d.variables,
@@ -236,6 +237,7 @@ impl TortugaUi {
                 .state
                 .run(root, |c, s| {
                     let manifest = tortuga_core::Manifest {
+                        description: d.description.clone(),
                         headers: d.headers.clone(),
                         auth: d.auth.clone(),
                         settings: d.settings,

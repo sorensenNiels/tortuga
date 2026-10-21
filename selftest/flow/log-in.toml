@@ -1,0 +1,44 @@
+name = "Log in"
+seq = 100
+method = "POST"
+server = "jobs"
+url = "/login"
+
+[scripts]
+tests = """
+test("the session cookie", () => {
+  expect(res.cookie("session")).toBe("s-1");
+  expect(res.cookies).toEqual({ session: "s-1", theme: "dark" });
+  expect(res.cookie("missing")).toBeUndefined();
+});
+
+test("where the script runs", () => {
+  expect(info.event).toBe("test");
+  expect(info.requestName).toBe("Log in");
+  expect(info.iterationCount).toBe(2);
+  expect(String(info.iteration)).toBe(vars.get("n"));
+});
+
+test("replaceIn", () => {
+  expect(vars.replaceIn("{{client}} for {{who}}, {{unknown}}")).toBe(
+    "tortuga-selftest for " + vars.get("who") + ", {{unknown}}"
+  );
+});
+"""
+
+[[examples]]
+name = "logged in"
+body = """
+{"ok": true}
+"""
+
+[[examples.headers]]
+name = "Set-Cookie"
+value = "session=s-1; Path=/; HttpOnly"
+
+[[examples.headers]]
+name = "Set-Cookie"
+value = "theme=dark"
+
+[examples.match.headers]
+X-Client = "tortuga-selftest"

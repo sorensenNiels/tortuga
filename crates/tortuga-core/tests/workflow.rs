@@ -1,10 +1,11 @@
-//! Workflows on disk, run against a mock server (R-FLOW-1, R-FLOW-3, R-FLOW-4).
+//! Workflows on disk, run against a mock server (R-FLOW-1, R-FLOW-3, R-FLOW-4,
+//! R-FLOW-6).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use tortuga_core::storage::FsStorage;
-use tortuga_core::workflow::{self, Progress, RunOptions, Step, Workflow};
+use tortuga_core::workflow::{self, FlowEnd, Progress, RunOptions, RunResult, Step, Workflow};
 use tortuga_core::{Client, Collection, HttpMethod, Request};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -256,4 +257,84 @@ async fn runs_use_the_workspace_headers_and_auth() {
     let result = workflow::run(&Client::default(), &col, &wf, &options, |_| {}).await;
     let step = &result.iterations[0].steps[0];
     assert!(!step.outcome.failed(), "{:?}", step.outcome.failure());
+}
+
+/// Runs the project's workflow for Ann with `login_tests` and `get_tests` as the
+/// steps' own tests.
+async fn run_with(dir: &Path, login_tests: &str, get_tests: &str) -> RunResult {
+    let server = server().await;
+    let col = project(dir, &server.uri());
+    let mut wf = col.workflows[0].clone();
+    wf.steps[0].tests = login_tests.into();
+    wf.steps[1].tests = get_tests.into();
+    let options = RunOptions {
+        rows: vec![row(&[("user", "ann"), ("name", "Ann")])],
+        ..RunOptions::default()
+    };
+    workflow::run(&Client::default(), &col, &wf, &options, |_| {}).await
+}
+
+fn names(result: &RunResult) -> Vec<(usize, &str)> {
+    result.iterations[0]
+        .steps
+        .iter()
+        .map(|s| (s.index, s.name.as_str()))
+        .collect()
+}
+
+/// R-FLOW-6: `workflow.next(name)` runs that step next, here to poll until a
+/// condition holds; scripts see the iteration in `info` (R-TEST-16).
+#[tokio::test]
+async fn scripts_choose_the_next_step() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let result = run_with(
+        dir.path(),
+        "",
+        r#"const n = Number(vars.get("tries") || 0) + 1;
+vars.set("tries", n);
+vars.set("where", info.event + " " + info.requestName + " " + info.iteration + "/" + info.iterationCount);
+if (n < 3) workflow.next("Get user");"#,
+    )
+    .await;
+    assert_eq!(
+        names(&result),
+        [
+            (0, "Log in"),
+            (1, "Get user"),
+            (1, "Get user"),
+            (1, "Get user")
+        ]
+    );
+    let iteration = &result.iterations[0];
+    assert!(!iteration.failed());
+    assert_eq!(iteration.ended, None);
+    let last = &iteration.steps[3].outcome.vars;
+    assert_eq!(last["tries"].as_deref(), Some("3"));
+    assert_eq!(last["where"].as_deref(), Some("test Get user 0/1"));
+}
+
+/// R-FLOW-6: `workflow.stop()` ends the iteration without a failure; a step name the
+/// workflow doesn't have fails the step.
+#[tokio::test]
+async fn scripts_stop_the_run_or_name_a_missing_step() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let stopped = run_with(dir.path().join("a").as_path(), "workflow.stop();", "").await;
+    assert_eq!(names(&stopped), [(0, "Log in")]);
+    assert_eq!(stopped.iterations[0].ended, Some(FlowEnd::Stopped));
+    assert_eq!(stopped.iterations[0].skipped, 0);
+    assert!(stopped.passed());
+
+    let missing = run_with(
+        dir.path().join("b").as_path(),
+        "workflow.next(\"Nope ü\");",
+        "",
+    )
+    .await;
+    let iteration = &missing.iterations[0];
+    assert!(iteration.failed());
+    assert_eq!(iteration.skipped, 1);
+    assert_eq!(
+        iteration.steps[0].outcome.failure().as_deref(),
+        Some("workflow.next(\"Nope ü\"): the workflow has no step called “Nope ü”.")
+    );
 }

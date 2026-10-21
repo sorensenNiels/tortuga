@@ -1,6 +1,7 @@
 //! Pre-request and test scripts (R-TEST-1..3, D3, D24, D28): JavaScript run by Boa.
 //!
-//! A script sees `req`, `res` (tests only), `vars`, `test`, `expect` and `console`.
+//! A script sees `req`, `res` (tests only), `vars`, `test`, `expect`, `console`, `info`
+//! (R-TEST-16) and `workflow` (R-FLOW-6).
 //! Everything else a browser or Node.js has (files, network, timers) does not exist, so
 //! scripts can only compute. Runaway scripts are stopped by Boa's loop and recursion
 //! limits. Inputs go in as one JSON value and results come back as one, so the script
@@ -43,6 +44,32 @@ pub struct TestResult {
     /// Why it failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+/// Where a script runs, for `info` (R-TEST-16): the iteration of a workflow run (from
+/// 0) and how many there are. A request sent on its own is iteration 0 of 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ScriptInfo {
+    pub iteration: usize,
+    pub iterations: usize,
+}
+
+impl Default for ScriptInfo {
+    fn default() -> Self {
+        Self {
+            iteration: 0,
+            iterations: 1,
+        }
+    }
+}
+
+/// What a script asked a workflow run to do after its step (R-FLOW-6, D50): run the
+/// step with this name next, or end the iteration. The last call wins.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FlowControl {
+    Next(String),
+    Stop,
 }
 
 /// Which of a request's scripts something came from.
@@ -132,6 +159,8 @@ pub struct ScriptRun {
     pub vars: BTreeMap<String, Option<String>>,
     /// Headers set with `req.setHeader` in a pre-request script (R-TEST-2).
     pub headers: Vec<KeyValue>,
+    /// `workflow.next(…)` or `workflow.stop()`, the last one called (R-FLOW-6).
+    pub flow: Option<FlowControl>,
     /// The error that stopped the script, if any; tests run before it still count.
     pub error: Option<String>,
 }
@@ -146,12 +175,14 @@ impl ScriptRun {
 struct Input<'a> {
     phase: &'static str,
     vars: &'a BTreeMap<String, String>,
+    info: ScriptInfo,
     req: RequestView,
     res: Option<ResponseView>,
 }
 
 #[derive(Serialize)]
 struct RequestView {
+    name: String,
     method: &'static str,
     url: String,
     headers: Vec<KeyValue>,
@@ -164,6 +195,8 @@ struct ResponseView {
     status: u16,
     status_text: String,
     headers: Vec<KeyValue>,
+    /// Cookies the response set (R-TEST-16): name → value.
+    cookies: BTreeMap<String, String>,
     body: String,
     time: u64,
     size: usize,
@@ -178,6 +211,7 @@ struct Output {
     dropped: u64,
     vars: BTreeMap<String, Option<String>>,
     headers: Vec<KeyValue>,
+    flow: Option<FlowControl>,
 }
 
 /// Runs `script` with the current variables. `request` is shown as `req`; `response`
@@ -190,17 +224,26 @@ pub fn run(
     request: &Request,
     response: Option<&Response>,
 ) -> ScriptRun {
-    run_with_breakpoints(script, phase, vars, request, response, &BTreeSet::new())
+    run_with_breakpoints(
+        script,
+        phase,
+        vars,
+        request,
+        response,
+        ScriptInfo::default(),
+        &BTreeSet::new(),
+    )
 }
 
-/// [`run`], recording the variables in scope whenever a line in `breakpoints` is passed
-/// (R-TEST-10).
+/// [`run`] at `info`'s place in a workflow run, recording the variables in scope
+/// whenever a line in `breakpoints` is passed (R-TEST-10).
 pub fn run_with_breakpoints(
     script: &str,
     phase: Phase,
     vars: &BTreeMap<String, String>,
     request: &Request,
     response: Option<&Response>,
+    info: ScriptInfo,
     breakpoints: &BTreeSet<u32>,
 ) -> ScriptRun {
     let instrumented = breakpoints::instrument(script, breakpoints);
@@ -210,7 +253,7 @@ pub fn run_with_breakpoints(
         .map(|(line, why)| ConsoleEntry::Note {
             message: format!("The breakpoint on line {line} was not set: {why}."),
         });
-    let mut run = run_code(&instrumented.code, phase, vars, request, response);
+    let mut run = run_code(&instrumented.code, phase, vars, request, response, info);
     run.console.splice(0..0, notes);
     run
 }
@@ -221,6 +264,7 @@ fn run_code(
     vars: &BTreeMap<String, String>,
     request: &Request,
     response: Option<&Response>,
+    info: ScriptInfo,
 ) -> ScriptRun {
     let input = Input {
         phase: match phase {
@@ -228,6 +272,7 @@ fn run_code(
             Phase::Test => "test",
         },
         vars,
+        info,
         req: request_view(request),
         res: response.map(response_view),
     };
@@ -278,6 +323,7 @@ fn run_code(
                 console: out.console,
                 vars: out.vars,
                 headers: out.headers,
+                flow: out.flow,
                 error: None,
             }
         }
@@ -337,6 +383,7 @@ fn request_view(request: &Request) -> RequestView {
         RequestBody::Multipart(_) => Some(String::new()),
     };
     RequestView {
+        name: request.name.clone(),
         method: request.method.as_str(),
         url: crate::query::join_url(&request.url, &request.params),
         headers: request
@@ -355,15 +402,32 @@ fn response_view(response: &Response) -> ResponseView {
         status: response.status,
         status_text: response.status_text.clone(),
         headers: response.headers.clone(),
+        cookies: set_cookies(response),
         body: String::from_utf8_lossy(kept).into_owned(),
         time: u64::try_from(response.elapsed.as_millis()).unwrap_or(u64::MAX),
         size: response.body.len(),
     }
 }
 
+/// The cookies `response` sets: the name and value of each `Set-Cookie` header, the
+/// last one for a name.
+fn set_cookies(response: &Response) -> BTreeMap<String, String> {
+    response
+        .headers
+        .iter()
+        .filter(|h| h.is_named("set-cookie"))
+        .filter_map(|h| {
+            let pair = h.value.split(';').next()?;
+            let (name, value) = pair.split_once('=')?;
+            let name = name.trim();
+            (!name.is_empty()).then(|| (name.to_owned(), value.trim().to_owned()))
+        })
+        .collect()
+}
+
 /// The script API (R-TEST-3), in JavaScript. `__input` is defined before it runs.
 const PRELUDE: &str = r#"
-const __out = { tests: [], console: [], dropped: 0, vars: {}, headers: [] };
+const __out = { tests: [], console: [], dropped: 0, vars: {}, headers: [], flow: null };
 const __MAX_CONSOLE = 1000;
 const __MAX_HITS = 200;
 let __hits = 0;
@@ -486,6 +550,33 @@ const vars = Object.freeze({
     __vars[__var(name)] = null;
     __out.vars[String(name)] = null;
   },
+  replaceIn(text) {
+    return String(text).replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (whole, name) => {
+      const v = __vars[name];
+      return v === undefined || v === null ? whole : v;
+    });
+  },
+});
+
+// New names are properties of the global object, not declarations, so a script that
+// declares its own `info` or `workflow` (written before they existed) still runs.
+globalThis.info = Object.freeze({
+  event: __input.phase === "pre" ? "prerequest" : "test",
+  requestName: __input.req.name,
+  iteration: __input.info.iteration,
+  iterationCount: __input.info.iterations,
+});
+
+globalThis.workflow = Object.freeze({
+  next(name) {
+    if (typeof name !== "string" || name.trim() === "") {
+      throw new Error("workflow.next() needs the name of a step");
+    }
+    __out.flow = { next: name };
+  },
+  stop() {
+    __out.flow = "stop";
+  },
 });
 
 const console = (() => {
@@ -511,11 +602,15 @@ const res = __input.res && {
   status: __input.res.status,
   statusText: __input.res.statusText,
   headers: __headers(__input.res.headers),
+  cookies: __input.res.cookies,
   body: __input.res.body,
   time: __input.res.time,
   size: __input.res.size,
   header(name) {
     return this.headers[String(name).toLowerCase()];
+  },
+  cookie(name) {
+    return Object.prototype.hasOwnProperty.call(this.cookies, String(name)) ? this.cookies[String(name)] : undefined;
   },
   json() {
     try {
@@ -803,6 +898,7 @@ mod tests {
             &BTreeMap::new(),
             &req,
             Some(&res),
+            ScriptInfo::default(),
             &lines,
         );
         assert_eq!(out.error, None);
@@ -844,6 +940,7 @@ mod tests {
             &BTreeMap::new(),
             &req,
             Some(&res),
+            ScriptInfo::default(),
             &[2].into(),
         );
         assert_eq!(out.console.len(), 1001, "1000 kept and one note");
@@ -1142,5 +1239,111 @@ mod tests {
             &res,
         );
         assert_eq!(out.failed_tests(), 0, "{:?}", out.tests);
+    }
+
+    /// R-TEST-16: `info` says where the script runs; scripts that declare their own
+    /// `info` or `workflow` still run.
+    #[test]
+    fn info_says_where_the_script_runs() {
+        let mut req = Request::new(HttpMethod::Get, "https://api.test/");
+        req.name = "Get ü😀".into();
+        let pre = run_with_breakpoints(
+            "vars.set('i', [info.event, info.requestName, info.iteration, info.iterationCount].join('|'));",
+            Phase::PreRequest,
+            &BTreeMap::new(),
+            &req,
+            None,
+            ScriptInfo {
+                iteration: 2,
+                iterations: 5,
+            },
+            &BTreeSet::new(),
+        );
+        assert_eq!(pre.error, None);
+        assert_eq!(pre.vars["i"].as_deref(), Some("prerequest|Get ü😀|2|5"));
+
+        let own = run(
+            "const info = 1; let workflow = 2; vars.set('x', String(info + workflow));",
+            Phase::PreRequest,
+            &BTreeMap::new(),
+            &req,
+            None,
+        );
+        assert_eq!(own.error, None);
+        assert_eq!(own.vars["x"].as_deref(), Some("3"));
+    }
+
+    /// R-TEST-16: the response's cookies, by name; malformed `Set-Cookie` headers
+    /// are left out.
+    #[test]
+    fn cookies_the_response_set() {
+        let mut res = response(200, "");
+        res.headers = vec![
+            KeyValue::new("Set-Cookie", "session=a=b; Path=/"),
+            KeyValue::new("set-cookie", "no-equals-sign"),
+            KeyValue::new("SET-COOKIE", " name = Zoë ; Secure"),
+            KeyValue::new("Set-Cookie", "=nameless"),
+        ];
+        let req = Request::new(HttpMethod::Get, "https://api.test/");
+        let out = run(
+            r#"test("cookies", () => {
+  expect(res.cookie("session")).toBe("a=b");
+  expect(res.cookie("name")).toBe("Zoë");
+  expect(res.cookie("missing")).toBeUndefined();
+  expect(res.cookie("toString")).toBeUndefined();
+  expect(Object.keys(res.cookies)).toEqual(["name", "session"]);
+});"#,
+            Phase::Test,
+            &BTreeMap::new(),
+            &req,
+            Some(&res),
+        );
+        assert_eq!(out.error, None);
+        assert_eq!(out.failed_tests(), 0, "{:?}", out.tests);
+    }
+
+    /// R-TEST-16: `vars.replaceIn` fills in `{{variables}}` it knows, also ones set
+    /// earlier in the script, and leaves the others.
+    #[test]
+    fn replace_in_fills_in_known_variables() {
+        let vars = BTreeMap::from([("user".to_owned(), "Zoë 😀".to_owned())]);
+        let req = Request::new(HttpMethod::Get, "https://api.test/");
+        let out = run(
+            "vars.set('n', 7);\n\
+             vars.set('a', vars.replaceIn('{{ user }} has {{n}} of {{missing}} {{}}'));\n\
+             vars.set('b', vars.replaceIn(42));",
+            Phase::PreRequest,
+            &vars,
+            &req,
+            None,
+        );
+        assert_eq!(out.error, None);
+        assert_eq!(
+            out.vars["a"].as_deref(),
+            Some("Zoë 😀 has 7 of {{missing}} {{}}")
+        );
+        assert_eq!(out.vars["b"].as_deref(), Some("42"));
+    }
+
+    /// R-FLOW-6: the last of `workflow.next`/`stop` counts; a name is required.
+    #[test]
+    fn workflow_control_from_scripts() {
+        let req = Request::new(HttpMethod::Get, "https://api.test/");
+        let flow = |code: &str| run(code, Phase::PreRequest, &BTreeMap::new(), &req, None);
+        assert_eq!(flow("").flow, None);
+        assert_eq!(
+            flow("workflow.next('Get user');").flow,
+            Some(FlowControl::Next("Get user".into()))
+        );
+        assert_eq!(
+            flow("workflow.next('A'); workflow.stop();").flow,
+            Some(FlowControl::Stop)
+        );
+        let empty = flow("workflow.next('  ');");
+        assert!(
+            empty
+                .error
+                .is_some_and(|e| e.contains("workflow.next() needs the name of a step"))
+        );
     }
 }

@@ -228,6 +228,10 @@ so the team shares them. Turning off TLS verification stays a setting of your ow
 
 **Folder defaults.** A folder's **…** menu has **Folder defaults…**: headers, auth and variables for every request in
 that folder. They are saved in the folder's `_folder.toml`, so they are shared through git like the requests.
+
+**Descriptions.** A request's **Docs** tab, and **Description…** in a project's or folder's **…** menu, hold a
+description in Markdown, shown rendered; **Edit** switches to the text. It is saved in the file it describes, so it is
+reviewed in git with the requests. Imported Postman collections and OpenAPI descriptions bring theirs along.
 Unsaved edits are kept when you close Tortuga. **Copy as curl** (next to Save) copies the request with variables
 filled in; if it uses secret values, you choose whether to mask them.
 
@@ -244,8 +248,8 @@ req.setHeader("X-Request-Time", String(Date.now()));
 vars.set("run", "nightly");
 ```
 
-Scripts have `res` (`status`, `headers`, `json()`, `header(name)`, `time`, …), `req`, `vars` (`get`, `set`, `unset`,
-`has`) and `console.log`; `expect` has the usual matchers (`toBe`, `toEqual`, `toContain`, `toMatch`,
+Scripts have `res` (`status`, `headers`, `json()`, `header(name)`, `cookie(name)`, `time`, …), `req`, `vars` (`get`,
+`set`, `unset`, `has`, `replaceIn`), `info` (`requestName`, `iteration`, …) and `console.log`; `expect` has the usual matchers (`toBe`, `toEqual`, `toContain`, `toMatch`,
 `toHaveProperty`, `toBeLessThan`, … and `.not`). Scripts can't read files or use the network.
 
 **Captures** (under the scripts) put a value from the response into a variable: `$.access_token` (JSONPath),
@@ -261,7 +265,9 @@ every project `{{token}}`. The workspace menu's **Variables…** lists these val
 run in order, each step with optional extra captures and tests. Values captured by a step are available to the next
 ones as `{{variables}}`. Choose a CSV or JSON **data file** to run the workflow once per row. Workflows are saved in
 the project's `workflows/` folder, so they are shared through git too. **Run** (or **Ctrl+Enter**) shows each step's
-result; click a step for its tests and response.
+result; click a step for its tests and response. A step's script can change what runs next:
+`workflow.next("Check status")` runs that step after this one (to poll until a job is done), `workflow.stop()` ends the
+iteration. An iteration stops after 1000 steps, so a loop that never ends can't hang a run.
 
 **In CI.** `tortuga-cli` runs the same files from a terminal, without a window:
 

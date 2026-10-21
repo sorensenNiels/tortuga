@@ -173,6 +173,7 @@ impl<'a> Importer<'a> {
             .unwrap_or("Imported API")
             .to_owned();
         let mut manifest = Manifest::new(title.clone());
+        manifest.description = text_of(self.doc.pointer("/info/description"));
         self.server_id = Collection::new_server_id(&title, &[]);
         manifest.servers.push(Server {
             id: self.server_id.clone(),
@@ -413,17 +414,20 @@ impl<'a> Importer<'a> {
 
     // --------------------------------------------------------------- operations
 
-    /// Folders per tag (declared tags first, in their order), then untagged requests.
+    /// Folders per tag (declared tags first, in their order, with their descriptions),
+    /// then untagged requests.
     fn operations(&mut self) -> (Vec<NewItem>, usize) {
-        let mut folders: Vec<(String, Vec<NewItem>)> = self
+        let mut folders: Vec<(String, String, Vec<NewItem>)> = self
             .doc
             .get("tags")
             .and_then(Value::as_array)
             .map(Vec::as_slice)
             .unwrap_or_default()
             .iter()
-            .filter_map(|t| t.get("name").and_then(Value::as_str))
-            .map(|name| (name.to_owned(), Vec::new()))
+            .filter_map(|t| {
+                let name = t.get("name").and_then(Value::as_str)?;
+                Some((name.to_owned(), text_of(t.get("description")), Vec::new()))
+            })
             .collect();
         let mut top = Vec::new();
         let mut count = 0;
@@ -448,9 +452,9 @@ impl<'a> Importer<'a> {
                 count += 1;
                 match op.pointer("/tags/0").and_then(Value::as_str) {
                     None => top.push(request),
-                    Some(tag) => match folders.iter_mut().find(|(name, _)| name == tag) {
-                        Some((_, items)) => items.push(request),
-                        None => folders.push((tag.to_owned(), vec![request])),
+                    Some(tag) => match folders.iter_mut().find(|(name, ..)| name == tag) {
+                        Some((.., items)) => items.push(request),
+                        None => folders.push((tag.to_owned(), String::new(), vec![request])),
                     },
                 }
             }
@@ -462,10 +466,13 @@ impl<'a> Importer<'a> {
         }
         let mut items: Vec<NewItem> = folders
             .into_iter()
-            .filter(|(_, items)| !items.is_empty())
-            .map(|(name, items)| NewItem::Folder {
+            .filter(|(.., items)| !items.is_empty())
+            .map(|(name, description, items)| NewItem::Folder {
                 name,
-                defaults: FolderDefaults::default(),
+                defaults: FolderDefaults {
+                    description,
+                    ..FolderDefaults::default()
+                },
                 items,
             })
             .collect();
@@ -482,6 +489,7 @@ impl<'a> Importer<'a> {
     ) -> Request {
         let mut request = Request::new(method, "");
         request.name = request_name(op, method, path);
+        request.description = request_description(op, &request.name);
         request.server = Some(self.server_id.clone());
         request.url = path_template(path);
 
@@ -807,6 +815,31 @@ fn request_name(op: &Value, method: HttpMethod, path: &str) -> String {
         .find(|s| !s.is_empty())
         .map_or_else(|| format!("{method} {path}"), str::to_owned);
     short_name(&name)
+}
+
+/// The operation's description (R-COL-22), after its summary when that was too long to
+/// be the request's name as it is.
+fn request_description(op: &Value, name: &str) -> String {
+    let summary = text_of(op.get("summary"));
+    let shown = summary.trim_end_matches('.');
+    [
+        (!shown.is_empty() && shown != name).then_some(summary.clone()),
+        Some(text_of(op.get("description"))),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|t| !t.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+/// A text field (Markdown in OpenAPI), trimmed; empty when missing.
+fn text_of(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// `/users/{user-id}` → `/users/:user_id` (R-HTTP-10).
@@ -1182,5 +1215,46 @@ components:
             "application/problem+json; charset=utf-8"
         ));
         assert!(!is_json_content_type("application/xml"));
+    }
+
+    /// R-COL-22: the API's, tags' and operations' descriptions; a summary too long to
+    /// be the request's name as it is comes first in its description.
+    #[test]
+    fn descriptions() {
+        let long =
+            "Lists every pet in the store, newest first, with paging and filters on the species";
+        let spec = format!(
+            r#"{{"openapi": "3.0.0",
+                "info": {{"title": "Pets", "description": "  The **pet** store ü😀.\n"}},
+                "tags": [{{"name": "pets", "description": "Pets and their owners."}}, {{"name": "misc"}}],
+                "paths": {{
+                  "/pets": {{"get": {{"tags": ["pets"], "summary": "{long}", "description": "Use `limit`."}}}},
+                  "/health": {{"get": {{"tags": ["misc"], "summary": "Health.", "description": "Always 200."}}}},
+                  "/plain": {{"get": {{"summary": "Plain"}}}}
+                }}}}"#
+        );
+        let import = parse(&spec).expect("parse");
+        assert_eq!(import.manifest.description, "The **pet** store ü😀.");
+        let folder = |name: &str| {
+            import
+                .items
+                .iter()
+                .find_map(|i| match i {
+                    NewItem::Folder {
+                        name: n, defaults, ..
+                    } if n == name => Some(defaults.description.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no folder {name}"))
+        };
+        assert_eq!(folder("pets"), "Pets and their owners.");
+        assert_eq!(folder("misc"), "");
+        let all = requests(&import.items);
+        let by_path = |url: &str| all.iter().find(|r| r.url == url).expect("request");
+        let pets = by_path("/pets");
+        assert_ne!(pets.name, long, "the name is cut");
+        assert_eq!(pets.description, format!("{long}\n\nUse `limit`."));
+        assert_eq!(by_path("/health").description, "Always 200.");
+        assert_eq!(by_path("/plain").description, "");
     }
 }

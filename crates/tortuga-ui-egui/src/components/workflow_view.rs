@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use egui::{ComboBox, Label, RichText, ScrollArea, TextEdit, Ui};
-use tortuga_core::workflow::{Step, StepResult, Workflow};
+use tortuga_core::workflow::{FlowEnd, Step, StepResult, Workflow};
 use tortuga_core::{HttpMethod, KeyValue};
 
 use super::{TestsView, key_value_table, tests_details};
@@ -107,6 +107,16 @@ pub struct IterationView {
     pub row: Option<BTreeMap<String, String>>,
     pub steps: Vec<StepView>,
     pub skipped: usize,
+    /// How a script ended it early (R-FLOW-6).
+    pub ended: Option<FlowEnd>,
+}
+
+impl IterationView {
+    fn failed(&self) -> bool {
+        self.skipped > 0
+            || self.ended == Some(FlowEnd::TooManySteps)
+            || self.steps.iter().any(|s| s.failure.is_some())
+    }
 }
 
 /// A run, while it runs and after.
@@ -135,11 +145,7 @@ impl RunView {
     }
 
     fn passed(&self) -> bool {
-        !self.cancelled
-            && self
-                .iterations
-                .iter()
-                .all(|i| i.skipped == 0 && i.steps.iter().all(|s| s.failure.is_none()))
+        !self.cancelled && !self.iterations.iter().any(IterationView::failed)
     }
 }
 
@@ -537,8 +543,7 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
         .show(ui, |ui| {
             for (n, iteration) in run.iterations.iter().enumerate() {
                 if multi {
-                    let failed = iteration.skipped > 0
-                        || iteration.steps.iter().any(|s| s.failure.is_some());
+                    let failed = iteration.failed();
                     let row = iteration
                         .row
                         .as_ref()
@@ -569,6 +574,11 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                             crate::format::count(iteration.skipped, "later step")
                         ),
                     );
+                }
+                match iteration.ended {
+                    Some(end @ FlowEnd::Stopped) => theme::hint(ui, end.message()),
+                    Some(end @ FlowEnd::TooManySteps) => theme::error(ui, end.message()),
+                    None => {}
                 }
             }
             if let Some((n, i)) = run.current {
@@ -822,6 +832,7 @@ mod tests {
         let run = RunView {
             iterations: vec![IterationView {
                 row: None,
+                ended: None,
                 steps: vec![StepView {
                     name: "Get user".into(),
                     failure: Some("test “found” failed: Expected 404 to be 200".into()),
@@ -846,5 +857,39 @@ mod tests {
         h.run();
         h.get_by_label("GET https://api.test/users/bob");
         h.get_by_label("Expected 404 to be 200");
+    }
+
+    /// R-FLOW-6: an iteration a script stopped passes and says so; one stopped by the
+    /// step limit fails.
+    #[test]
+    fn results_say_how_scripts_ended_a_run() {
+        for (end, verdict) in [
+            (FlowEnd::Stopped, "Passed"),
+            (FlowEnd::TooManySteps, "Failed"),
+        ] {
+            let run = RunView {
+                iterations: vec![IterationView {
+                    steps: vec![StepView {
+                        name: "Log in".into(),
+                        failure: None,
+                        status: Some((200, "OK".into())),
+                        elapsed_ms: Some(3),
+                        tests: TestsView::default(),
+                        sent: None,
+                        body: None,
+                    }],
+                    ended: Some(end),
+                    ..IterationView::default()
+                }],
+                iterations_planned: 1,
+                steps_per_iteration: 2,
+                ..RunView::default()
+            };
+            let mut st = WorkflowEditorState::default();
+            let mut h = crate::test_host::harness(|ui| workflow_results(ui, Some(&run), &mut st));
+            h.run();
+            h.get_by_label(verdict);
+            h.get_by_label(&end.message());
+        }
     }
 }

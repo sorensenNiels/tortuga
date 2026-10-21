@@ -1,6 +1,8 @@
 //! Workflows (R-FLOW-1..4, D4, D29): an ordered list of requests of a project, each
 //! with optional extra captures and tests, run one after the other with the values
 //! captured along the way. Stored as TOML files in the project's `workflows/` folder.
+//! Scripts may change the order with `workflow.next(name)` and `workflow.stop()`
+//! (R-FLOW-6, D50).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -10,7 +12,16 @@ use serde::{Deserialize, Serialize};
 use crate::collection::{Collection, Item};
 use crate::cookies::CookieJar;
 use crate::runner::{self, Extra, StepOutcome};
+use crate::script::{FlowControl, ScriptInfo};
 use crate::{Client, vars};
+
+/// Steps one iteration may run, so a `workflow.next(…)` loop that never ends stops
+/// (R-FLOW-6).
+#[cfg(not(test))]
+pub const MAX_STEPS: usize = 1000;
+/// Fewer in this crate's tests, so the loop test sends few requests.
+#[cfg(test)]
+pub const MAX_STEPS: usize = 20;
 
 /// Folder of workflow files in a project (D29).
 pub const WORKFLOWS_DIR: &str = "workflows";
@@ -146,6 +157,8 @@ pub struct RunOptions {
 /// A step that ran (or could not).
 #[derive(Debug, Clone)]
 pub struct StepResult {
+    /// Its place in the workflow's steps (a step may run more than once, R-FLOW-6).
+    pub index: usize,
     /// The step's name, or its request's.
     pub name: String,
     pub request: String,
@@ -158,13 +171,47 @@ pub struct Iteration {
     /// The data row, for data-driven runs.
     pub row: Option<BTreeMap<String, String>>,
     pub steps: Vec<StepResult>,
-    /// Steps not run because an earlier one failed.
+    /// Steps not run because an earlier one failed: the ones after it.
     pub skipped: usize,
+    /// How a script ended the iteration early (R-FLOW-6).
+    pub ended: Option<FlowEnd>,
+}
+
+/// Why an iteration ended before its last step without a failure (R-FLOW-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowEnd {
+    /// A script called `workflow.stop()`.
+    Stopped,
+    /// [`MAX_STEPS`] steps ran: a `workflow.next(…)` loop that never ends. A failure.
+    TooManySteps,
+}
+
+impl FlowEnd {
+    /// What happened, as a sentence for the user.
+    pub fn message(self) -> String {
+        match self {
+            Self::Stopped => "A script ended this iteration with workflow.stop().".to_owned(),
+            Self::TooManySteps => format!(
+                "Stopped after {MAX_STEPS} steps: workflow.next(…) keeps going round (a \
+                 loop that never ends?)."
+            ),
+        }
+    }
+
+    /// For the JSON report: `stopped` or `too_many_steps`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::TooManySteps => "too_many_steps",
+        }
+    }
 }
 
 impl Iteration {
     pub fn failed(&self) -> bool {
-        self.skipped > 0 || self.steps.iter().any(|s| s.outcome.failed())
+        self.skipped > 0
+            || self.ended == Some(FlowEnd::TooManySteps)
+            || self.steps.iter().any(|s| s.outcome.failed())
     }
 }
 
@@ -221,6 +268,8 @@ pub async fn run(
     } else {
         options.rows.iter().map(Some).collect()
     };
+    let names = step_names(collection, workflow);
+    let iterations = rows.len();
     let mut result = RunResult::default();
     for (n, row) in rows.into_iter().enumerate() {
         let jar = CookieJar::default();
@@ -229,49 +278,33 @@ pub async fn run(
             row: row.cloned(),
             ..Iteration::default()
         };
-        for (i, step) in workflow.steps.iter().enumerate() {
+        let mut i = 0;
+        while let Some(step) = workflow.steps.get(i) {
+            if iteration.steps.len() == MAX_STEPS {
+                iteration.ended = Some(FlowEnd::TooManySteps);
+                break;
+            }
             progress(Progress::Started {
                 iteration: n,
                 step: i,
             });
-            let path = step.request_path();
-            let outcome = match collection.request(&path) {
-                None => StepOutcome {
-                    errors: vec![format!(
-                        "The request {} is not in the project.",
-                        step.request
-                    )],
-                    ..StepOutcome::default()
+            let mut variables = options.overrides.clone();
+            variables.extend(row.cloned().unwrap_or_default());
+            variables.extend(captured.clone());
+            let at = StepRun {
+                variables,
+                jar: &jar,
+                info: ScriptInfo {
+                    iteration: n,
+                    iterations,
                 },
-                Some(item) => {
-                    let mut ctx = vars::Context::for_request(
-                        collection,
-                        options.environment.as_deref(),
-                        Some(&path),
-                    )
-                    .with_workspace_defaults(&options.workspace_defaults)
-                    .with_secrets(options.secrets.clone())
-                    .with_workspace(&options.workspace, &std::collections::BTreeSet::new());
-                    ctx.variables.extend(options.overrides.clone());
-                    ctx.variables.extend(row.cloned().unwrap_or_default());
-                    ctx.variables.extend(captured.clone());
-                    let extra = Extra {
-                        capture: Some(&step.capture),
-                        tests: Some(step.tests.as_str()),
-                        breakpoints: None,
-                        check_examples: options.check_examples,
-                    };
-                    runner::run_step(client, Some(&jar), &item.request, &ctx, extra).await
-                }
             };
+            let mut outcome = run_one(client, collection, step, options, at).await;
             runner::apply_changes(&mut captured, &outcome.vars);
-            let name = step.name.clone().unwrap_or_else(|| {
-                collection
-                    .request(&path)
-                    .map_or_else(|| step.request.clone(), |r| r.request.name.clone())
-            });
+            let next = next_step(&mut outcome, &names, i);
             let done = StepResult {
-                name,
+                index: i,
+                name: names[i].clone(),
                 request: step.request.clone(),
                 outcome,
             };
@@ -285,10 +318,95 @@ pub async fn run(
                 iteration.skipped = workflow.steps.len() - i - 1;
                 break;
             }
+            let Some(next) = next else {
+                if !failed {
+                    iteration.ended = Some(FlowEnd::Stopped);
+                }
+                break;
+            };
+            i = next;
         }
         result.iterations.push(iteration);
     }
     result
+}
+
+/// Where a step runs: the variables it gets on top of the project's (overrides, the
+/// data row, captured values), the iteration's cookie jar, and the iteration.
+struct StepRun<'a> {
+    variables: BTreeMap<String, String>,
+    jar: &'a CookieJar,
+    info: ScriptInfo,
+}
+
+/// Runs one step.
+async fn run_one(
+    client: &Client,
+    collection: &Collection,
+    step: &Step,
+    options: &RunOptions,
+    at: StepRun<'_>,
+) -> StepOutcome {
+    let path = step.request_path();
+    let Some(item) = collection.request(&path) else {
+        return StepOutcome {
+            errors: vec![format!(
+                "The request {} is not in the project.",
+                step.request
+            )],
+            ..StepOutcome::default()
+        };
+    };
+    let mut ctx =
+        vars::Context::for_request(collection, options.environment.as_deref(), Some(&path))
+            .with_workspace_defaults(&options.workspace_defaults)
+            .with_secrets(options.secrets.clone())
+            .with_workspace(&options.workspace, &std::collections::BTreeSet::new());
+    ctx.variables.extend(at.variables);
+    let extra = Extra {
+        capture: Some(&step.capture),
+        tests: Some(step.tests.as_str()),
+        breakpoints: None,
+        check_examples: options.check_examples,
+        info: at.info,
+    };
+    runner::run_step(client, Some(at.jar), &item.request, &ctx, extra).await
+}
+
+/// The index of the step to run after step `i`, by what its scripts asked (R-FLOW-6);
+/// `None` ends the iteration. A step name the workflow doesn't have is an error of the
+/// step.
+fn next_step(outcome: &mut StepOutcome, names: &[String], i: usize) -> Option<usize> {
+    let Some(flow) = &outcome.flow else {
+        return Some(i + 1);
+    };
+    let name = match flow {
+        FlowControl::Stop => return None,
+        FlowControl::Next(name) => name,
+    };
+    let found = names.iter().position(|n| n == name);
+    if found.is_none() {
+        outcome.errors.push(format!(
+            "workflow.next(\"{name}\"): the workflow has no step called “{name}”."
+        ));
+    }
+    found
+}
+
+/// What each step is called in a run and by `workflow.next(…)`: its own name, else its
+/// request's, else the request's path.
+fn step_names(collection: &Collection, workflow: &Workflow) -> Vec<String> {
+    workflow
+        .steps
+        .iter()
+        .map(|step| {
+            step.name.clone().unwrap_or_else(|| {
+                collection
+                    .request(&step.request_path())
+                    .map_or_else(|| step.request.clone(), |r| r.request.name.clone())
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -371,5 +489,45 @@ test("created", () => expect(res.status).toBe(201));
             ]
         );
         assert!(!wf.retarget(Path::new("nothing"), Path::new("x")));
+    }
+
+    /// R-FLOW-6: a `workflow.next(…)` loop that never ends stops after `MAX_STEPS`
+    /// steps and fails.
+    #[tokio::test]
+    async fn an_endless_loop_is_stopped() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let storage = crate::storage::FsStorage;
+        let col = Collection::create(&storage, dir.path(), "Loop").expect("project");
+        let mut ping = crate::Request::new(crate::HttpMethod::Get, server.uri());
+        ping.name = "Ping".into();
+        col.new_request(&storage, Path::new(""), &ping)
+            .expect("request");
+        let col = Collection::open(&storage, dir.path()).expect("open");
+        let wf = Workflow {
+            steps: vec![Step {
+                tests: "workflow.next(\"Ping\");".into(),
+                ..Step::new(Path::new("ping.toml"))
+            }],
+            ..Workflow::default()
+        };
+        let result = run(
+            &Client::default(),
+            &col,
+            &wf,
+            &RunOptions::default(),
+            |_| {},
+        )
+        .await;
+        let iteration = &result.iterations[0];
+        assert_eq!(iteration.steps.len(), MAX_STEPS);
+        assert!(iteration.steps.iter().all(|s| !s.outcome.failed()));
+        assert_eq!(iteration.ended, Some(FlowEnd::TooManySteps));
+        assert!(iteration.failed());
+        assert!(FlowEnd::TooManySteps.message().contains("20 steps"));
     }
 }

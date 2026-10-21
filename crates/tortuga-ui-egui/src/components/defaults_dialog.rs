@@ -8,7 +8,7 @@ use tortuga_core::{Auth, Item, KeyValue};
 
 use super::auth_editor::{auth_fields, kind_picker};
 use super::request_editor::parse_timeout;
-use super::{DialogResult, dialog, key_value_table};
+use super::{DialogResult, description_editor, dialog, key_value_table};
 use crate::state::AppState;
 use crate::theme;
 
@@ -18,6 +18,8 @@ enum Tab {
     Auth,
     Variables,
     Requests,
+    /// A project's or folder's description (R-COL-22).
+    Description,
 }
 
 /// Whose defaults the dialog edits.
@@ -32,9 +34,10 @@ pub enum DefaultsTarget {
 }
 
 /// What the dialog saves. `variables` is only used for folders, `settings` only for
-/// projects and the workspace.
+/// projects and the workspace, `description` for projects and folders.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EditedDefaults {
+    pub description: String,
     pub headers: Vec<KeyValue>,
     /// `None` = inherit; the workspace has nothing to inherit, so `None` = no auth there.
     pub auth: Option<Auth>,
@@ -53,6 +56,8 @@ pub struct DefaultsDialog {
     variables: Vec<KeyValue>,
     settings: RequestSettings,
     timeout_text: String,
+    description: String,
+    editing_description: bool,
     tab: Tab,
 }
 
@@ -65,6 +70,8 @@ impl DefaultsDialog {
             variables: Vec::new(),
             settings: RequestSettings::default(),
             timeout_text: String::new(),
+            description: String::new(),
+            editing_description: false,
             tab: Tab::Headers,
         }
     }
@@ -80,17 +87,21 @@ impl DefaultsDialog {
     }
 
     pub fn new(state: &AppState, root: PathBuf) -> Self {
-        let (headers, auth, settings) = state
+        let (headers, auth, settings, description) = state
             .collection(&root)
             .map(|c| {
                 (
                     c.manifest.headers.clone(),
                     c.manifest.auth.clone(),
                     c.manifest.settings,
+                    c.manifest.description.clone(),
                 )
             })
             .unwrap_or_default();
-        Self::with(DefaultsTarget::Project(root), headers, auth).with_settings(settings)
+        let mut d =
+            Self::with(DefaultsTarget::Project(root), headers, auth).with_settings(settings);
+        d.description = description;
+        d
     }
 
     /// The defaults of the folder at `folder` in the project at `root` (R-COL-11).
@@ -109,6 +120,7 @@ impl DefaultsDialog {
             .into_iter()
             .map(|(name, value)| KeyValue::new(name, value))
             .collect();
+        d.description = defaults.description;
         d
     }
 
@@ -123,6 +135,13 @@ impl DefaultsDialog {
     #[must_use]
     pub fn on_auth(mut self) -> Self {
         self.tab = Tab::Auth;
+        self
+    }
+
+    /// Opens on the Description tab (from "Description…" in a menu, R-COL-22).
+    #[must_use]
+    pub fn on_description(mut self) -> Self {
+        self.tab = Tab::Description;
         self
     }
 
@@ -143,7 +162,7 @@ impl DefaultsDialog {
         dialog(ctx, "collection-defaults", &title, 640.0, false, |ui| {
             theme::hint(ui, explanation(&self.target));
             ui.add_space(8.0);
-            self.tabs(ui, folder, inherited.is_some());
+            self.tabs(ui, folder, inherited.is_some(), !workspace);
             let file = match self.target {
                 DefaultsTarget::Folder(..) => "folder file (_folder.toml)",
                 DefaultsTarget::Project(_) => "project file (tortuga.toml)",
@@ -175,6 +194,16 @@ impl DefaultsDialog {
                          active environment, or a secret value, wins over these.",
                     );
                 }
+                Tab::Description => {
+                    description_editor(
+                        ui,
+                        "defaults",
+                        &mut self.description,
+                        &mut self.editing_description,
+                        read_only,
+                        380.0,
+                    );
+                }
                 Tab::Requests => {
                     if let Some(inherited) = &inherited {
                         requests_tab(
@@ -198,6 +227,7 @@ impl DefaultsDialog {
                 .inner;
             if save {
                 DialogResult::Done(EditedDefaults {
+                    description: self.description.clone(),
                     headers: self.headers.clone(),
                     auth: self.auth.clone(),
                     variables: self
@@ -257,7 +287,7 @@ impl DefaultsDialog {
         })
     }
 
-    fn tabs(&mut self, ui: &mut Ui, folder: bool, settings: bool) {
+    fn tabs(&mut self, ui: &mut Ui, folder: bool, settings: bool, description: bool) {
         let header_count = self.headers.iter().filter(|h| h.is_active()).count();
         let variable_count = self.variables.iter().filter(|v| v.is_active()).count();
         let count = |n: usize| (n > 0).then(|| n.to_string());
@@ -282,6 +312,14 @@ impl DefaultsDialog {
             .filter(|set| *set)
             .count();
             tabs.push((Tab::Requests, "Requests", count(overrides)));
+        }
+        if description {
+            let written = !self.description.trim().is_empty();
+            tabs.push((
+                Tab::Description,
+                "Description",
+                written.then(|| "⏺".to_owned()),
+            ));
         }
         theme::tabs(ui, &mut self.tab, &tabs);
     }
@@ -492,6 +530,52 @@ mod tests {
         assert_eq!(saved.headers, [KeyValue::new("X-Team", "")]);
         assert_eq!(saved.auth, None);
         std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-22: a project's and a folder's description are edited on their Description
+    /// tab, which the workspace's defaults don't have.
+    #[test]
+    fn writing_a_description() {
+        let dir = tempfile::tempdir().expect("dir");
+        let root = dir.path().to_path_buf();
+        let col = Collection::create(&FsStorage, &root, "C").expect("create");
+        col.new_folder(&FsStorage, std::path::Path::new(""), "Admin")
+            .expect("folder");
+        let state = AppState::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let project = DefaultsDialog::new(&state, root.clone()).on_description();
+        let folder =
+            DefaultsDialog::for_folder(&state, root.clone(), "admin".into()).on_description();
+        for mut dialog in [project, folder] {
+            let mut result = None;
+            {
+                let mut h = crate::test_host::harness(|ui| {
+                    if let DialogResult::Done(r) = dialog.show(ui.ctx(), &state) {
+                        result = Some(r);
+                    }
+                });
+                h.run();
+                h.get_by_label_contains("No description yet");
+                h.get_by_label("Edit").click();
+                h.run();
+                let field = h.get_by_role(egui::accesskit::Role::MultilineTextInput);
+                field.focus();
+                field.type_text("# Admin ü😀");
+                h.run();
+                h.get_by_label("Save").click();
+                h.run();
+            }
+            assert_eq!(result.expect("saved").description, "# Admin ü😀");
+        }
+
+        let mut workspace = DefaultsDialog::for_workspace(&state);
+        let mut h = crate::test_host::harness(|ui| {
+            let _ = workspace.show(ui.ctx(), &state);
+        });
+        h.run();
+        assert!(h.query_by_label("Description").is_none());
     }
 
     #[test]

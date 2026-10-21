@@ -28,6 +28,7 @@ from its `client` variable to every request (R-SET-2, R-WS-8), and every example
 | `scripts/` | Pre-request scripts setting variables and headers (R-TEST-2), Jest- and Chai-style tests (R-TEST-1, R-TEST-3, R-TEST-8), XML bodies and `xpath:` captures (R-HTTP-19), example conditions on an XML body (R-MOCK-3). |
 | `data-driven/` | A workflow run once per row of a CSV file, with non-ASCII values (R-FLOW-4), query conditions (R-MOCK-3). |
 | `contract/` | The contract check (R-MOCK-8): an orders API as designed. Its workflow passes against its own mock; the test also runs it with `--env built` against the mock of `contract-built/`, an implementation that drifted (a field renamed, types changed, `200` instead of `201`), and expects exactly those differences. `contract-built/` is not in the workspace: it only plays the real API. |
+| `flow/` | Scripts choosing what a workflow runs next (R-FLOW-6): a step polling itself with `workflow.next` and `workflow.stop()` ending each iteration before a step that would fail; `res.cookie`/`res.cookies` from the example's `Set-Cookie` headers, `info` per data row and `vars.replaceIn` (R-TEST-16). |
 
 Opened in the app (Workspace → Open…), the same projects can be sent by hand against
 "Start mock server" (R-MOCK-2, R-MOCK-4).

@@ -1,0 +1,20 @@
+name = "Poll and stop"
+data = "data/rows.csv"
+
+[[steps]]
+request = "log-in.toml"
+
+[[steps]]
+request = "check-status.toml"
+
+[[steps]]
+request = "log-in.toml"
+name = "Stop here"
+tests = """
+workflow.stop();
+"""
+
+# Not in the project: the run fails if workflow.stop() didn't end the iteration.
+[[steps]]
+request = "never.toml"
+name = "Never runs"

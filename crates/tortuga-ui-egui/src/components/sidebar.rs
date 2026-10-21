@@ -46,6 +46,10 @@ pub enum SidebarAction {
     EditDefaults(PathBuf),
     /// Default headers, auth and variables of a folder (R-COL-11).
     EditFolderDefaults(ItemKey),
+    /// A project's description (R-COL-22).
+    ProjectDescription(PathBuf),
+    /// A folder's description (R-COL-22).
+    FolderDescription(ItemKey),
     /// Workflows (R-FLOW-2, R-FLOW-3).
     NewWorkflow(PathBuf),
     SelectWorkflow(WorkflowKey),
@@ -401,6 +405,9 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
             drop_on_project(ui, &row, &root, tree);
         }
         let mut hover = root.display().to_string();
+        if let Some(summary) = crate::format::summary_line(&c.manifest.description) {
+            hover = format!("{summary}\n{hover}");
+        }
         if let Some(branch) = branch {
             hover = format!("{hover}\nGit branch: {branch}");
         }
@@ -731,12 +738,15 @@ fn git_marker(ui: &Ui, status: FileStatus) -> Atom<'static> {
 
 /// What hovering a request or folder row explains, if anything.
 fn row_hover(
+    description: &str,
     folder_error: Option<&String>,
     conflict: bool,
     dirty: bool,
     git_status: Option<FileStatus>,
 ) -> Option<String> {
-    let mut hover: Vec<&str> = Vec::new();
+    // The first line of its description (R-COL-22), then what needs attention.
+    let summary = crate::format::summary_line(description);
+    let mut hover: Vec<&str> = summary.as_deref().into_iter().collect();
     if let Some(err) = folder_error {
         hover.push(err);
     }
@@ -843,7 +853,12 @@ fn tree_item(
         if !read_only {
             drag_and_drop(ui, &row, &key, &name, is_folder, next, tree);
         }
-        if let Some(text) = row_hover(folder_error, conflict, dirty, git_status) {
+        let description = match item {
+            Item::Folder(f) => f.defaults.description.as_str(),
+            Item::Request(r) => r.request.description.as_str(),
+            Item::Broken(_) => "",
+        };
+        if let Some(text) = row_hover(description, folder_error, conflict, dirty, git_status) {
             row = row.on_hover_text(text);
         }
         if row.double_clicked() && !is_folder {
@@ -940,6 +955,9 @@ fn collection_menu(
     }
     item(ui, "Defaults (headers, auth, requests)…".into(), &|| {
         MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
+    });
+    item(ui, "Description…".into(), &|| {
+        MenuChoice::Action(SidebarAction::ProjectDescription(root.clone()))
     });
     if !c.read_only {
         item(ui, "New workflow…".into(), &|| {
@@ -1045,6 +1063,13 @@ fn item_menu(ui: &mut Ui, key: &ItemKey, is_folder: bool) -> Option<MenuChoice> 
             .clicked()
         {
             choice = act(SidebarAction::EditFolderDefaults(key.clone()));
+        }
+        if ui
+            .button("Description…")
+            .on_hover_text("What this folder holds, in Markdown")
+            .clicked()
+        {
+            choice = act(SidebarAction::FolderDescription(key.clone()));
         }
     }
     if ui.button("Rename").clicked() {

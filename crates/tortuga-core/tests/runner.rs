@@ -65,6 +65,7 @@ async fn pre_request_capture_and_tests() {
             tests: Some(r#"test("step check", () => expect(vars.get("status")).toBe("200"));"#),
             breakpoints: None,
             check_examples: false,
+            ..Extra::default()
         },
     )
     .await;

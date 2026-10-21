@@ -9,7 +9,10 @@ use serde::Serialize;
 use crate::cookies::CookieJar;
 use crate::jsonpath::JsonPath;
 use crate::model::{Request, Response};
-use crate::script::{self, Breakpoints, ConsoleEntry, Phase, ScriptKind, ScriptRun, TestResult};
+use crate::script::{
+    self, Breakpoints, ConsoleEntry, FlowControl, Phase, ScriptInfo, ScriptKind, ScriptRun,
+    TestResult,
+};
 use crate::{Client, vars};
 
 /// A capture or `vars.set` name starting with this goes to the workspace (R-WS-8):
@@ -33,6 +36,8 @@ pub struct Extra<'a> {
     pub breakpoints: Option<&'a Breakpoints>,
     /// Compare the response with the request's examples (R-MOCK-8).
     pub check_examples: bool,
+    /// The iteration of a workflow run, for scripts' `info` (R-TEST-16).
+    pub info: ScriptInfo,
 }
 
 /// What happened when a request was run.
@@ -53,6 +58,8 @@ pub struct StepOutcome {
     /// Variables set (`Some`) or unset (`None`) by scripts and captures (R-TEST-5), by
     /// the name used, so `workspace.token` for the workspace (R-WS-8).
     pub vars: BTreeMap<String, Option<String>>,
+    /// What the scripts asked a workflow run to do next, the last call (R-FLOW-6).
+    pub flow: Option<FlowControl>,
 }
 
 impl StepOutcome {
@@ -118,9 +125,13 @@ pub async fn run_step(
             &ctx.variables,
             &request,
             None,
+            extra.info,
             &breakpoints.pre_request,
         );
         apply_vars(&mut ctx, &mut out, &run.vars);
+        if run.flow.is_some() {
+            out.flow.clone_from(&run.flow);
+        }
         for header in &run.headers {
             request.headers.retain(|h| !h.is_named(&header.name));
             request.headers.push(header.clone());
@@ -205,9 +216,13 @@ pub fn after_response(
             &ctx.variables,
             sent,
             Some(response),
+            extra.info,
             lines,
         );
         apply_vars(ctx, out, &run.vars);
+        if run.flow.is_some() {
+            out.flow = run.flow;
+        }
         out.tests.extend(run.tests);
         out.console
             .extend(run.console.into_iter().map(|e| (kind, e)));

@@ -2,8 +2,9 @@
 //!
 //! The calls most collections use are rewritten: `pm.test`, `pm.expect(…)` with Chai's
 //! common assertions, `pm.response.to.have.status(…)`/`.header(…)`/`.be.ok`, the
-//! response's code, status, time, size, headers and body, and getting and setting
-//! variables. A translated script runs only when nothing of Postman's API is left and
+//! response's code, status, time, size, headers, cookies and body, getting and setting
+//! variables (also the data row's, and `replaceIn`), `pm.info` (R-COL-21) and
+//! `setNextRequest` as `workflow.next`/`stop` (R-FLOW-6). A translated script runs only when nothing of Postman's API is left and
 //! it still parses; otherwise it is kept as comments, translated as far as it went.
 //!
 //! The scanner only looks at code outside strings and comments, and only splits the
@@ -44,7 +45,7 @@ const POSTMAN_GLOBALS: [&str; 14] = [
 ];
 
 /// Postman names that are renamed as they are. Each ends where an identifier ends.
-const RENAMES: [(&str, &str); 11] = [
+const RENAMES: [(&str, &str); 18] = [
     ("pm.test", "test"),
     ("pm.response.code", "res.status"),
     ("pm.response.status", "res.statusText"),
@@ -56,6 +57,13 @@ const RENAMES: [(&str, &str); 11] = [
     ("pm.request.url", "req.url"),
     ("postman.getEnvironmentVariable", "vars.get"),
     ("postman.setEnvironmentVariable", "vars.set"),
+    ("pm.variables.replaceIn", "vars.replaceIn"),
+    ("pm.cookies.get", "res.cookie"),
+    ("pm.info.eventName", "info.event"),
+    ("pm.info.requestName", "info.requestName"),
+    ("pm.info.iteration", "info.iteration"),
+    ("pm.info.iterationCount", "info.iterationCount"),
+    ("pm.iterationData.get", "vars.get"),
 ];
 
 pub(super) fn translate(code: &str) -> Translation {
@@ -110,6 +118,8 @@ fn translate_at(s: &str) -> Option<(usize, String)> {
             let end = word(s, "postman.clearEnvironmentVariable")?;
             Some((end, "vars.unset".to_owned()))
         })
+        .or_else(|| cookies_call(s))
+        .or_else(|| next_request(s))
         .or_else(|| {
             RENAMES
                 .iter()
@@ -156,6 +166,11 @@ fn response_assertion(s: &str) -> Option<(usize, String)> {
 fn variables_call(s: &str) -> Option<(usize, String)> {
     let rest = s.strip_prefix("pm.")?;
     let (scope, rest) = rest.split_once('.')?;
+    if scope == "iterationData" {
+        // The data row's values are variables in a workflow run (R-FLOW-4).
+        let end = word(rest, "has")?;
+        return Some(("pm.iterationData.".len() + end, "vars.has".to_owned()));
+    }
     let op = ["get", "set", "unset", "has"]
         .into_iter()
         .find(|op| word(rest, op).is_some())?;
@@ -179,6 +194,35 @@ fn variables_call(s: &str) -> Option<(usize, String)> {
             Some((end, format!("vars.{op}({})", args.join(", "))))
         }
         _ => None,
+    }
+}
+
+/// `pm.cookies.has(name)` and `pm.cookies.toObject()`: the cookies the response set
+/// (R-COL-21).
+fn cookies_call(s: &str) -> Option<(usize, String)> {
+    if let Some(end) = word(s, "pm.cookies.toObject").and_then(|i| empty_call(s, i)) {
+        return Some((end, "res.cookies".to_owned()));
+    }
+    let (end, args) = call_args(s, word(s, "pm.cookies.has")?)?;
+    let [name] = args.as_slice() else {
+        return None;
+    };
+    Some((end, format!("(res.cookie({name}) !== undefined)")))
+}
+
+/// `postman.setNextRequest(name)` → `workflow.next(name)`, and `(null)` →
+/// `workflow.stop()` (R-FLOW-6).
+fn next_request(s: &str) -> Option<(usize, String)> {
+    let at =
+        word(s, "postman.setNextRequest").or_else(|| word(s, "pm.execution.setNextRequest"))?;
+    let (end, args) = call_args(s, at)?;
+    let [name] = args.as_slice() else {
+        return None;
+    };
+    if name.trim() == "null" {
+        Some((end, "workflow.stop()".to_owned()))
+    } else {
+        Some((end, format!("workflow.next({name})")))
     }
 }
 
@@ -716,5 +760,82 @@ pm.environment.set("userId", pm.response.json().id);
             complete("const x = y.pm; mypm.test(1);"),
             "const x = y.pm; mypm.test(1);"
         );
+    }
+
+    /// R-COL-21: cookies, `pm.info`, `replaceIn` and the data row translate to
+    /// Tortuga's API (R-TEST-16), and the result runs and finds the same values.
+    #[test]
+    fn cookies_info_replace_in_and_data_rows() {
+        let tortuga = complete(
+            "pm.test('cookies', () => {\n\
+             \x20 pm.expect(pm.cookies.get('session')).to.equal('abc');\n\
+             \x20 pm.expect(pm.cookies.has('session')).to.be.true;\n\
+             \x20 pm.expect(pm.cookies.has(\"nope\")).to.be.false;\n\
+             \x20 pm.expect(pm.cookies.toObject()).to.have.property('theme', 'dark');\n\
+             });\n\
+             pm.test('info', () => {\n\
+             \x20 pm.expect(pm.info.eventName).to.equal('test');\n\
+             \x20 pm.expect(pm.info.requestName).to.equal('Log in');\n\
+             \x20 pm.expect(pm.info.iteration).to.equal(0);\n\
+             \x20 pm.expect(pm.info.iterationCount).to.equal(1);\n\
+             });\n\
+             pm.environment.set('greeting', pm.variables.replaceIn('Hi {{user}}, {{nobody}}'));\n\
+             if (pm.iterationData.has('user')) { pm.environment.set('who', pm.iterationData.get('user')); }\n",
+        );
+        for line in [
+            "expect(res.cookie('session')).toBe('abc');",
+            "expect((res.cookie('session') !== undefined)).toBe(true);",
+            "expect(res.cookies).toHaveProperty('theme', 'dark');",
+            "expect(info.event).toBe('test');",
+            "expect(info.iterationCount).toBe(1);",
+            "vars.set('greeting', vars.replaceIn('Hi {{user}}, {{nobody}}'));",
+            "if (vars.has('user')) { vars.set('who', vars.get('user')); }",
+        ] {
+            assert!(tortuga.contains(line), "missing {line:?} in\n{tortuga}");
+        }
+
+        let response = Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: vec![
+                KeyValue::new("Set-Cookie", "session=abc; Path=/; HttpOnly"),
+                KeyValue::new("set-cookie", "theme=dark"),
+            ],
+            body: Vec::new(),
+            elapsed: Duration::from_millis(5),
+        };
+        let mut request = Request::new(HttpMethod::Post, "https://api.test/login");
+        request.name = "Log in".into();
+        let vars = BTreeMap::from([("user".to_owned(), "Zoë 😀".to_owned())]);
+        let run = crate::script::run(&tortuga, Phase::Test, &vars, &request, Some(&response));
+        assert_eq!(run.error, None);
+        assert!(run.tests.iter().all(|t| t.passed), "{:?}", run.tests);
+        assert_eq!(run.tests.len(), 2);
+        assert_eq!(
+            run.vars["greeting"].as_deref(),
+            Some("Hi Zoë 😀, {{nobody}}")
+        );
+        assert_eq!(run.vars["who"].as_deref(), Some("Zoë 😀"));
+    }
+
+    /// R-COL-21, R-FLOW-6: `setNextRequest` becomes `workflow.next`, and `null` ends
+    /// the run with `workflow.stop()`.
+    #[test]
+    fn set_next_request_controls_the_workflow() {
+        assert_eq!(
+            complete("postman.setNextRequest('Get user');"),
+            "workflow.next('Get user');"
+        );
+        assert_eq!(
+            complete("if (pm.response.code === 404) { pm.execution.setNextRequest(null); }"),
+            "if (res.status === 404) { workflow.stop(); }"
+        );
+        let run = run_test(&complete("postman.setNextRequest(pm.info.requestName);"));
+        assert_eq!(
+            run.flow,
+            Some(crate::script::FlowControl::Next("Untitled request".into()))
+        );
+        // `pm.info.requestId` has no counterpart: kept for the user.
+        assert!(partial("console.log(pm.info.requestId);").contains("pm.info.requestId"));
     }
 }

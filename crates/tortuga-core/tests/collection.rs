@@ -384,6 +384,7 @@ fn project_with_folder_defaults() -> (tempfile::TempDir, Collection, PathBuf, Pa
                     password: "{{tenant}}".into(),
                 }),
                 variables: [("tenant".to_owned(), "admin".to_owned())].into(),
+                ..FolderDefaults::default()
             },
         )
         .expect("outer defaults");
@@ -635,4 +636,57 @@ fn place_renumbers_when_positions_touch() {
     )
     .expect("between a and b");
     assert_eq!(names(&reopen(&col).items), ["A", "C", "B"]);
+}
+
+/// R-COL-22: descriptions stay with their folder and request through rename, move
+/// and duplicate.
+#[test]
+fn descriptions_follow_rename_move_and_duplicate() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let col = Collection::create(&FS, dir.path(), "C").expect("create");
+    let folder = col.new_folder(&FS, Path::new(""), "Admin").expect("folder");
+    let col = reopen(&col);
+    col.save_folder_defaults(
+        &FS,
+        &folder,
+        &tortuga_core::format::FolderDefaults {
+            description: "Admin **only** ü😀".into(),
+            ..tortuga_core::format::FolderDefaults::default()
+        },
+    )
+    .expect("defaults");
+    let mut request = Request::new(HttpMethod::Get, "https://a.test/");
+    request.name = "Users".into();
+    request.description = "Lists users.\n".into();
+    let path = reopen(&col)
+        .new_request(&FS, &folder, &request)
+        .expect("request");
+
+    let renamed = reopen(&col)
+        .rename_folder(&FS, &folder, "Staff")
+        .expect("rename");
+    let col = reopen(&col);
+    let Some(Item::Folder(f)) = col.find(&renamed) else {
+        panic!("the renamed folder");
+    };
+    assert_eq!(f.defaults.description, "Admin **only** ü😀");
+
+    let moved = col
+        .move_to(
+            &FS,
+            &renamed.join(path.file_name().expect("file")),
+            Path::new(""),
+        )
+        .expect("move");
+    let col = reopen(&col);
+    assert_eq!(
+        col.request(&moved).expect("moved").request.description,
+        "Lists users.\n"
+    );
+    let copy = col.duplicate(&FS, &moved).expect("duplicate");
+    let col = reopen(&col);
+    assert_eq!(
+        col.request(&copy).expect("copy").request.description,
+        "Lists users.\n"
+    );
 }

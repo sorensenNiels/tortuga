@@ -69,6 +69,16 @@ impl TortugaUi {
                 },
             )
             .await;
+            if step.flow.is_some() {
+                step.console.push((
+                    tortuga_core::script::ScriptKind::Tests,
+                    tortuga_core::script::ConsoleEntry::Note {
+                        message: "workflow.next() and workflow.stop() only take effect when \
+                                  the request runs in a workflow."
+                            .into(),
+                    },
+                ));
+            }
             // Off the UI thread: copying up to 1 MB of body for the history.
             let for_history = match &step.response {
                 Some(Ok(r)) => Ok(r),

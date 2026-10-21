@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use egui::{Frame, Margin, Panel, Ui};
 use futures_util::future::{AbortHandle, abortable};
-use tortuga_core::workflow::{self, Progress, RunOptions, Workflow};
+use tortuga_core::workflow::{self, FlowEnd, Progress, RunOptions, Workflow};
 use tortuga_core::{Item, data};
 
 use super::{Modal, TortugaUi, upload_path};
@@ -51,8 +51,9 @@ enum EventKind {
         iteration: usize,
         view: Box<StepView>,
     },
+    /// Per iteration: steps skipped after a failure, and how a script ended it.
     Done {
-        skipped: Vec<usize>,
+        ends: Vec<(usize, Option<FlowEnd>)>,
     },
 }
 
@@ -517,7 +518,11 @@ impl TortugaUi {
             })
             .await;
             send(EventKind::Done {
-                skipped: result.iterations.iter().map(|i| i.skipped).collect(),
+                ends: result
+                    .iterations
+                    .iter()
+                    .map(|i| (i.skipped, i.ended))
+                    .collect(),
             });
         });
         self.state.host.spawn(Box::pin(async move {
@@ -563,9 +568,10 @@ impl TortugaUi {
                         it.steps.push(*view);
                     }
                 }
-                EventKind::Done { skipped } => {
-                    for (it, skipped) in run.iterations.iter_mut().zip(skipped) {
+                EventKind::Done { ends } => {
+                    for (it, (skipped, ended)) in run.iterations.iter_mut().zip(ends) {
                         it.skipped = skipped;
+                        it.ended = ended;
                     }
                     run.running = false;
                     run.current = None;

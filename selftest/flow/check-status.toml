@@ -1,0 +1,26 @@
+name = "Check status"
+seq = 200
+method = "GET"
+server = "jobs"
+url = "/jobs/1"
+
+[scripts]
+tests = """
+// Poll: run this step again until it has run three times.
+const tries = Number(vars.get("tries") || 0) + 1;
+vars.set("tries", tries);
+if (tries < 3) {
+  workflow.next("Check status");
+} else {
+  test("polled three times", () => expect(tries).toBe(3));
+}
+"""
+
+[[examples]]
+name = "running"
+body = """
+{"state": "running"}
+"""
+
+[examples.match.headers]
+X-Client = "tortuga-selftest"

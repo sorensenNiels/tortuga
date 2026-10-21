@@ -261,6 +261,9 @@ impl Auth {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
     pub name: String,
+    /// What the request is for, in Markdown (R-COL-22).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     pub method: HttpMethod,
     /// Id of a collection server (R-SRV-3); `None` means `url` is absolute.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -331,6 +334,7 @@ impl Request {
         let (url, params) = query::split_url(url.as_ref());
         let mut request = Self {
             name: String::from("Untitled request"),
+            description: String::new(),
             method,
             server: None,
             url,
@@ -573,10 +577,24 @@ mod tests {
             token: "{{token}}".into(),
         });
         req.cookies = false;
+        req.description = "# Ü😀\n\n- one".into();
 
         let json = serde_json::to_string(&req).expect("serialize");
         let back: Request = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(req, back);
+    }
+
+    /// R-COL-22: drafts saved before descriptions existed still load.
+    #[test]
+    fn request_without_a_description_loads() {
+        let json = r#"{"name": "Old", "method": "GET", "url": "https://a.test/"}"#;
+        let back: Request = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(back.description, "");
+        assert!(
+            !serde_json::to_string(&back)
+                .expect("serialize")
+                .contains("description")
+        );
     }
 
     #[test]

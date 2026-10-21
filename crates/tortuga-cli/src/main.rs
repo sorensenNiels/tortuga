@@ -314,13 +314,14 @@ fn run(args: &Args) -> Result<bool, String> {
         (None, collection)
     };
     let multi = options.rows.len() > 1;
+    let mut row_shown = None;
     let result = runtime.block_on(workflow::run(
         &client,
         &collection,
         &workflow,
         &options,
         |p| {
-            print_progress(p, &options, multi);
+            print_progress(p, &options, multi, &mut row_shown);
         },
     ));
     print_summary(&workflow, &result);
@@ -403,10 +404,18 @@ fn find_target(collection: &Collection, target: Option<&str>) -> Result<Workflow
     ))
 }
 
-fn print_progress(p: Progress<'_>, options: &RunOptions, multi: bool) {
+/// `row_shown`: the iteration whose row was printed last. Steps may run out of order
+/// (R-FLOW-6), so a row starts when the iteration changes, not at step 0.
+fn print_progress(
+    p: Progress<'_>,
+    options: &RunOptions,
+    multi: bool,
+    row_shown: &mut Option<usize>,
+) {
     match p {
-        Progress::Started { iteration, step } => {
-            if step == 0 && multi {
+        Progress::Started { iteration, .. } => {
+            if multi && *row_shown != Some(iteration) {
+                *row_shown = Some(iteration);
                 let row = options.rows.get(iteration).map(|r| {
                     r.iter()
                         .map(|(k, v)| format!("{k}={v}"))
@@ -470,6 +479,16 @@ fn print_summary(workflow: &Workflow, result: &RunResult) {
     }
     if skipped > 0 {
         parts.push(format!("{} skipped", count(skipped, "step")));
+    }
+    // How scripts ended iterations (R-FLOW-6).
+    for (n, iteration) in result.iterations.iter().enumerate() {
+        if let Some(end) = iteration.ended {
+            if result.iterations.len() > 1 {
+                println!("Row {}: {}", n + 1, end.message());
+            } else {
+                println!("{}", end.message());
+            }
+        }
     }
     let verdict = if result.passed() { "PASSED" } else { "FAILED" };
     println!("\n{verdict}: {} — {}", workflow.name, parts.join(", "));

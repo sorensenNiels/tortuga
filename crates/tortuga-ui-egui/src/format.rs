@@ -47,6 +47,21 @@ pub fn truncate(text: &str, max: usize) -> (&str, bool) {
     (&text[..end], true)
 }
 
+/// The first line of a Markdown description, without heading or quote marks, cut to a
+/// length that fits a tooltip (R-COL-22); `None` when there is no text.
+pub fn summary_line(description: &str) -> Option<String> {
+    let line = description
+        .lines()
+        .map(|l| l.trim().trim_start_matches(['#', '>']).trim())
+        .find(|l| !l.is_empty())?;
+    let (cut, was_cut) = truncate(line, 120);
+    Some(if was_cut {
+        format!("{cut}…")
+    } else {
+        cut.to_owned()
+    })
+}
+
 /// Days since 1970-01-01 in local time, for a UTC time in milliseconds.
 fn local_days(ms: u64, offset_minutes: i32) -> i64 {
     let local_ms = i64::try_from(ms).unwrap_or(i64::MAX) + i64::from(offset_minutes) * 60_000;
@@ -181,5 +196,21 @@ mod tests {
         assert_eq!(clock_seconds(3_723_000, 0), "01:02:03");
         assert_eq!(clock_seconds(3_723_000, -120), "23:02:03", "the day before");
         assert_eq!(clock_seconds(u64::MAX, 0).len(), 8);
+    }
+
+    /// R-COL-22: a description's first line, for a tooltip.
+    #[test]
+    fn summary_line_of_a_description() {
+        assert_eq!(summary_line(""), None);
+        assert_eq!(summary_line("  \n\n#\n"), None);
+        assert_eq!(
+            summary_line("\n## Orders ü😀\n\nMore.").as_deref(),
+            Some("Orders ü😀")
+        );
+        assert_eq!(summary_line("> quoted").as_deref(), Some("quoted"));
+        let long = "é".repeat(100);
+        let line = summary_line(&long).expect("a line");
+        assert!(line.ends_with('…'));
+        assert!(line.len() <= 120 + '…'.len_utf8());
     }
 }

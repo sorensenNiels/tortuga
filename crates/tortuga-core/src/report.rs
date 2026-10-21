@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::runner::StepSummary;
-use crate::workflow::{Iteration, RunResult, Workflow};
+use crate::workflow::{FlowEnd, Iteration, RunResult, Workflow};
 
 /// The name of iteration `n` (from 0), with its data row if there is one.
 fn iteration_name(workflow: &Workflow, n: usize, iteration: &Iteration, total: usize) -> String {
@@ -84,12 +84,19 @@ pub fn junit(workflow: &Workflow, result: &RunResult) -> String {
                 );
             }
         }
-        for step in workflow
-            .steps
-            .iter()
-            .skip(iteration.steps.len())
-            .take(iteration.skipped)
-        {
+        if iteration.ended == Some(FlowEnd::TooManySteps) {
+            tests += 1;
+            errors += 1;
+            let _ = writeln!(
+                cases,
+                "    <testcase classname=\"{}\" name=\"steps\">\n      <error message=\"{}\"/>\n    </testcase>",
+                escape(&workflow.name),
+                escape(&FlowEnd::TooManySteps.message())
+            );
+        }
+        // The steps after the one that failed (steps may have run out of order, R-FLOW-6).
+        let after = iteration.steps.last().map_or(0, |s| s.index + 1);
+        for step in workflow.steps.iter().skip(after).take(iteration.skipped) {
             tests += 1;
             let name = step.name.clone().unwrap_or_else(|| step.request.clone());
             let _ = writeln!(
@@ -126,6 +133,9 @@ struct JsonIteration<'a> {
     row: Option<&'a std::collections::BTreeMap<String, String>>,
     passed: bool,
     skipped: usize,
+    /// How a script ended the iteration (R-FLOW-6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ended: Option<&'static str>,
     steps: Vec<JsonStep<'a>>,
 }
 
@@ -149,6 +159,7 @@ pub fn json(workflow: &Workflow, result: &RunResult) -> String {
                 row: i.row.as_ref(),
                 passed: !i.failed(),
                 skipped: i.skipped,
+                ended: i.ended.map(FlowEnd::id),
                 steps: i
                     .steps
                     .iter()
@@ -227,17 +238,20 @@ mod tests {
                 row: Some([("user".to_owned(), "ann".to_owned())].into()),
                 steps: vec![
                     StepResult {
+                        index: 0,
                         name: "Log in".into(),
                         request: "a.toml".into(),
                         outcome: outcome(200, &[]),
                     },
                     StepResult {
+                        index: 1,
                         name: "Get".into(),
                         request: "b.toml".into(),
                         outcome: outcome(200, &[("ok", true), ("name", false)]),
                     },
                 ],
                 skipped: 1,
+                ended: None,
             }],
         };
         (wf, result)
@@ -277,5 +291,39 @@ mod tests {
             value["iterations"][0]["steps"][1]["tests"][1]["passed"],
             false
         );
+    }
+
+    /// R-FLOW-6: after a jump back, the skipped steps are the ones after the step
+    /// that failed; a loop that never ends is an error in both reports.
+    #[test]
+    fn reports_follow_workflow_control() {
+        let (wf, _) = sample();
+        let step = |index: usize, name: &str, status: u16| StepResult {
+            index,
+            name: name.into(),
+            request: format!("{name}.toml"),
+            outcome: outcome(status, &[]),
+        };
+        let result = RunResult {
+            iterations: vec![
+                Iteration {
+                    steps: vec![step(0, "a", 200), step(1, "b", 200), step(0, "a", 500)],
+                    skipped: 2,
+                    ..Iteration::default()
+                },
+                Iteration {
+                    steps: vec![step(0, "a", 200)],
+                    ended: Some(FlowEnd::TooManySteps),
+                    ..Iteration::default()
+                },
+            ],
+        };
+        let xml = junit(&wf, &result);
+        assert!(xml.contains("<testcase classname=\"b.toml\" name=\"request\">\n      <skipped"));
+        assert!(xml.contains("<testcase classname=\"c.toml\" name=\"request\">\n      <skipped"));
+        assert!(xml.contains("name=\"steps\">\n      <error message=\"Stopped after"));
+        let json = json(&wf, &result);
+        assert!(json.contains("\"ended\": \"too_many_steps\""), "{json}");
+        assert_eq!(json.matches("\"ended\"").count(), 1);
     }
 }

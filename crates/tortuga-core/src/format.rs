@@ -21,6 +21,9 @@ pub const FORMAT_VERSION: u32 = 2;
 pub struct Manifest {
     pub format: u32,
     pub name: String,
+    /// What the project is, in Markdown (R-COL-22).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     /// Names of secret variables (R-VAR-3). Only the names are shared; values stay
     /// on each machine. Kept sorted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -48,6 +51,7 @@ impl Manifest {
         Self {
             format: 1,
             name: name.into(),
+            description: String::new(),
             secrets: Vec::new(),
             servers: Vec::new(),
             headers: Vec::new(),
@@ -161,6 +165,9 @@ pub struct FolderMeta {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<i64>,
+    /// What the folder holds, in Markdown (R-COL-22).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     /// Headers the folder's requests inherit; a header with the same name in a
     /// subfolder or the request, enabled or not, replaces it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -174,9 +181,11 @@ pub struct FolderMeta {
     pub variables: BTreeMap<String, String>,
 }
 
-/// What a folder's requests inherit from it (R-COL-11).
+/// What a folder's requests inherit from it (R-COL-11), and its description (R-COL-22),
+/// which is shown with the folder, not inherited.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FolderDefaults {
+    pub description: String,
     pub headers: Vec<KeyValue>,
     /// `None` = inherit.
     pub auth: Option<Auth>,
@@ -184,6 +193,7 @@ pub struct FolderDefaults {
 }
 
 impl FolderDefaults {
+    /// Nothing for its requests to inherit (the description isn't inherited).
     pub fn is_empty(&self) -> bool {
         self.headers.is_empty() && self.auth.is_none() && self.variables.is_empty()
     }
@@ -195,6 +205,7 @@ impl FolderMeta {
         Self {
             name: Some(name),
             seq,
+            description: defaults.description.clone(),
             headers: defaults.headers.clone(),
             auth: defaults.auth.clone(),
             variables: defaults.variables.clone(),
@@ -203,6 +214,7 @@ impl FolderMeta {
 
     pub fn defaults(&self) -> FolderDefaults {
         FolderDefaults {
+            description: self.description.clone(),
             headers: self.headers.clone(),
             auth: self.auth.clone(),
             variables: self.variables.clone(),
@@ -216,6 +228,9 @@ struct RequestFile {
     name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     seq: Option<i64>,
+    /// R-COL-22
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    description: String,
     #[serde(default)]
     method: HttpMethod,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -280,6 +295,7 @@ pub fn parse_request(text: &str, stem: &str) -> Result<(Request, Option<i64>), S
     // A query string typed into `url` by hand ends up in `params` first.
     request.params.extend(file.params);
     request.name = file.name.unwrap_or_else(|| stem.to_owned());
+    request.description = file.description;
     request.server = file.server.filter(|s| !s.is_empty());
     request.headers = file.headers;
     request.timeout_ms = file.timeout_ms;
@@ -359,6 +375,7 @@ pub fn write_request(request: &Request, seq: Option<i64>) -> String {
     to_toml(&RequestFile {
         name: Some(request.name.clone()),
         seq,
+        description: request.description.clone(),
         method: request.method,
         server: request.server.clone(),
         url: request.url.clone(),
@@ -510,6 +527,7 @@ content = """
                     token: "{{admin_token}}".into(),
                 }),
                 variables: [("tenant".to_owned(), "acme".to_owned())].into(),
+                ..FolderDefaults::default()
             },
         );
         let text = write_folder(&meta);
@@ -574,6 +592,58 @@ test("ok", () => expect(res.status).toBe(200));
         );
         let (back, _) = parse_request(&text, "x").expect("parse");
         assert_eq!(back, r);
+    }
+
+    /// R-COL-22: descriptions are Markdown under the name, as readable multi-line
+    /// strings in the request, folder and project files, and left out when empty.
+    #[test]
+    fn descriptions_in_the_files() {
+        let description = "# Log in\n\nGets a **token** for `ü😀`.\n\n- one\n- two \"quoted\"\n";
+        let mut r = Request::new(HttpMethod::Post, "/login");
+        r.name = "Log in".into();
+        r.description = description.into();
+        let text = write_request(&r, Some(1));
+        assert_eq!(
+            text,
+            r#"name = "Log in"
+seq = 1
+description = """
+# Log in
+
+Gets a **token** for `ü😀`.
+
+- one
+- two "quoted"
+"""
+method = "POST"
+url = "/login"
+"#
+        );
+        let (back, _) = parse_request(&text, "x").expect("parse");
+        assert_eq!(back, r);
+        // One line, and one without a final newline, round-trip too.
+        for one in ["Just a line.", "Ends without a newline\nsecond"] {
+            r.description = one.into();
+            let (back, _) = parse_request(&write_request(&r, None), "x").expect("parse");
+            assert_eq!(back.description, one);
+        }
+        r.description.clear();
+        assert!(!write_request(&r, None).contains("description"));
+
+        let mut manifest = Manifest::new("Shop");
+        manifest.description = description.into();
+        let text = write_manifest(&manifest);
+        assert!(text.starts_with("format = 1\nname = \"Shop\"\ndescription = \"\"\"\n# Log in"));
+        assert_eq!(parse_manifest(&text).expect("manifest"), manifest);
+
+        let defaults = FolderDefaults {
+            description: description.into(),
+            ..FolderDefaults::default()
+        };
+        let meta = FolderMeta::new("Auth".into(), Some(2), &defaults);
+        let back = parse_folder(&write_folder(&meta)).expect("folder");
+        assert_eq!(back.defaults(), defaults);
+        assert!(defaults.is_empty(), "nothing to inherit");
     }
 
     /// R-WS-8: a capture into the workspace is a quoted key and round-trips.

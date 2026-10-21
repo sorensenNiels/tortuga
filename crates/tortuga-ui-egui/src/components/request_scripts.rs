@@ -56,6 +56,18 @@ const TEST_SNIPPETS: &[(&str, &str)] = &[
         "vars.set(\"id\", String(res.json().id));",
     ),
     ("Log the body", "console.log(res.json());"),
+    (
+        "Save a cookie to a variable",
+        "if (res.cookie(\"session\") !== undefined) {\n  vars.set(\"session\", res.cookie(\"session\"));\n}",
+    ),
+    (
+        "Workflow: repeat a step until done",
+        "// In a workflow run: run the step \"Check status\" again until the job is done.\nif (res.json().status === \"running\") {\n  workflow.next(\"Check status\");\n}",
+    ),
+    (
+        "Workflow: stop the run",
+        "// In a workflow run: end this iteration after this step.\nif (res.status === 404) {\n  workflow.stop();\n}",
+    ),
 ];
 
 /// Room under a script field for its "Reference" line.
@@ -231,8 +243,9 @@ pub fn request_scripts(
             reference(
                 ui,
                 "pre-request",
-                "vars.get/set/unset/has, req.method/url/headers/body, req.setHeader(name, value), \
-                 console.log/info/warn/error. Click a line number to set a breakpoint: the \
+                "vars.get/set/unset/has/replaceIn, req.method/url/headers/body, \
+                 req.setHeader(name, value), info.requestName/iteration, workflow.next(step)/stop() \
+                 in workflow runs, console.log/info/warn/error. Click a line number to set a breakpoint: the \
                  Console then shows the variables there.",
             );
             toggled.map(|line| EditorAction::ToggleBreakpoint(ScriptKind::PreRequest, line))
@@ -260,8 +273,8 @@ pub fn request_scripts(
                 "tests",
                 "test(name, fn); expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not) \
                  or Chai's expect(x).to.equal/.to.be.an(\"object\")/.to.have.property/…; \
-                 res.status, res.json(), res.header(name), res.time, res.body; vars; \
-                 console.log. Click a line number to set a breakpoint: the Console then shows \
+                 res.status, res.json(), res.header(name), res.cookie(name), res.time, res.body; \
+                 vars; info; workflow.next(step)/stop() in workflow runs; console.log. Click a line number to set a breakpoint: the Console then shows \
                  the variables there.",
             );
             if rerun {

@@ -18,6 +18,8 @@ tortuga-ui-egui = { path = "crates/tortuga-ui-egui" }
 egui = { version = "0.37", features = ["default_fonts", "monochrome_emoji_fonts"] }
 # OpenGL (glow) instead of the default wgpu: smaller, faster to build, and works under WSLg.
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
+# Rendered Markdown for descriptions (R-COL-22); no images, so nothing is loaded from the network.
+egui_commonmark = { version = "0.26", default-features = false, features = ["pulldown_cmark"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli", "deflate", "system-proxy", "cookies", "multipart"] }
 serde = { version = "1", features = ["derive"] }

@@ -63,15 +63,11 @@ impl TortugaUi {
                 self.modal = Some(Modal::ConfirmDelete(key, dialog));
             }
             SidebarAction::ShowError(message) => self.state.notify(message),
-            SidebarAction::EditEnvironments(root) => {
-                self.modal = Some(Modal::Environments(EnvironmentsDialog::new(
-                    &self.state,
-                    root,
-                )));
-            }
-            SidebarAction::EditDefaults(root) => {
-                self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
-            }
+            action @ (SidebarAction::EditEnvironments(_)
+            | SidebarAction::EditDefaults(_)
+            | SidebarAction::EditFolderDefaults(_)
+            | SidebarAction::ProjectDescription(_)
+            | SidebarAction::FolderDescription(_)) => self.open_project_dialog(action),
             SidebarAction::Place {
                 key,
                 parent,
@@ -83,13 +79,6 @@ impl TortugaUi {
             | SidebarAction::RenameWorkflow(_)
             | SidebarAction::DeleteWorkflow(_)
             | SidebarAction::RuntimeVariables(_)) => self.on_workflow_sidebar(action, ctx),
-            SidebarAction::EditFolderDefaults(key) => {
-                self.modal = Some(Modal::Defaults(DefaultsDialog::for_folder(
-                    &self.state,
-                    key.root,
-                    key.path,
-                )));
-            }
             SidebarAction::Reload(root) => self.on_disk_change(&root),
             SidebarAction::OpenInFileManager(root) => {
                 self.notify_failure(self.state.host.open_in_file_manager(&root));
@@ -115,6 +104,29 @@ impl TortugaUi {
             SidebarAction::LocateMissing(path) => self.locate_missing(&path),
             SidebarAction::RemoveMissing(path) => self.state.remove_missing(&path),
         }
+    }
+
+    /// The environments and defaults dialogs of a project or folder, and their
+    /// Description tab (R-COL-22).
+    fn open_project_dialog(&mut self, action: SidebarAction) {
+        self.modal = Some(match action {
+            SidebarAction::EditEnvironments(root) => {
+                Modal::Environments(EnvironmentsDialog::new(&self.state, root))
+            }
+            SidebarAction::EditDefaults(root) => {
+                Modal::Defaults(DefaultsDialog::new(&self.state, root))
+            }
+            SidebarAction::ProjectDescription(root) => {
+                Modal::Defaults(DefaultsDialog::new(&self.state, root).on_description())
+            }
+            SidebarAction::EditFolderDefaults(key) => {
+                Modal::Defaults(DefaultsDialog::for_folder(&self.state, key.root, key.path))
+            }
+            SidebarAction::FolderDescription(key) => Modal::Defaults(
+                DefaultsDialog::for_folder(&self.state, key.root, key.path).on_description(),
+            ),
+            _ => return,
+        });
     }
 
     /// Shows what went wrong, if anything did.

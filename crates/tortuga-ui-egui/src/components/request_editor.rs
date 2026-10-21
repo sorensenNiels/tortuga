@@ -7,7 +7,7 @@ use super::TestsView;
 use super::auth_editor::EditDefaults;
 use super::request_examples::{ExamplesState, request_examples};
 use super::request_scripts::{ScriptTab, request_scripts};
-use super::{BodyDrafts, body_editor, key_value_table, request_auth};
+use super::{BodyDrafts, body_editor, description_editor, key_value_table, request_auth};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,8 @@ enum Tab {
     Scripts,
     /// Responses the mock server gives (R-MOCK-1).
     Examples,
+    /// The request's description (R-COL-22).
+    Docs,
     /// The request as it will be sent (R-HTTP-14).
     Preview,
 }
@@ -41,6 +43,8 @@ pub struct EditorState {
     pub(super) script_tab: ScriptTab,
     /// The open example (R-MOCK-1).
     examples: ExamplesState,
+    /// The Docs tab shows the description's text, not its rendering (R-COL-22).
+    editing_docs: bool,
 }
 
 impl EditorState {
@@ -103,6 +107,7 @@ impl EditorState {
                 .collect(),
             script_tab: ScriptTab::first_for(request),
             examples: ExamplesState::default(),
+            editing_docs: false,
         }
     }
 }
@@ -245,13 +250,15 @@ pub fn request_editor(
         ),
         (Tab::Preview, "Preview", None),
     ];
-    // Only a project's requests are served by its mock.
+    // Only a project's requests are served by its mock, and documented.
     if cx.in_collection {
         tabs.insert(
             6,
             (Tab::Examples, "Examples", count(request.examples.len())),
         );
-    } else if st.tab == Tab::Examples {
+        let documented = !request.description.trim().is_empty();
+        tabs.insert(7, (Tab::Docs, "Docs", documented.then(|| "⏺".to_owned())));
+    } else if matches!(st.tab, Tab::Examples | Tab::Docs) {
         st.tab = Tab::Params;
     }
     theme::tabs(ui, &mut st.tab, &tabs);
@@ -334,6 +341,16 @@ fn tab_content(
         }
         Tab::Examples => {
             request_examples(ui, &mut request.examples, &mut st.examples, cx.undefined);
+        }
+        Tab::Docs => {
+            description_editor(
+                ui,
+                "request",
+                &mut request.description,
+                &mut st.editing_docs,
+                false,
+                f32::INFINITY,
+            );
         }
         Tab::Preview => request_preview(ui, cx.preview),
     }
@@ -778,6 +795,52 @@ mod tests {
             h.run();
         }
         assert_eq!(request.path_vars, [KeyValue::new("id", "42")]);
+    }
+
+    /// R-COL-22: a project's request has a Docs tab showing its description rendered;
+    /// the scratch request has none.
+    #[test]
+    fn docs_tab_shows_the_description() {
+        for in_collection in [true, false] {
+            let mut request = Request::new(HttpMethod::Get, "https://a.test/");
+            request.description = "## Lists **orders**\n\nNewest first.".into();
+            let mut st = EditorState::new(&request);
+            st.focus_url = false;
+            let mut h = crate::test_host::harness(|ui| {
+                request_editor(
+                    ui,
+                    &mut request,
+                    &mut st,
+                    EditorContext {
+                        servers: &[],
+                        server_base: None,
+                        undefined: &[],
+                        sending: false,
+                        settings: test_settings(),
+                        unverified_host: None,
+                        collection_auth: None,
+                        inherited_headers: &[],
+                        auth_origin: "the project",
+                        cookie_count: 0,
+                        in_collection,
+                        preview: None,
+                        can_pick_files: false,
+                        breakpoints: &Breakpoints::default(),
+                        last_run: None,
+                        rerun: Rerun::Unavailable,
+                    },
+                );
+            });
+            h.run();
+            let tab = h.query_by_label_contains("Docs");
+            assert_eq!(tab.is_some(), in_collection);
+            if let Some(tab) = tab {
+                tab.click();
+                h.run();
+                h.get_by_label_contains("Newest first.");
+                h.get_by_label("Edit");
+            }
+        }
     }
 
     /// R-HTTP-14: the Preview tab shows the resolved request with Basic credentials readable.
