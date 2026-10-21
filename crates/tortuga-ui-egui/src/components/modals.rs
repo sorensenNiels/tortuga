@@ -2,11 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 
 use egui::{ComboBox, Context, Id, Modal, RichText, TextEdit, Ui};
-use tortuga_core::import::ImportKind;
-use tortuga_core::settings::{Appearance, HistorySettings, ImporterSettings, Theme};
-use tortuga_core::{AppSettings, ClientSettings, CookieInfo};
+use tortuga_core::CookieInfo;
 
-use super::request_editor::parse_timeout;
 use crate::state::{AppState, ItemKey};
 use crate::theme;
 
@@ -39,6 +36,34 @@ pub(super) fn dialog<T>(
         DialogResult::Open if dismissable && response.should_close() => DialogResult::Close,
         other => other,
     }
+}
+
+/// A dialog's content that scrolls when the window is too small for it, leaving `room`
+/// for the rest of the dialog. `last_height` is the content's height last frame, kept by
+/// the dialog: a modal only offers a little more room each frame, so the scroll area is
+/// given that height at once rather than growing over many frames, which would also
+/// move the buttons under a click.
+pub(super) fn fitting_scroll_area<R>(
+    ui: &mut Ui,
+    id: &str,
+    room: f32,
+    last_height: &mut f32,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let max_height = (ui.ctx().content_rect().height() - room).max(200.0);
+    let output = egui::ScrollArea::vertical()
+        .id_salt(id)
+        .auto_shrink([false, true])
+        .max_height(max_height)
+        .min_scrolled_height(last_height.min(max_height))
+        .show(ui, add);
+    let height = output.content_size.y;
+    if (height - *last_height).abs() > 0.5 {
+        *last_height = height;
+        // The dialog is centred on its size: draw again now, not when the pointer moves.
+        ui.ctx().request_repaint();
+    }
+    output.inner
 }
 
 /// Width and height of the grip in a resizable dialog's bottom-right corner.
@@ -122,12 +147,11 @@ pub(super) fn actions(
     confirm_enabled: bool,
 ) -> (bool, bool) {
     ui.add_space(16.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    theme::button_row(ui, |ui| {
         let confirm = ui.add_enabled(confirm_enabled, confirm).clicked();
         let cancel = ui.button("Cancel").clicked();
         (cancel, confirm)
     })
-    .inner
 }
 
 pub(super) fn finish<T>(cancel: bool, done: Option<T>) -> DialogResult<T> {
@@ -536,7 +560,7 @@ impl CopyCurlDialog {
                 "Commands you paste into chats, tickets or shell history may be kept for a long time.",
             );
             ui.add_space(16.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            theme::button_row(ui, |ui| {
                 let masked = ui.add(theme::primary_button(ui, "Copy masked")).clicked();
                 let full = ui.button("Include secret values").clicked();
                 let cancel = ui.button("Cancel").clicked();
@@ -549,7 +573,6 @@ impl CopyCurlDialog {
                 };
                 finish(cancel, done)
             })
-            .inner
         })
     }
 }
@@ -599,262 +622,6 @@ impl NameDialog {
                 ((confirm || enter) && !name.is_empty()).then_some(name),
             )
         })
-    }
-}
-
-// ---------------------------------------------------------------- settings
-
-/// Global HTTP settings (R-HTTP-7, R-HTTP-8).
-/// The tabs of the settings dialog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SettingsTab {
-    Requests,
-    Appearance,
-    History,
-    Importers,
-}
-
-#[derive(Debug, Clone)]
-pub struct SettingsDialog {
-    draft: AppSettings,
-    tab: SettingsTab,
-    timeout_text: String,
-    /// Hosts not to verify, one per line (R-SET-3).
-    hosts_text: String,
-    /// History entries per project while history is on (R-SET-6).
-    history_text: String,
-    /// Shown when saving failed.
-    pub error: Option<String>,
-    /// "Add…" was clicked for a CA certificate; the shell asks for the file (R-HTTP-16).
-    pub add_ca_requested: bool,
-}
-
-impl SettingsDialog {
-    pub fn new(settings: &AppSettings) -> Self {
-        Self {
-            draft: settings.clone(),
-            tab: SettingsTab::Requests,
-            timeout_text: settings.client.default_timeout_ms.to_string(),
-            hosts_text: settings.client.insecure_hosts.join("\n"),
-            history_text: match settings.history.size {
-                0 => tortuga_core::history::DEFAULT_SIZE,
-                n => n,
-            }
-            .to_string(),
-            error: None,
-            add_ca_requested: false,
-        }
-    }
-
-    /// Adds a CA certificate file chosen after "Add…" (R-HTTP-16).
-    pub fn add_ca(&mut self, path: PathBuf) {
-        let files = &mut self.draft.client.ca_certificates;
-        if !files.contains(&path) {
-            files.push(path);
-        }
-    }
-
-    /// Done with the settings to apply. `can_pick_files`: offer "Add…" for CA certificates.
-    pub fn show(&mut self, ctx: &Context, can_pick_files: bool) -> DialogResult<AppSettings> {
-        dialog(ctx, "settings", "Settings", 460.0, true, |ui| {
-            theme::tabs(
-                ui,
-                &mut self.tab,
-                &[
-                    (SettingsTab::Requests, "Requests", None),
-                    (SettingsTab::Appearance, "Appearance", None),
-                    (SettingsTab::History, "History", None),
-                    (SettingsTab::Importers, "Importers", None),
-                ],
-            );
-            match self.tab {
-                SettingsTab::Requests => {
-                    self.add_ca_requested |= request_settings(
-                        ui,
-                        &mut self.draft.client,
-                        &mut self.timeout_text,
-                        &mut self.hosts_text,
-                        can_pick_files,
-                    );
-                }
-                SettingsTab::Appearance => appearance_settings(ui, &mut self.draft.appearance),
-                SettingsTab::History => {
-                    history_settings(ui, &mut self.draft.history, &mut self.history_text);
-                }
-                SettingsTab::Importers => importer_settings(ui, &mut self.draft.importers),
-            }
-            if let Some(err) = &self.error {
-                theme::error(ui, err);
-            }
-            let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Save"), true);
-            finish(cancel, confirm.then(|| self.draft.clone()))
-        })
-    }
-}
-
-/// HTTP settings (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-SET-3). Returns whether "Add…" was
-/// clicked for a CA certificate.
-fn request_settings(
-    ui: &mut Ui,
-    d: &mut ClientSettings,
-    timeout_text: &mut String,
-    hosts_text: &mut String,
-    can_pick_files: bool,
-) -> bool {
-    ui.checkbox(&mut d.follow_redirects, "Follow redirects");
-    ui.checkbox(&mut d.send_cookies, "Send and store cookies");
-    ui.checkbox(&mut d.verify_tls, "Verify TLS certificates");
-    if d.verify_tls {
-        insecure_hosts(ui, d, hosts_text);
-    } else {
-        theme::warning(
-            ui,
-            "Turning this off lets anyone between you and the server read and change your traffic. Only use it for local test servers.",
-        );
-    }
-    ui.horizontal(|ui| {
-        let label = ui.label("Default timeout (ms)");
-        if ui
-            .add(TextEdit::singleline(timeout_text).desired_width(120.0))
-            .labelled_by(label.id)
-            .changed()
-            && let Some(ms) = parse_timeout(timeout_text)
-        {
-            d.default_timeout_ms = ms;
-        }
-    });
-    theme::hint(
-        ui,
-        "Workspaces and projects can set their own timeout, redirects and cookies (their \
-         “Defaults…”). Proxy settings are taken from the operating system.",
-    );
-    ui.add_space(10.0);
-    ca_certificates(ui, &mut d.ca_certificates, can_pick_files)
-}
-
-/// Hosts whose certificates are not verified, on this machine only (R-SET-3).
-fn insecure_hosts(ui: &mut Ui, d: &mut ClientSettings, text: &mut String) {
-    ui.indent("insecure-hosts", |ui| {
-        let label = ui.label("Don't verify certificates of these hosts:");
-        let edit = TextEdit::multiline(text)
-            .id_salt("insecure-hosts")
-            .font(egui::TextStyle::Monospace)
-            .hint_text("localhost\n*.dev.internal")
-            .desired_rows(2)
-            .desired_width(300.0);
-        if ui.add(edit).labelled_by(label.id).changed() {
-            d.insecure_hosts = text
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(str::to_owned)
-                .collect();
-        }
-        theme::hint(
-            ui,
-            "One per line; *.example.test covers its subdomains. Only for test servers with \
-             self-signed certificates. Kept on this computer: shared files can't turn \
-             verification off.",
-        );
-        if !d.insecure_hosts.is_empty() {
-            theme::warning(
-                ui,
-                "Traffic to these hosts could be read and changed by anyone in between.",
-            );
-        }
-    });
-}
-
-/// Theme, text size and wrapping (R-SET-4, R-SET-5, R-SET-7).
-fn appearance_settings(ui: &mut Ui, a: &mut Appearance) {
-    egui::Grid::new("appearance")
-        .num_columns(2)
-        .spacing([16.0, 10.0])
-        .show(ui, |ui| {
-            ui.label("Theme");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut a.theme, Theme::System, "Like the system");
-                ui.radio_value(&mut a.theme, Theme::Light, "Light");
-                ui.radio_value(&mut a.theme, Theme::Dark, "Dark");
-            });
-            ui.end_row();
-            let label = ui.label("Text size");
-            let mut sizes = vec![80, 90, 100, 110, 125, 150, 175, 200];
-            if !sizes.contains(&a.text_size) {
-                sizes.push(a.text_size);
-                sizes.sort_unstable();
-            }
-            ComboBox::from_id_salt("text-size")
-                .selected_text(format!("{} %", a.text_size))
-                .show_ui(ui, |ui| {
-                    for size in sizes {
-                        ui.selectable_value(&mut a.text_size, size, format!("{size} %"));
-                    }
-                })
-                .response
-                .labelled_by(label.id);
-            ui.end_row();
-        });
-    theme::hint(
-        ui,
-        "Ctrl+= and Ctrl+- change the text size too; Ctrl+0 resets it.",
-    );
-    ui.add_space(8.0);
-    ui.checkbox(&mut a.wrap_lines, "Wrap long lines in responses");
-}
-
-/// How many sent requests are kept per project, or none (R-SET-6).
-fn history_settings(ui: &mut Ui, h: &mut HistorySettings, text: &mut String) {
-    let mut on = h.on();
-    if ui
-        .checkbox(&mut on, "Keep a history of sent requests")
-        .changed()
-    {
-        h.size = if on {
-            text.trim()
-                .parse()
-                .ok()
-                .filter(|n| *n > 0)
-                .unwrap_or(tortuga_core::history::DEFAULT_SIZE)
-        } else {
-            0
-        };
-    }
-    if on {
-        ui.horizontal(|ui| {
-            let label = ui.label("Entries per project");
-            if ui
-                .add(TextEdit::singleline(text).desired_width(80.0))
-                .labelled_by(label.id)
-                .changed()
-                && let Some(n) = text.trim().parse().ok().filter(|n: &usize| *n > 0)
-            {
-                h.size = n;
-            }
-        });
-        theme::hint(ui, "Lowering it removes the oldest entries when you save.");
-    } else {
-        theme::hint(
-            ui,
-            "Nothing more is recorded. History that is already there stays until you clear it \
-             in the History view.",
-        );
-    }
-}
-
-/// Which importers "+ Add" and the command palette offer (R-COL-18).
-fn importer_settings(ui: &mut Ui, importers: &mut ImporterSettings) {
-    theme::hint(
-        ui,
-        "Turn off the importers you don't use; they disappear from “+ Add” and the command \
-         palette. Projects you imported earlier are not affected.",
-    );
-    ui.add_space(6.0);
-    for kind in ImportKind::ALL {
-        let mut on = importers.enabled(kind);
-        if ui.checkbox(&mut on, kind.importer_name()).changed() {
-            importers.set_enabled(kind, on);
-        }
     }
 }
 
@@ -1068,34 +835,6 @@ fn cookie_flags(c: &CookieInfo) -> String {
 
 /// CA certificate files trusted besides the system's (R-HTTP-16). Returns whether "Add…"
 /// was clicked.
-fn ca_certificates(ui: &mut Ui, files: &mut Vec<PathBuf>, can_pick_files: bool) -> bool {
-    theme::section_label(ui, "CA certificates");
-    let mut remove = None;
-    for (i, path) in files.iter().enumerate() {
-        ui.horizontal(|ui| {
-            if ui
-                .add(theme::icon_button(ui, "🗙"))
-                .on_hover_text("Stop trusting it")
-                .clicked()
-            {
-                remove = Some(i);
-            }
-            ui.add(egui::Label::new(path.display().to_string()).truncate())
-                .on_hover_text(path.display().to_string());
-        });
-    }
-    if let Some(i) = remove {
-        files.remove(i);
-    }
-    let add = can_pick_files && ui.button("Add…").clicked();
-    theme::hint(
-        ui,
-        "PEM files whose certificates are trusted besides the system's, e.g. your company's CA \
-         for internal APIs. Kept on this computer only.",
-    );
-    add
-}
-
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;
@@ -1169,106 +908,6 @@ mod tests {
                 CookieAction::ClearAll
             ]
         );
-    }
-
-    /// R-HTTP-16: CA certificates are listed, added and removed in the settings.
-    #[test]
-    fn ca_certificates_in_settings() {
-        let mut settings = AppSettings::default();
-        settings.client.ca_certificates = vec![PathBuf::from("/etc/old-ca.pem")];
-        let mut dialog = SettingsDialog::new(&settings);
-        let mut result = None;
-        {
-            let mut h = crate::test_host::harness(|ui| {
-                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
-                    result = Some(r);
-                }
-            });
-            h.run();
-            h.get_by_label("/etc/old-ca.pem");
-            h.get_by_label("Add…").click();
-            h.run();
-            h.get_by_label("🗙").click();
-            h.run();
-            h.get_by_label("Save").click();
-            h.run();
-        }
-        assert!(dialog.add_ca_requested);
-        assert_eq!(
-            result.expect("saved").client.ca_certificates,
-            Vec::<PathBuf>::new()
-        );
-        dialog.add_ca(PathBuf::from("/etc/company-ca.pem"));
-        dialog.add_ca(PathBuf::from("/etc/company-ca.pem"));
-        assert_eq!(
-            dialog.draft.client.ca_certificates,
-            [PathBuf::from("/etc/company-ca.pem")]
-        );
-    }
-
-    /// R-SET-3..6: hosts not to verify, theme, wrapping and history are set in the
-    /// settings dialog.
-    #[test]
-    fn requests_appearance_and_history_settings() {
-        let mut dialog = SettingsDialog::new(&AppSettings::default());
-        let mut result = None;
-        {
-            let mut h = crate::test_host::harness(|ui| {
-                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
-                    result = Some(r);
-                }
-            });
-            h.run();
-            h.get_by_label("Don't verify certificates of these hosts:");
-            let field = h
-                .get_all_by_role(egui::accesskit::Role::MultilineTextInput)
-                .next()
-                .expect("hosts field");
-            field.focus();
-            field.type_text("localhost\n *.dev.test ");
-            h.run();
-            h.get_by_label("Appearance").click();
-            h.run();
-            h.get_by_label("Dark").click();
-            h.get_by_label("Wrap long lines in responses").click();
-            h.run();
-            h.get_by_label("History").click();
-            h.run();
-            h.get_by_label("Keep a history of sent requests").click();
-            h.run();
-            h.get_by_label("Save").click();
-            h.run();
-        }
-        let saved = result.expect("saved");
-        assert_eq!(saved.client.insecure_hosts, ["localhost", "*.dev.test"]);
-        assert_eq!(saved.appearance.theme, Theme::Dark);
-        assert!(saved.appearance.wrap_lines);
-        assert_eq!(saved.history.size, 0, "history off");
-    }
-
-    /// R-COL-18: importers are turned off on the Importers tab.
-    #[test]
-    fn importers_are_turned_off_in_settings() {
-        let mut dialog = SettingsDialog::new(&AppSettings::default());
-        let mut result = None;
-        {
-            let mut h = crate::test_host::harness(|ui| {
-                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
-                    result = Some(r);
-                }
-            });
-            h.run();
-            h.get_by_label("Importers").click();
-            h.run();
-            h.get_by_label("Postman collections").click();
-            h.run();
-            h.get_by_label("Save").click();
-            h.run();
-        }
-        let saved = result.expect("saved");
-        assert!(!saved.importers.enabled(ImportKind::Postman));
-        assert!(saved.importers.enabled(ImportKind::OpenApi));
-        assert!(saved.importers.enabled(ImportKind::Http));
     }
 
     /// R-WS-3: found projects are a checklist; projects already open can't be added twice.

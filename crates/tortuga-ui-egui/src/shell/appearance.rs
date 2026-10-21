@@ -1,34 +1,72 @@
-//! The theme and text size (R-SET-4, R-SET-5): given to egui when the settings change,
-//! and a text size changed with Ctrl+= / Ctrl+- / Ctrl+0 (egui's zoom keys) is saved.
+//! The theme, text size, density and code font (R-SET-4, R-SET-5, R-SET-10): given to
+//! egui when the settings change, and a text size changed with Ctrl+= / Ctrl+- / Ctrl+0
+//! (egui's zoom keys) is saved.
 
-use tortuga_core::settings::{Appearance, Theme};
+use std::path::Path;
+
+use tortuga_core::settings::{Appearance, Theme, check_font_file};
 
 use super::TortugaUi;
+use crate::host::Host;
+use crate::theme;
 
 impl TortugaUi {
     pub(super) fn apply_appearance(&mut self, ctx: &egui::Context) {
-        let wanted = self.state.settings.appearance;
-        if let Some(applied) = self.applied_appearance {
+        if let Some(applied) = &self.applied_appearance {
+            let wanted = &self.state.settings.appearance;
             // The zoom keys changed the size since the last frame: keep it.
             let size = Appearance::text_size_for(ctx.zoom_factor());
             if size != applied.text_size && wanted.text_size == applied.text_size {
                 self.state
                     .update_settings(|s| s.appearance.text_size = size);
-                self.applied_appearance = Some(self.state.settings.appearance);
+                self.applied_appearance = Some(self.state.settings.appearance.clone());
                 return;
             }
-            if applied.theme == wanted.theme && applied.text_size == wanted.text_size {
+            if applied == wanted {
                 return;
             }
         }
+        let wanted = self.state.settings.appearance.clone();
+        let applied = self.applied_appearance.take();
         ctx.set_theme(match wanted.theme {
             Theme::System => egui::ThemePreference::System,
             Theme::Light => egui::ThemePreference::Light,
             Theme::Dark => egui::ThemePreference::Dark,
         });
         ctx.set_zoom_factor(wanted.zoom());
+        if applied
+            .as_ref()
+            .is_none_or(|a| a.density != wanted.density || a.code_size != wanted.code_size)
+        {
+            theme::set_sizes(ctx, wanted.density, wanted.code_scale());
+        }
+        // Only on a change: the bundled fonts are installed with the theme.
+        if applied.as_ref().map_or(wanted.code_font.is_some(), |a| {
+            a.code_font != wanted.code_font
+        }) {
+            let bytes = wanted.code_font.as_deref().and_then(|path| {
+                read_font(self.state.host.as_ref(), path)
+                    .map_err(|e| {
+                        self.state.notify(format!(
+                            "The code font can't be used, so the bundled one is: {e}"
+                        ));
+                    })
+                    .ok()
+            });
+            theme::set_code_font(ctx, bytes);
+        }
         self.applied_appearance = Some(wanted);
     }
+}
+
+/// The bytes of the font file at `path`, if it is one (R-SET-10).
+pub(super) fn read_font(host: &dyn Host, path: &Path) -> Result<Vec<u8>, String> {
+    let Some(reader) = host.file_reader() else {
+        return Err("fonts can't be read from files here".to_owned());
+    };
+    let bytes = (reader.0)(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    check_font_file(path, &bytes).map_err(|e| e.to_string())?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -71,5 +109,58 @@ mod tests {
             (ctx.zoom_factor() - 1.5).abs() < 1e-6,
             "changed in Settings"
         );
+    }
+
+    /// R-SET-10: density and code size reach egui's style; a code font file is
+    /// installed, and one that can't be read leaves the bundled font with a notice.
+    #[test]
+    fn density_code_size_and_code_font() {
+        use tortuga_core::settings::Density;
+
+        let font = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/fonts/JetBrainsMono-Regular.ttf");
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        ui.state.update_settings(|s| {
+            s.appearance.density = Density::Compact;
+            s.appearance.code_size = 120;
+            s.appearance.code_font = Some(font.clone());
+        });
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
+        let shared = std::rc::Rc::clone(&ui);
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+        let ctx = harness.ctx.clone();
+        let style = ctx.global_style();
+        assert!(
+            (style.spacing.interact_size.y - 22.0).abs() < 1e-6,
+            "compact"
+        );
+        let mono = &style.text_styles[&egui::TextStyle::Monospace];
+        assert!((mono.size - 15.0).abs() < 1e-6, "12.5 at 120 %");
+        let has_code_font =
+            || ctx.fonts(|f| f.definitions().font_data.contains_key("user-code-font"));
+        assert!(has_code_font());
+        assert_eq!(ui.borrow().state.notice, None);
+
+        ui.borrow_mut().state.update_settings(|s| {
+            s.appearance.code_font = Some("/no/such/font ü😀.ttf".into());
+        });
+        harness.run();
+        assert!(!has_code_font(), "back to the bundled font");
+        let notice = ui.borrow().state.notice.clone().expect("notice");
+        assert!(notice.contains("The code font can't be used"), "{notice}");
+
+        ui.borrow_mut().state.update_settings(|s| {
+            s.appearance.density = Density::Comfortable;
+            s.appearance.code_font = None;
+        });
+        harness.run();
+        assert!((ctx.global_style().spacing.interact_size.y - 28.0).abs() < 1e-6);
+        // The semibold family must survive a change of fonts: egui panics without it.
+        assert!(ctx.fonts(|f| {
+            f.definitions()
+                .families
+                .contains_key(&egui::FontFamily::Name(crate::theme::SEMIBOLD.into()))
+        }));
     }
 }

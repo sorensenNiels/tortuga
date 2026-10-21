@@ -26,6 +26,9 @@ pub struct PaletteItem<T> {
     pub hint: String,
     /// What the query is matched against, besides the label and detail.
     pub keywords: String,
+    /// A command for a project other than the current one: listed only when a word of
+    /// the query matches the project's name, its `detail` (R-COL-25).
+    pub elsewhere: bool,
     pub value: T,
 }
 
@@ -37,6 +40,7 @@ impl<T> PaletteItem<T> {
             detail: String::new(),
             hint: String::new(),
             keywords: String::new(),
+            elsewhere: false,
             value,
         }
     }
@@ -66,6 +70,13 @@ impl<T> PaletteItem<T> {
     }
 
     fn score(&self, query: &str) -> Option<i64> {
+        if self.elsewhere
+            && !query
+                .split_whitespace()
+                .any(|word| fuzzy::score(word, &self.detail).is_some())
+        {
+            return None;
+        }
         // The label counts double: a match in the name beats one in the folder path.
         let label = fuzzy::score(query, &self.label).map(|s| s * 2);
         let all = fuzzy::score(
@@ -101,6 +112,15 @@ impl Palette {
     pub fn commands() -> Self {
         Self {
             query: ">".into(),
+            ..Self::default()
+        }
+    }
+
+    /// The command palette with `text` typed after the `>`, e.g. "Environment: " to
+    /// switch the environment (Ctrl+E, R-COL-27).
+    pub fn commands_matching(text: &str) -> Self {
+        Self {
+            query: format!(">{text}"),
             ..Self::default()
         }
     }
@@ -324,5 +344,19 @@ mod tests {
         assert!(!Palette::requests().shows_commands());
         let (palette, _) = run(Palette::requests(), &[], ">");
         assert!(palette.shows_commands());
+    }
+
+    /// R-COL-25: another project's command is listed only when a word of the text
+    /// matches that project's name; the current project's are listed as before.
+    #[test]
+    fn other_projects_commands_need_their_name() {
+        let mine = PaletteItem::new("New workflow…", ()).detail("Orders ü😀");
+        let mut theirs = PaletteItem::new("New workflow…", ()).detail("Shop");
+        theirs.elsewhere = true;
+        assert!(mine.score("").is_some() && mine.score("new").is_some());
+        assert!(theirs.score("").is_none(), "nothing typed");
+        assert!(theirs.score("new workflow").is_none(), "only the command");
+        assert!(theirs.score("new shop").is_some(), "named");
+        assert!(theirs.score("shop").is_some());
     }
 }

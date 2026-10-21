@@ -4,18 +4,25 @@
 //! sidebar actions (`projects`), dialogs (`dialogs`), tabs, history, workflows, ….
 
 mod appearance;
+mod auto_save;
 mod commands;
 mod cookies;
 mod dialogs;
 mod disk;
 mod drafts;
 mod editor_actions;
+mod fanout;
 mod history;
 mod import;
+mod layout;
 mod mock;
 mod projects;
+mod request_head;
+mod response;
 mod sending;
+mod shortcuts;
 mod tabs;
+mod toast;
 mod workflows;
 mod workspace_menu;
 
@@ -24,40 +31,31 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use egui::{
-    CentralPanel, Frame, Key, KeyboardShortcut, Margin, Modifiers, Panel, RichText, TextEdit, Ui,
-};
+use egui::{CentralPanel, Frame, Margin, Panel, RichText, Ui};
 use futures_util::future::AbortHandle;
 use tortuga_core::script::Breakpoints;
 use tortuga_core::{Request, vars};
 
 use crate::components::{
-    AddProjectsDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
-    CreateProjectDialog, DefaultsDialog, EditorContext, EditorState, EnvironmentsDialog, Filtered,
-    Marks, MoveDialog, NameDialog, Outcome, Palette, PanelContext, Rerun, ResponseAction,
-    ResponseState, ResponseView, SaveExample, SaveToCollectionDialog, SettingsDialog, SidebarState,
-    TabStripState, TestsView, TextBody, request_editor, response_panel, sidebar,
+    AddProjectsDialog, ChangesDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
+    CreateProjectDialog, DefaultsDialog, EditorContext, EditorState, EnvironmentsDialog, Marks,
+    MoveDialog, NameDialog, Outcome, Palette, Rerun, ResponseState, ResponseView,
+    SaveToCollectionDialog, SettingsDialog, SidebarState, TabStripState, TestsView, TextBody,
+    request_editor, sidebar,
 };
 use crate::format::sentence;
 use crate::host::{Host, SavedDrafts};
 use crate::state::{AppState, ItemKey};
 use crate::theme;
 use history::{HistoryState, SidebarView};
+use layout::{Arrangement, Split};
 use tabs::Tabs;
 use workflows::{WorkflowEvent, Workflows};
 
-const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
-const SEND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
-const FIND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::F);
-const QUICK_OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
-const COMMANDS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::K);
-const COMMANDS_TOO: KeyboardShortcut =
-    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::P);
-// Tabs (R-COL-13). Ctrl, also on macOS, as in browsers and editors.
-const PREVIOUS_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::Tab);
-const NEXT_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::PageDown);
-const TAB_BEFORE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::CTRL, Key::PageUp);
-const CLOSE_TAB: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::W);
+use shortcuts::{
+    CLOSE_TAB, COMMANDS, COMMANDS_TOO, ENVIRONMENT, FIND, FOCUS_URL, GO_TO_TAB, NEXT_TAB,
+    PREVIOUS_TAB, QUICK_OPEN, SAVE, SEND, SEND_EVERYWHERE, SHORTCUTS, TAB_BEFORE, TOGGLE_SIDEBAR,
+};
 
 #[derive(Debug)]
 enum Modal {
@@ -91,6 +89,24 @@ enum Modal {
     Import(Box<import::OpenImport>),
     /// Reviewing Postman environments for a project (R-COL-20).
     EnvironmentImport(Box<import::OpenEnvironmentImport>),
+    /// The keyboard shortcut sheet (R-COL-27).
+    Shortcuts(crate::components::ShortcutsDialog),
+    /// Asking before something goes to a protected environment (R-SRV-9).
+    Protected(Guarded, ConfirmDialog),
+    /// What changed between two responses (R-HIST-5).
+    Changes(ChangesDialog),
+    /// The request sent to every environment (R-SRV-10); what came back is in
+    /// `TortugaUi::fanout`.
+    Fanout,
+}
+
+/// What waits for a yes before it goes to a protected environment (R-SRV-9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Guarded {
+    Send,
+    /// Sending to every environment, protected ones included (R-SRV-10).
+    SendEverywhere,
+    RunWorkflow(crate::state::WorkflowKey),
 }
 
 /// What the user picked in the workspace menu (R-WS-1, R-WS-5).
@@ -125,6 +141,8 @@ struct Finished {
     entry: Option<tortuga_core::history::Entry>,
     /// What the scripts and captures did (R-TEST-1).
     tests: Option<TestsView>,
+    /// How the response differs from the request's previous one (R-HIST-5).
+    comparison: Option<Arc<tortuga_core::changes::Comparison>>,
 }
 
 /// The JSON filter being applied to the shown response (R-HTTP-13).
@@ -178,6 +196,13 @@ pub struct TortugaUi {
     /// Unsaved edits as last written to local data (R-COL-8), and when that was checked.
     drafts_saved: SavedDrafts,
     drafts_checked_at: f64,
+    /// When the user last typed or clicked (egui time), for auto-save (R-SET-11).
+    last_input_at: f64,
+    /// The divider between request and response (R-SET-12).
+    split: Split,
+    /// The request sent to every environment, and the answers (R-SRV-10).
+    fanout: Option<fanout::Fanout>,
+    fanout_results: fanout::FanoutInbox,
     /// Saved versions that restored edits started from, for projects not open yet:
     /// checked against the disk once their project opens (R-COL-8, R-GIT-11).
     unchecked_bases: HashMap<ItemKey, Option<Request>>,
@@ -228,6 +253,8 @@ struct Sent {
     tests: Option<TestsView>,
     /// Breakpoints in its scripts (R-TEST-10).
     breakpoints: Breakpoints,
+    /// How its last response differs from the one before (R-HIST-5).
+    comparison: Option<Arc<tortuga_core::changes::Comparison>>,
 }
 
 /// Moves every value whose key `moved` gives a new place to that place.
@@ -281,6 +308,10 @@ impl TortugaUi {
             copied_at: None,
             drafts_saved: SavedDrafts::default(),
             drafts_checked_at: 0.0,
+            last_input_at: 0.0,
+            split: Split::default(),
+            fanout: None,
+            fanout_results: Inbox::new(),
             unchecked_bases: HashMap::new(),
             recent: Vec::new(),
             filter_job: None,
@@ -307,8 +338,10 @@ impl TortugaUi {
         }
         self.apply_appearance(ui.ctx());
         self.collect_finished();
+        self.collect_fanout();
         self.collect_workflow_events();
         self.drop_missing_workflows();
+        self.auto_save_now_and_then(ui.ctx());
         self.save_drafts_now_and_then(ui.input(|i| i.time));
         for root in self.state.take_changes() {
             self.on_disk_change(&root);
@@ -363,7 +396,9 @@ impl TortugaUi {
             });
         }
 
-        self.left_panel(ui);
+        if !self.state.sidebar_hidden() {
+            self.left_panel(ui);
+        }
         self.tab_bar(ui);
 
         CentralPanel::default()
@@ -381,6 +416,7 @@ impl TortugaUi {
             });
 
         self.show_modal(ui.ctx());
+        self.toast(ui.ctx());
         self.sync_tabs();
     }
 
@@ -440,6 +476,11 @@ impl TortugaUi {
 
     /// Keyboard shortcuts that work anywhere outside dialogs.
     fn shortcuts(&mut self, ui: &Ui) {
+        // Ctrl+Shift+Enter first: Ctrl+Enter would match it too.
+        let everywhere = ui.input_mut(|i| i.consume_shortcut(&SEND_EVERYWHERE));
+        if everywhere && self.workflows.open.is_none() {
+            self.send_everywhere(ui.ctx());
+        }
         let (save, send) = ui.input_mut(|i| (i.consume_shortcut(&SAVE), i.consume_shortcut(&SEND)));
         // With a workflow open, they save and run the workflow (R-FLOW-2, R-FLOW-3).
         if let Some(key) = self.workflows.open.clone() {
@@ -472,11 +513,46 @@ impl TortugaUi {
         if ui.input_mut(|i| i.consume_shortcut(&FIND)) {
             self.response.focus_search = true;
         }
+        if ui.input_mut(|i| i.consume_shortcut(&TOGGLE_SIDEBAR)) {
+            self.toggle_sidebar();
+        }
+        let (shortcuts, url, environment) = ui.input_mut(|i| {
+            (
+                i.consume_shortcut(&SHORTCUTS),
+                i.consume_shortcut(&FOCUS_URL),
+                i.consume_shortcut(&ENVIRONMENT),
+            )
+        });
+        if shortcuts {
+            self.show_shortcuts(ui.ctx());
+        }
+        if url && self.workflows.open.is_none() {
+            self.editor.focus_url();
+        }
+        if environment {
+            self.modal = Some(Modal::Palette(Palette::commands_matching("Environment: ")));
+        }
         self.tab_shortcuts(ui);
     }
 
-    /// Call when the app closes: keeps unsaved edits for next time (R-COL-8).
+    /// The keyboard shortcut sheet (R-COL-27).
+    fn show_shortcuts(&mut self, ctx: &egui::Context) {
+        let mac = ctx.os() == egui::os::OperatingSystem::Mac;
+        self.modal = Some(Modal::Shortcuts(crate::components::ShortcutsDialog::new(
+            shortcuts::sheet(mac),
+        )));
+    }
+
+    /// Hides the sidebar, or shows it again (R-COL-26).
+    fn toggle_sidebar(&mut self) {
+        let hidden = self.state.sidebar_hidden();
+        self.state.set_sidebar_hidden(!hidden);
+    }
+
+    /// Call when the app closes: saves automatically if that is on (R-SET-11), and keeps
+    /// other unsaved edits for next time (R-COL-8).
     pub fn on_exit(&mut self) {
+        self.auto_save();
         self.save_drafts();
     }
 
@@ -485,6 +561,18 @@ impl TortugaUi {
     fn topbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let p = theme::palette(ui);
+            let hint = if self.state.sidebar_hidden() {
+                "Show the sidebar (Ctrl+B)"
+            } else {
+                "Hide the sidebar (Ctrl+B)"
+            };
+            if ui
+                .add(theme::icon_button(ui, "☰"))
+                .on_hover_text(hint)
+                .clicked()
+            {
+                self.toggle_sidebar();
+            }
             ui.label(theme::semibold("🐢").size(18.0).color(p.accent));
             ui.label(theme::semibold("Tortuga").size(15.0));
             ui.add_space(12.0);
@@ -522,30 +610,17 @@ impl TortugaUi {
         let key = self.selection.clone();
         let root = key.as_ref().map(|k| k.root.clone());
         let ctx = self.state.request_context(key.as_ref());
-        let undefined = vars::undefined_in(&self.current, &ctx);
+        let var_help = self.state.var_help(key.as_ref(), &self.current, &ctx);
         let current_dirty = key
             .as_ref()
             .is_some_and(|k| self.is_dirty(k, &self.current));
-        let servers: Vec<(String, String)> = root
-            .as_ref()
-            .and_then(|r| self.state.collection(r))
-            .map(|c| {
-                c.manifest
-                    .servers
-                    .iter()
-                    .map(|s| (s.id.clone(), s.name.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let servers = self.server_names(root.as_deref());
         let server_base = self
             .current
             .server
             .as_ref()
             .and_then(|id| ctx.server_urls.get(id).cloned());
-        let read_only = root
-            .as_ref()
-            .and_then(|r| self.state.collection(r))
-            .is_some_and(|c| c.read_only);
+        let read_only = self.project_read_only(root.as_deref());
 
         self.request_head(ui, key.as_ref(), current_dirty, read_only);
         ui.add_space(4.0);
@@ -569,270 +644,91 @@ impl TortugaUi {
         let last = self.sent.get(&key);
         let breakpoints = last.map_or(&no_breakpoints, |s| &s.breakpoints);
         let last_run = last.and_then(|s| s.tests.as_ref());
-        let rerun =
-            if !sending && last.is_some_and(|s| matches!(s.outcome, Some(Outcome::Response(_)))) {
-                Rerun::Ready
-            } else {
-                Rerun::Unavailable
-            };
-        let action = Panel::top("request")
-            .frame(Frame::new().inner_margin(Margin {
-                bottom: 12,
-                ..Margin::ZERO
-            }))
-            .resizable(true)
-            .default_size(300.0)
-            .size_range(120.0..=f32::INFINITY)
-            .show(ui, |ui| {
-                // Fill the panel: egui remembers a panel's size from what its content used,
-                // so a short tab would otherwise shrink the request area for good.
-                ui.set_min_height(ui.available_height());
-                request_editor(
-                    ui,
-                    &mut self.current,
-                    &mut self.editor,
-                    EditorContext {
-                        servers: &servers,
-                        server_base: server_base.as_deref(),
-                        undefined: &undefined,
-                        sending,
-                        settings,
-                        unverified_host: unverified_host.as_deref(),
-                        collection_auth: collection_auth.as_ref(),
-                        inherited_headers: &inherited_headers,
-                        auth_origin: &ctx.auth_origin,
-                        cookie_count,
-                        in_collection: root.is_some(),
-                        preview: preview.as_ref(),
-                        can_pick_files: self.state.host.can_pick_folders(),
-                        breakpoints,
-                        last_run,
-                        rerun,
-                    },
-                )
-            })
-            .inner;
-        if let Some(action) = action {
-            self.apply_editor_action(ui.ctx(), action, &key);
-        }
-
-        ui.add_space(14.0);
-        self.response_area(ui, &key, sending);
-    }
-
-    /// The response of the selected request, with its JSON filter and "Save to file…".
-    fn response_area(&mut self, ui: &mut Ui, key: &Selection, sending: bool) {
-        if !sending {
-            self.past_banner(ui, key);
-        }
-        let can_save = self.state.host.can_save_files();
-        let example = if key
-            .as_ref()
-            .and_then(|k| self.state.collection(&k.root))
-            .is_some_and(|c| !c.read_only)
-        {
-            SaveExample::Offered
-        } else {
-            SaveExample::Hidden
-        };
-        let sent = self.sent.get(key);
-        let view = match sent.and_then(|s| s.outcome.as_ref()) {
-            Some(Outcome::Response(view)) => Some(Arc::clone(view)),
-            _ => None,
-        };
-        let expr = sent.map(|s| s.filter.trim().to_owned()).unwrap_or_default();
-        self.update_filter(view.as_ref(), &expr, ui.ctx());
-        let filtered = match self.filter_job.as_ref().map(|j| &j.result) {
-            None => Filtered::Off,
-            Some(None) => Filtered::Pending,
-            Some(Some(Ok(body))) => Filtered::Done(body),
-            Some(Some(Err(message))) => Filtered::Failed(message),
-        };
-        let Sent {
-            outcome,
-            filter,
-            tests,
-            breakpoints: _,
-        } = self.sent.entry(key.clone()).or_default();
-        let outcome = outcome.as_ref();
-        let cx = PanelContext {
+        let rerun = rerun_for(sending, last);
+        let arrangement = self.arrangement(ui.available_width());
+        let view = self.editor_view(arrangement);
+        let cx = EditorContext {
+            servers: &servers,
+            server_base: server_base.as_deref(),
+            vars: &var_help,
             sending,
-            can_save,
-            filter,
-            filtered,
-            tests: tests.as_ref(),
-            wrap: self.state.settings.appearance.wrap_lines,
-            example,
+            settings,
+            unverified_host: unverified_host.as_deref(),
+            collection_auth: collection_auth.as_ref(),
+            inherited_headers: &inherited_headers,
+            auth_origin: &ctx.auth_origin,
+            cookie_count,
+            in_collection: root.is_some(),
+            preview: preview.as_ref(),
+            can_pick_files: self.state.host.can_pick_folders(),
+            breakpoints,
+            last_run,
+            rerun,
+            view,
+            features: &self.state.settings.features,
         };
-        match response_panel(ui, outcome, &mut self.response, cx) {
-            Some(ResponseAction::SaveBody) => {
-                if let Some(Outcome::Response(view)) = outcome {
-                    let r = &view.response;
-                    self.response.save_status =
-                        match self.state.host.save_file(&r.suggested_file_name(), &r.body) {
-                            Some(Ok(path)) => Some(format!("Saved to {}", path.display())),
-                            Some(Err(e)) => Some(format!("Could not save: {e}")),
-                            None => self.response.save_status.take(),
-                        };
-                }
-            }
-            Some(ResponseAction::SaveAsExample) => {
-                if let Some(Outcome::Response(view)) = outcome {
-                    let r = &view.response;
-                    let base = format!("{} {}", r.status, r.status_text);
-                    let examples = &mut self.current.examples;
-                    let name = tortuga_core::import::unique_name(base.trim(), |n| {
-                        examples.iter().any(|e| e.name == n)
-                    });
-                    examples.push(tortuga_core::mock::Example::from_response(name, r));
-                    self.editor.open_example(examples.len() - 1);
-                }
-            }
-            Some(ResponseAction::SetWrap(wrap)) => {
-                self.state
-                    .update_settings(|s| s.appearance.wrap_lines = wrap);
-            }
-            Some(ResponseAction::AddTest(code)) => self.add_test(&code),
-            Some(ResponseAction::AddCapture { name, from }) => self.add_capture(&name, &from),
-            None => {}
-        }
-    }
-
-    /// Request name, unsaved marker and save/revert (R-COL-6).
-    fn request_head(
-        &mut self,
-        ui: &mut Ui,
-        key: Option<&ItemKey>,
-        current_dirty: bool,
-        read_only: bool,
-    ) {
-        let p = theme::palette(ui);
-        let Some(k) = key else {
-            egui::Sides::new().height(46.0).show(
-                ui,
-                |ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("Scratch request").small().color(p.muted));
-                        ui.label(theme::semibold("Untitled request").size(18.0));
-                    });
-                },
-                |ui| {
-                    if ui
-                        .button("Save to project…")
-                        .on_hover_text("Save (Ctrl+S)")
-                        .clicked()
-                    {
-                        self.save();
-                    }
-                    if copy_curl_button(ui, self.copied_at) {
-                        self.copy_as_curl(ui.ctx());
-                    }
-                },
-            );
-            ui.add_space(8.0);
-            return;
-        };
-        let crumb = breadcrumb(&self.state, k);
-        let copied_at = self.copied_at;
-        let ((), (save, revert, copy)) = egui::Sides::new().height(46.0).shrink_left().show(
-            ui,
-            |ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(crumb).small().color(p.muted));
-                    ui.horizontal(|ui| {
-                        // Looks like a title; becomes a field on hover/focus.
-                        let title =
-                            egui::FontId::new(18.0, egui::FontFamily::Name(theme::SEMIBOLD.into()));
-                        ui.add_enabled(
-                            !read_only,
-                            TextEdit::singleline(&mut self.current.name)
-                                .id_salt("request-name")
-                                .font(title)
-                                .frame(Frame::new())
-                                // Grows with the name, so the badge sits right after it.
-                                .clip_text(false)
-                                .desired_width(24.0),
-                        )
-                        .on_hover_text("Request name");
-                        if current_dirty {
-                            theme::badge(ui, "Unsaved", p.redirect)
-                                .on_hover_text("This request has changes that are not saved");
-                        }
-                    });
+        // R-SET-12: stacked, the request takes what its tab needs up to the divider's
+        // height; side by side, each gets a column.
+        match arrangement {
+            Arrangement::Stacked => {
+                let available = ui.available_height();
+                let cap = self.request_cap(available);
+                let request = ui.allocate_ui(egui::vec2(ui.available_width(), cap), |ui| {
+                    request_editor(ui, &mut self.current, &mut self.editor, cx)
                 });
-            },
-            |ui| {
-                let save = ui
-                    .add_enabled(
-                        current_dirty && !read_only,
-                        theme::primary_button(ui, "Save"),
-                    )
-                    .on_hover_text("Save (Ctrl+S)")
-                    .clicked();
-                let revert = current_dirty && ui.button("Revert").clicked();
-                let copy = copy_curl_button(ui, copied_at);
-                (save, revert, copy)
-            },
-        );
-        if copy {
-            self.copy_as_curl(ui.ctx());
-        }
-        if save {
-            self.save();
-        }
-        if revert {
-            self.revert();
-        }
-        ui.add_space(8.0);
-        let key = k.clone();
-        self.conflict_banner(ui, &key);
-    }
-
-    /// Copies the request as curl; asks first if it contains secret values (R-HTTP-9).
-    fn copy_as_curl(&mut self, egui_ctx: &egui::Context) {
-        let ctx = self.state.request_context(self.selection.as_ref());
-        match tortuga_core::curl::command(&self.current, &ctx, &self.state.settings.client) {
-            Err(e) => {
-                self.copied_at = None;
-                self.state.notify(format!("Could not copy as curl: {e}"));
+                let used = request.response.rect.height();
+                if let Some(action) = request.inner {
+                    self.apply_editor_action(ui.ctx(), action, &key);
+                }
+                self.stacked_divider(ui, used, available);
+                self.response_area(ui, &key, sending);
             }
-            Ok(command) if command.masked.is_none() => {
-                egui_ctx.copy_text(command.full);
-                self.copied_at = Some(egui_ctx.input(|i| i.time));
+            Arrangement::SideBySide => {
+                let full = ui.available_rect_before_wrap();
+                let width = self.request_width(full.width());
+                let left = egui::Rect::from_min_size(full.min, egui::vec2(width, full.height()));
+                let action = {
+                    let mut left_ui = ui.new_child(egui::UiBuilder::new().max_rect(left));
+                    left_ui.set_min_height(left.height());
+                    request_editor(&mut left_ui, &mut self.current, &mut self.editor, cx)
+                };
+                if let Some(action) = action {
+                    self.apply_editor_action(ui.ctx(), action, &key);
+                }
+                let divider = egui::Rect::from_min_size(
+                    egui::pos2(left.right(), full.top()),
+                    egui::vec2(layout::DIVIDER, full.height()),
+                );
+                self.side_divider(ui, divider, width, full.width());
+                let right =
+                    egui::Rect::from_min_max(egui::pos2(divider.right(), full.top()), full.max);
+                let mut right_ui = ui.new_child(egui::UiBuilder::new().max_rect(right));
+                self.response_area(&mut right_ui, &key, sending);
+                ui.allocate_rect(full, egui::Sense::hover());
             }
-            Ok(command) => self.modal = Some(Modal::CopyCurl(CopyCurlDialog::new(command))),
+        }
+        if let Some(name) = var_help.open.take() {
+            self.open_variable(key.as_ref(), &name);
         }
     }
 
-    /// Fills the current request from a pasted `curl` command, as unsaved edits
-    /// (R-HTTP-11, D19). Its name and cookie setting stay.
-    fn paste_curl(&mut self, text: &str) {
-        use tortuga_core::curl::import;
+    /// The project at `root` is open read-only (a newer file format, R-COL-7).
+    fn project_read_only(&self, root: Option<&Path>) -> bool {
+        root.and_then(|r| self.state.collection(r))
+            .is_some_and(|c| c.read_only)
+    }
 
-        let pasted = match import::parse(text) {
-            Ok(pasted) => pasted,
-            Err(e) => {
-                self.state
-                    .notify(format!("Could not read the curl command: {e}"));
-                return;
-            }
-        };
-        let mut request = pasted.request;
-        import::use_server(
-            &mut request,
-            &self.state.request_context(self.selection.as_ref()),
-        );
-        request.name.clone_from(&self.current.name);
-        request.cookies = self.current.cookies;
-        let response = std::mem::take(&mut self.response);
-        self.load(request);
-        self.response = response;
-        if !pasted.ignored.is_empty() {
-            self.state.notify(format!(
-                "Filled in from the curl command. Not used: {}.",
-                pasted.ignored.join("; ")
-            ));
-        }
+    /// The servers of the project at `root`: (id, name).
+    fn server_names(&self, root: Option<&Path>) -> Vec<(String, String)> {
+        root.and_then(|r| self.state.collection(r))
+            .map(|c| {
+                c.manifest
+                    .servers
+                    .iter()
+                    .map(|s| (s.id.clone(), s.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// "Choose…" for a multipart file: inside the project the path is kept relative to
@@ -868,9 +764,10 @@ impl TortugaUi {
         self.response.reset();
     }
 
-    /// Opens a request in the preview tab, or switches to its tab (R-COL-13).
+    /// Opens a request in the preview tab, or switches to its tab (R-COL-13); in a tab
+    /// that stays when the preview tab is turned off (R-SET-9).
     fn select(&mut self, new: Selection) {
-        self.open_tab(new, false);
+        self.open_tab(new, !self.state.settings.editing.preview_tab);
     }
 
     /// Opens a request in a tab; `keep` makes it a tab that stays (R-COL-13).
@@ -882,6 +779,8 @@ impl TortugaUi {
 
     /// Selects a request; `remember` keeps it as the workspace's selection (R-WS-1).
     fn select_and_remember(&mut self, new: Selection, remember: bool) {
+        // Before anything moves: the edits are saved where they were made (R-SET-11).
+        self.auto_save();
         self.workflows.open = None;
         if remember {
             self.state.remember_selection(new.as_ref());
@@ -995,19 +894,13 @@ impl TortugaUi {
     }
 }
 
-/// "Copy as curl" (R-HTTP-9); shows "Copied" for a moment after `copied_at`. Returns whether it was clicked.
-fn copy_curl_button(ui: &mut Ui, copied_at: Option<f64>) -> bool {
-    const FEEDBACK_SECONDS: f64 = 2.0;
-    let now = ui.input(|i| i.time);
-    let copied = copied_at.is_some_and(|t| now - t < FEEDBACK_SECONDS);
-    if copied {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_secs_f64(FEEDBACK_SECONDS));
+/// Whether the tests can run again on what `last` left (R-TEST-12).
+fn rerun_for(sending: bool, last: Option<&Sent>) -> Rerun {
+    if !sending && last.is_some_and(|s| matches!(s.outcome, Some(Outcome::Response(_)))) {
+        Rerun::Ready
+    } else {
+        Rerun::Unavailable
     }
-    let label = if copied { "Copied" } else { "Copy as curl" };
-    ui.add(theme::ghost_button(label))
-        .on_hover_text("Copy this request as a curl command, with variables filled in")
-        .clicked()
 }
 
 /// How a chosen file is saved in the request (D21): relative to the project folder
@@ -1042,6 +935,7 @@ fn breadcrumb(state: &AppState, key: &ItemKey) -> String {
 
 #[cfg(test)]
 mod tests {
+    use egui::{Key, Modifiers};
     use tortuga_core::storage::FsStorage;
     use tortuga_core::{Collection, Item};
 
@@ -1049,16 +943,16 @@ mod tests {
     use crate::components::TabAction;
     use crate::test_host::TestHost;
 
-    type Shared<T> = std::rc::Rc<std::cell::RefCell<T>>;
+    pub(super) type Shared<T> = std::rc::Rc<std::cell::RefCell<T>>;
 
     /// A collection on disk with one request, opened in a fresh UI with that request selected.
-    fn setup(name: &str) -> (TortugaUi, PathBuf, ItemKey) {
+    pub(super) fn setup(name: &str) -> (TortugaUi, PathBuf, ItemKey) {
         let (ui, root, key, _, _) = setup_shared(name);
         (ui, root, key)
     }
 
     /// Like [`setup`], plus the host's saved local state and unsaved edits, to start again.
-    fn setup_shared(
+    pub(super) fn setup_shared(
         name: &str,
     ) -> (
         TortugaUi,
@@ -1217,7 +1111,7 @@ mod tests {
     }
 
     /// Adds a request to the project on disk.
-    fn add_request(ui: &mut TortugaUi, root: &Path, name: &str) -> ItemKey {
+    pub(super) fn add_request(ui: &mut TortugaUi, root: &Path, name: &str) -> ItemKey {
         let request = Request {
             name: name.into(),
             ..Request::default()
@@ -1651,11 +1545,12 @@ mod tests {
         assert!(ui.is_dirty(&key, &ui.current), "unsaved edits");
         assert!(
             ui.state
-                .notice
-                .as_deref()
+                .toast
+                .as_ref()
+                .map(|t| t.text.as_str())
                 .is_some_and(|n| n.contains("--insecure")),
             "{:?}",
-            ui.state.notice
+            ui.state.toast
         );
         std::fs::remove_dir_all(root).expect("clean up");
     }
@@ -1858,6 +1753,7 @@ mod tests {
                     outcome: Outcome::from_result(Ok(response)),
                     entry: Some(entry),
                     tests: None,
+                    comparison: None,
                 })
                 .expect("send");
             // Then edit the request further.

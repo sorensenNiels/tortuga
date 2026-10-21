@@ -76,6 +76,10 @@ impl TortugaUi {
                 result => result == DialogResult::Open,
             },
             Modal::Palette(palette) => self.show_palette(ctx, palette),
+            Modal::Shortcuts(d) => d.show(ctx) == DialogResult::Open,
+            Modal::Changes(d) => d.show(ctx) == DialogResult::Open,
+            Modal::Fanout => self.show_fanout(ctx),
+            Modal::Protected(guarded, d) => self.show_protected(ctx, guarded, d),
             Modal::NewWorkflow(..)
             | Modal::RenameWorkflow(..)
             | Modal::DeleteWorkflow(..)
@@ -177,8 +181,8 @@ impl TortugaUi {
 
     /// Saves the environments dialog. Secrets first: if the credential store fails,
     /// nothing changes on disk and the dialog stays open with the error. Returns success.
-    /// The settings dialog, with "Add…" for CA certificates (R-HTTP-16). Returns whether
-    /// it stays open.
+    /// The settings dialog, with "Add…" for CA certificates (R-HTTP-16) and "Choose…"
+    /// for the code font (R-SET-10). Returns whether it stays open.
     pub(super) fn show_settings(&mut self, ctx: &egui::Context, d: &mut SettingsDialog) -> bool {
         let result = d.show(ctx, self.state.host.can_pick_folders());
         if std::mem::take(&mut d.add_ca_requested)
@@ -189,18 +193,125 @@ impl TortugaUi {
         {
             d.add_ca(path);
         }
+        if std::mem::take(&mut d.choose_font_requested)
+            && let Some(path) = self
+                .state
+                .host
+                .pick_any_file("Choose a font for code (.ttf, .otf)")
+        {
+            d.set_code_font(path);
+        }
         match result {
-            DialogResult::Done(settings) => match self.state.apply_settings(&settings) {
-                Ok(()) => {
-                    self.trim_loaded_history();
-                    false
-                }
-                Err(e) => {
+            DialogResult::Done(settings) => match self.new_code_font_problem(&settings) {
+                Some(e) => {
                     d.error = Some(e);
                     true
                 }
+                None => self.save_settings(&settings, d),
             },
             result => result == DialogResult::Open,
+        }
+    }
+
+    /// Asks before something goes to a protected environment, and does it on a yes
+    /// (R-SRV-9). Returns whether the question stays open.
+    fn show_protected(
+        &mut self,
+        ctx: &egui::Context,
+        guarded: &super::Guarded,
+        d: &crate::components::ConfirmDialog,
+    ) -> bool {
+        match d.show(ctx) {
+            DialogResult::Done(()) => {
+                self.go_ahead(ctx, guarded.clone());
+                false
+            }
+            result => result == DialogResult::Open,
+        }
+    }
+
+    /// Does what waited for a yes before going to a protected environment (R-SRV-9).
+    fn go_ahead(&mut self, ctx: &egui::Context, guarded: super::Guarded) {
+        match guarded {
+            super::Guarded::Send => self.send_now(ctx),
+            super::Guarded::SendEverywhere => self.start_fanout(ctx),
+            super::Guarded::RunWorkflow(key) => self.start_workflow(&key, ctx),
+        }
+    }
+
+    /// The answers of every environment (R-SRV-10); closing the dialog drops them and
+    /// stops what is still on its way. Returns whether it stays open.
+    fn show_fanout(&mut self, ctx: &egui::Context) -> bool {
+        let open = self.fanout.as_ref().is_some_and(|f| {
+            crate::components::fanout_dialog(ctx, &f.title, &f.rows) == DialogResult::Open
+        });
+        if !open {
+            self.fanout = None;
+        }
+        open
+    }
+
+    /// Opens where the variable `name` of request `key` gets its value (a Ctrl+click on
+    /// a `{{name}}`, R-VAR-9); an undefined one, where it can be defined.
+    pub(super) fn open_variable(&mut self, key: Option<&ItemKey>, name: &str) {
+        use tortuga_core::vars::Source;
+        let root = key.map(|k| k.root.clone());
+        match (self.state.variable_source(key, name), root) {
+            (Some(Source::Runtime | Source::WorkspaceRuntime), root) => {
+                self.show_runtime_vars(root);
+            }
+            (Some(Source::Workspace), _) => {
+                self.modal = Some(Modal::WorkspaceVars(
+                    crate::components::WorkspaceVarsDialog::new(&self.state),
+                ));
+            }
+            (Some(Source::Dynamic), _) => self.state.inform(format!(
+                "{{{{{name}}}}} gets a new value every time it is sent."
+            )),
+            (Some(Source::Folder { path, .. }), Some(root)) => {
+                self.modal = Some(Modal::Defaults(
+                    crate::components::DefaultsDialog::for_folder(&self.state, root, path)
+                        .on_variables(),
+                ));
+            }
+            (_, Some(root)) => {
+                self.modal = Some(Modal::Environments(EnvironmentsDialog::new(
+                    &self.state,
+                    root,
+                )));
+            }
+            (_, None) => self.state.inform(
+                "The scratch request has no project: save it in one to define its variables.",
+            ),
+        }
+    }
+
+    /// Why a newly chosen code font can't be used, if it can't (R-SET-10).
+    fn new_code_font_problem(&self, settings: &tortuga_core::AppSettings) -> Option<String> {
+        let font = settings.appearance.code_font.as_deref()?;
+        if self.state.settings.appearance.code_font.as_deref() == Some(font) {
+            return None;
+        }
+        super::appearance::read_font(self.state.host.as_ref(), font)
+            .err()
+            .map(|e| format!("The code font can't be used: {e}"))
+    }
+
+    /// Applies and saves the settings. Returns whether the dialog stays open.
+    fn save_settings(
+        &mut self,
+        settings: &tortuga_core::AppSettings,
+        d: &mut SettingsDialog,
+    ) -> bool {
+        match self.state.apply_settings(settings) {
+            Ok(()) => {
+                self.trim_loaded_history();
+                false
+            }
+            Err(e) => {
+                d.error = Some(e);
+                true
+            }
         }
     }
 
@@ -273,5 +384,59 @@ impl TortugaUi {
             self.state.follow_environment_renames(&d.root, &old);
         }
         done
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R-SET-10: a newly chosen code font that isn't a font keeps the dialog open with
+    /// the reason; one already in use isn't read again.
+    #[test]
+    fn a_code_font_that_is_not_a_font_is_refused() {
+        let dir = std::env::temp_dir().join(format!("tortuga-font-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let page = dir.join("not a font ü😀.ttf");
+        std::fs::write(&page, "<html>").expect("file");
+        let ui = TortugaUi::new(Box::new(crate::test_host::TestHost::default()));
+        let mut settings = ui.state.settings.clone();
+        assert_eq!(ui.new_code_font_problem(&settings), None, "bundled font");
+        settings.appearance.code_font = Some(page.clone());
+        let problem = ui.new_code_font_problem(&settings).expect("refused");
+        assert!(
+            problem.contains("not a TrueType or OpenType font"),
+            "{problem}"
+        );
+
+        let mut ui = ui;
+        ui.state
+            .update_settings(|s| s.appearance.code_font = Some(page.clone()));
+        assert_eq!(ui.new_code_font_problem(&settings), None, "unchanged");
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// The settings dialog fits the shown tab: after a tall tab, a short one leaves Save
+    /// right under its content (the button row used to keep the tallest height).
+    #[test]
+    fn the_settings_dialog_shrinks_to_a_short_tab() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut ui = TortugaUi::new(Box::new(crate::test_host::TestHost::default()));
+        let mut settings = ui.state.settings.clone();
+        settings.client.proxy = tortuga_core::ProxyMode::Manual;
+        ui.modal = Some(super::Modal::Settings(SettingsDialog::new(&settings)));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 860.0))
+            .build_ui(|egui_ui| ui.ui(egui_ui));
+        h.run_steps(6);
+        h.get_by_label("Editing").click();
+        h.run_steps(6);
+        let last = h.get_by_label("Save automatically").rect().bottom();
+        let save = h.get_by_label("Save").rect().top();
+        assert!(
+            save - last < 120.0,
+            "Save at {save}, content ends at {last}"
+        );
     }
 }

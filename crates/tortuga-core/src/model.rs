@@ -22,6 +22,15 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
+    /// GET, HEAD and OPTIONS: methods that don't change anything on a well-behaved
+    /// server, so a protected environment lets them through (R-SRV-9).
+    pub fn is_safe(self) -> bool {
+        match self {
+            Self::Get | Self::Head | Self::Options => true,
+            Self::Post | Self::Put | Self::Patch | Self::Delete => false,
+        }
+    }
+
     pub const ALL: [Self; 7] = [
         Self::Get,
         Self::Post,

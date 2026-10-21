@@ -13,7 +13,7 @@ use crate::cookies::CookieJar;
 use crate::model::{FormPart, HttpMethod, KeyValue, Request, RequestBody, Response};
 use crate::{Error, Result, query};
 
-/// Global HTTP settings (R-HTTP-7, R-HTTP-8). Proxies come from the system settings.
+/// Global HTTP settings (R-HTTP-7, R-HTTP-8, R-HTTP-20).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientSettings {
@@ -33,6 +33,69 @@ pub struct ClientSettings {
     /// (R-SET-3). Only ever set on this machine, never by a shared file (D39).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub insecure_hosts: Vec<String>,
+    /// Which proxy requests go through (R-HTTP-20). Local to this machine.
+    #[serde(skip_serializing_if = "ProxyMode::is_default")]
+    pub proxy: ProxyMode,
+    /// The proxy for [`ProxyMode::Manual`], e.g. `http://127.0.0.1:8080`. Kept while
+    /// another mode is chosen, so switching back doesn't lose it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub proxy_url: String,
+    /// Hosts that bypass the manual proxy, e.g. `localhost` or `*.internal`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub no_proxy: Vec<String>,
+}
+
+/// A proxy URL as typed, with `http://` in front when it has no scheme
+/// (`127.0.0.1:8080`), as proxy settings usually allow.
+fn proxy_url_with_scheme(text: &str) -> String {
+    let text = text.trim();
+    if text.contains("://") {
+        text.to_owned()
+    } else {
+        format!("http://{text}")
+    }
+}
+
+/// Where the proxy settings come from (R-HTTP-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    /// The operating system's settings and the `HTTP_PROXY`-style variables.
+    #[default]
+    System,
+    /// Straight to the server, whatever the system says.
+    None,
+    /// [`ClientSettings::proxy_url`], except for [`ClientSettings::no_proxy`].
+    Manual,
+}
+
+impl ProxyMode {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Checks a manual proxy's URL (R-HTTP-20): `http` or `https` with a host, and no
+/// user name or password, since settings are a plain file (D54). The error never
+/// repeats the URL, which could hold a password.
+pub fn check_proxy_url(text: &str) -> Result<()> {
+    let invalid = |reason: &str| Err(Error::InvalidProxy(reason.to_owned()));
+    if text.trim().is_empty() {
+        return invalid("enter the proxy's URL, e.g. http://127.0.0.1:8080");
+    }
+    let Ok(url) = url::Url::parse(&proxy_url_with_scheme(text)) else {
+        return invalid("it is not a URL; write it like http://127.0.0.1:8080");
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return invalid("only http:// and https:// proxies are supported");
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return invalid("the URL has no host");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return invalid("a user name or password in the URL is not supported");
+    }
+    Ok(())
 }
 
 impl Default for ClientSettings {
@@ -44,6 +107,9 @@ impl Default for ClientSettings {
             send_cookies: true,
             ca_certificates: Vec::new(),
             insecure_hosts: Vec::new(),
+            proxy: ProxyMode::System,
+            proxy_url: String::new(),
+            no_proxy: Vec::new(),
         }
     }
 }
@@ -156,7 +222,7 @@ impl Client {
             })
             .collect();
         #[cfg(not(target_arch = "wasm32"))]
-        let inner = builder(&settings, ClientKey::plain(&settings), &roots)
+        let inner = builder(&settings, ClientKey::plain(&settings), &roots)?
             .build()
             .map_err(|e| Error::ClientSetup(e.to_string()))?;
         #[cfg(target_arch = "wasm32")]
@@ -215,7 +281,7 @@ impl Client {
         }
         // Built without the lock: loading certificates takes a while, and other sends
         // shouldn't wait for it. If two sends build the same client, the first one is kept.
-        let mut b = builder(&self.settings, key, &self.roots);
+        let mut b = builder(&self.settings, key, &self.roots)?;
         if let Some(jar) = jar {
             b = b.cookie_provider(std::sync::Arc::new(jar.clone()));
         }
@@ -396,7 +462,7 @@ fn builder(
     settings: &ClientSettings,
     key: ClientKey,
     roots: &[reqwest::Certificate],
-) -> reqwest::ClientBuilder {
+) -> Result<reqwest::ClientBuilder> {
     let redirect = if !key.follow_redirects {
         reqwest::redirect::Policy::none()
     } else if key.insecure_host {
@@ -415,11 +481,50 @@ fn builder(
     } else {
         reqwest::redirect::Policy::limited(ClientSettings::MAX_REDIRECTS)
     };
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .redirect(redirect)
         .tls_danger_accept_invalid_certs(!settings.verify_tls || key.insecure_host)
         // Besides the system's certificates, not instead of them.
-        .tls_certs_merge(roots.iter().cloned())
+        .tls_certs_merge(roots.iter().cloned());
+    with_proxy(builder, settings)
+}
+
+/// Applies the proxy settings (R-HTTP-20). `System` is reqwest's default.
+#[cfg(not(target_arch = "wasm32"))]
+fn with_proxy(
+    builder: reqwest::ClientBuilder,
+    settings: &ClientSettings,
+) -> Result<reqwest::ClientBuilder> {
+    match settings.proxy {
+        ProxyMode::System => Ok(builder),
+        ProxyMode::None => Ok(builder.no_proxy()),
+        ProxyMode::Manual => {
+            check_proxy_url(&settings.proxy_url)?;
+            let proxy = reqwest::Proxy::all(proxy_url_with_scheme(&settings.proxy_url))
+                .map_err(|_| Error::InvalidProxy("reqwest refused the URL".into()))?
+                .no_proxy(reqwest::NoProxy::from_string(&no_proxy_list(
+                    &settings.no_proxy,
+                )));
+            Ok(builder.proxy(proxy))
+        }
+    }
+}
+
+/// The hosts that bypass the proxy as a `NO_PROXY` list, where `example.com` also covers
+/// its subdomains. `*.example.com` (as in the list of hosts not to verify) means the same.
+#[cfg(not(target_arch = "wasm32"))]
+fn no_proxy_list(hosts: &[String]) -> String {
+    hosts
+        .iter()
+        .map(|h| h.trim())
+        .map(|h| {
+            h.strip_prefix('*')
+                .filter(|d| d.starts_with('.'))
+                .unwrap_or(h)
+        })
+        .filter(|h| !h.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -485,6 +590,71 @@ fn to_reqwest_method(method: HttpMethod) -> reqwest::Method {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-HTTP-20, D54: a manual proxy is an http(s) URL with a host and no credentials;
+    /// the error never repeats the URL.
+    #[test]
+    fn proxy_urls_are_checked() {
+        for ok in [
+            "http://127.0.0.1:8080",
+            " https://proxy.corp.test:3128/ ",
+            "http://[::1]:8080",
+            "127.0.0.1:8080",
+            "proxy.corp.test:3128",
+        ] {
+            assert!(check_proxy_url(ok).is_ok(), "{ok}");
+        }
+        for (bad, says) in [
+            ("", "enter the proxy's URL"),
+            ("ftp://127.0.0.1:8080", "only http"),
+            ("proxy ü😀", "not a URL"),
+            ("http://", "not a URL"),
+            ("socks5://127.0.0.1:1080", "only http"),
+            (
+                "http://user:s3cret@proxy.test:8080",
+                "user name or password",
+            ),
+            ("http://user@proxy.test:8080", "user name or password"),
+            ("user:s3cret@proxy.test:8080", "user name or password"),
+        ] {
+            let err = check_proxy_url(bad).expect_err(bad).to_string();
+            assert!(err.contains(says), "{bad}: {err}");
+            assert!(!err.contains("s3cret"), "{err}");
+        }
+    }
+
+    /// R-HTTP-20: `*.domain` entries become `NO_PROXY`'s `.domain`; blanks are dropped.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn bypass_list_in_no_proxy_form() {
+        let hosts = [
+            " localhost ".to_owned(),
+            "*.internal".to_owned(),
+            String::new(),
+            "*".to_owned(),
+            "10.0.0.0/8".to_owned(),
+        ];
+        assert_eq!(no_proxy_list(&hosts), "localhost,.internal,*,10.0.0.0/8");
+        assert_eq!(no_proxy_list(&[]), "");
+    }
+
+    /// R-HTTP-20: a manual proxy that can't be used stops the client from being built.
+    #[test]
+    fn a_bad_manual_proxy_is_an_error() {
+        let settings = ClientSettings {
+            proxy: ProxyMode::Manual,
+            proxy_url: "http://u:p@proxy.test".into(),
+            ..ClientSettings::default()
+        };
+        let err = Client::new(settings).expect_err("credentials refused");
+        assert!(matches!(err, Error::InvalidProxy(_)), "{err}");
+        let kept = ClientSettings {
+            proxy: ProxyMode::System,
+            proxy_url: "not even a url".into(),
+            ..ClientSettings::default()
+        };
+        assert!(Client::new(kept).is_ok(), "the URL only counts when Manual");
+    }
 
     /// R-SET-3: exact hosts and `*.domain` entries, whatever else was typed with them.
     #[test]

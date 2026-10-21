@@ -1,7 +1,8 @@
-use egui::{ComboBox, Grid, TextEdit, Ui};
+use egui::{ComboBox, Grid, Ui};
 use tortuga_core::{FormPart, KeyValue, Request, RequestBody, json, xml};
 
-use super::key_value_table;
+use super::key_value_table::cell;
+use super::{FieldWidth, Lines, VarHelp, key_value_table, var_edit};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +113,7 @@ pub fn body_editor(
     ui: &mut Ui,
     request: &mut Request,
     drafts: &mut BodyDrafts,
-    undefined: &[String],
+    help: &VarHelp,
     can_pick_files: bool,
 ) -> Option<usize> {
     let kind = Kind::of(&request.body);
@@ -146,21 +147,27 @@ pub fn body_editor(
     match kind {
         Kind::None => theme::hint(ui, "This request has no body."),
         Kind::Text | Kind::Json | Kind::Xml => {
-            let flagged = theme::uses_undefined(&drafts.text, undefined);
-            let mut edit = TextEdit::multiline(&mut drafts.text)
-                .id_salt("body-text")
-                .code_editor()
-                .desired_width(f32::INFINITY)
-                .desired_rows(10)
-                .hint_text(match kind {
-                    Kind::Json => "{\n  \"key\": \"value\"\n}",
-                    Kind::Xml => "<order>\n  <id>{{id}}</id>\n</order>",
-                    Kind::None | Kind::Text | Kind::Form | Kind::Multipart => "Request body",
-                });
-            if flagged {
-                edit = edit.background_color(theme::undefined_bg(ui));
-            }
-            if ui.add(edit).changed() {
+            let hint = match kind {
+                Kind::Json => "{\n  \"key\": \"value\"\n}",
+                Kind::Xml => "<order>\n  <id>{{id}}</id>\n</order>",
+                Kind::None | Kind::Text | Kind::Form | Kind::Multipart => "Request body",
+            };
+            let id = ui.make_persistent_id("body-text");
+            let edit = var_edit(
+                ui,
+                id,
+                &mut drafts.text,
+                help,
+                Lines::Many,
+                FieldWidth::AsBuilt,
+                |e| {
+                    e.code_editor()
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(10)
+                        .hint_text(hint)
+                },
+            );
+            if edit.changed() {
                 request.body = drafts.body(kind);
             }
             if let Some(err) = error {
@@ -168,12 +175,12 @@ pub fn body_editor(
             }
         }
         Kind::Form => {
-            if key_value_table(ui, "body-form", &mut drafts.form, "Field", undefined) {
+            if key_value_table(ui, "body-form", &mut drafts.form, "Field", help) {
                 request.body = drafts.body(Kind::Form);
             }
         }
         Kind::Multipart => {
-            let (changed, choose) = parts_table(ui, &mut drafts.parts, undefined, can_pick_files);
+            let (changed, choose) = parts_table(ui, &mut drafts.parts, help, can_pick_files);
             if changed {
                 request.body = drafts.body(Kind::Multipart);
             }
@@ -208,7 +215,7 @@ fn multipart_hints(ui: &mut Ui, parts: &[FormPart]) {
 fn parts_table(
     ui: &mut Ui,
     parts: &mut Vec<FormPart>,
-    undefined: &[String],
+    help: &VarHelp,
     can_pick_files: bool,
 ) -> (bool, Option<usize>) {
     let mut changed = false;
@@ -251,7 +258,7 @@ fn parts_table(
                     ("part-name", i),
                     &mut part.name,
                     name_hint,
-                    undefined,
+                    help,
                     widths[0],
                 );
                 changed |= kind_picker(ui, i, part);
@@ -261,7 +268,7 @@ fn parts_table(
                     ("part-value", i),
                     &mut part.value,
                     value_hint,
-                    undefined,
+                    help,
                     widths[1],
                 );
                 if part.file && can_pick_files && !is_blank {
@@ -281,7 +288,7 @@ fn parts_table(
                     ("part-type", i),
                     &mut content_type,
                     "auto",
-                    undefined,
+                    help,
                     widths[2],
                 ) {
                     part.content_type = Some(content_type).filter(|c| !c.trim().is_empty());
@@ -324,24 +331,6 @@ fn kind_picker(ui: &mut Ui, i: usize, part: &mut FormPart) -> bool {
     part.file != before
 }
 
-fn cell(
-    ui: &mut Ui,
-    id_salt: (&str, usize),
-    text: &mut String,
-    hint: &str,
-    undefined: &[String],
-    width: f32,
-) -> bool {
-    let flagged = theme::uses_undefined(text, undefined);
-    let mut edit = TextEdit::singleline(text)
-        .id_salt(id_salt)
-        .hint_text(hint.to_owned());
-    if flagged {
-        edit = edit.background_color(theme::undefined_bg(ui));
-    }
-    theme::sized_edit(ui, width, edit).changed()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,7 +360,7 @@ mod tests {
         let mut drafts = BodyDrafts::new(&request.body);
         {
             let mut h = crate::test_host::harness(|ui| {
-                body_editor(ui, &mut request, &mut drafts, &[], false);
+                body_editor(ui, &mut request, &mut drafts, &VarHelp::default(), false);
             });
             h.run();
             assert!(
@@ -383,7 +372,7 @@ mod tests {
         request.body = drafts.body(Kind::Xml);
         {
             let mut h = crate::test_host::harness(|ui| {
-                body_editor(ui, &mut request, &mut drafts, &[], false);
+                body_editor(ui, &mut request, &mut drafts, &VarHelp::default(), false);
             });
             h.run();
             assert!(h.query_by_label_contains("Invalid XML").is_none());
@@ -414,7 +403,9 @@ mod tests {
         let mut chosen = None;
         {
             let mut h = crate::test_host::harness(|ui| {
-                if let Some(i) = body_editor(ui, &mut request, &mut drafts, &[], true) {
+                if let Some(i) =
+                    body_editor(ui, &mut request, &mut drafts, &VarHelp::default(), true)
+                {
                     chosen = Some(i);
                 }
             });

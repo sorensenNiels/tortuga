@@ -10,7 +10,7 @@ use futures_util::future::{AbortHandle, abortable};
 use tortuga_core::workflow::{self, FlowEnd, Progress, RunOptions, Workflow};
 use tortuga_core::{Item, data};
 
-use super::{Modal, TortugaUi, upload_path};
+use super::{Guarded, Modal, TortugaUi, upload_path};
 use crate::components::SidebarAction;
 use crate::components::{
     ConfirmDialog, DialogResult, IterationView, NameDialog, RequestChoice, RunView,
@@ -76,6 +76,7 @@ impl TortugaUi {
 
     /// Shows a workflow in the main area (R-FLOW-2).
     pub(super) fn open_workflow(&mut self, key: WorkflowKey) {
+        self.auto_save();
         if !self.workflows.editors.contains_key(&key) {
             let Some(saved) = self.saved_workflow(&key) else {
                 return;
@@ -334,7 +335,7 @@ impl TortugaUi {
             .collect()
     }
 
-    fn workflow_dirty(&self, key: &WorkflowKey) -> bool {
+    pub(super) fn workflow_dirty(&self, key: &WorkflowKey) -> bool {
         let saved = self.saved_workflow(key);
         self.workflows
             .editors
@@ -445,7 +446,33 @@ impl TortugaUi {
     }
 
     /// Runs the open draft of a workflow in the background (R-FLOW-3, R-FLOW-4).
+    /// Runs a workflow; against a protected environment it asks first when a step may
+    /// change data (R-SRV-9).
     pub(super) fn run_workflow(&mut self, key: &WorkflowKey, egui_ctx: &egui::Context) {
+        self.open_workflow(key.clone());
+        let draft = self.workflows.editors.get(key).map(|o| &o.draft);
+        let writes = match (draft, self.state.collection(&key.root)) {
+            (Some(draft), Some(c)) => draft.writes(c),
+            _ => Vec::new(),
+        };
+        let env = self.state.protected_environment(&key.root);
+        let (Some(env), false) = (env, writes.is_empty()) else {
+            return self.start_workflow(key, egui_ctx);
+        };
+        let name = draft.map_or_else(String::new, |d| d.name.clone());
+        let dialog = ConfirmDialog {
+            title: format!("Run “{name}” against “{env}”?"),
+            message: format!(
+                "“{env}” is a protected environment, and these steps may change its data: {}.",
+                writes.join(", ")
+            ),
+            confirm_label: "Run".into(),
+        };
+        self.modal = Some(Modal::Protected(Guarded::RunWorkflow(key.clone()), dialog));
+    }
+
+    /// Runs a workflow, without asking.
+    pub(super) fn start_workflow(&mut self, key: &WorkflowKey, egui_ctx: &egui::Context) {
         self.open_workflow(key.clone());
         let Some((collection, environment)) = self.state.collection_for_run(&key.root) else {
             return;
@@ -862,5 +889,89 @@ mod tests {
             .workflow(id)
             .expect("workflow")
             .clone()
+    }
+
+    /// R-SET-11: the open workflow is saved like a request.
+    #[test]
+    fn workflow_edits_are_saved_too() {
+        let (mut ui, root, key) = crate::shell::tests::setup("auto-save-workflow");
+        ui.state.update_settings(|s| s.editing.auto_save = true);
+        ui.create_workflow(&root, "Smoke");
+        let wf = ui.workflows.open.clone().expect("opened");
+        let open = ui.workflows.editors.get_mut(&wf).expect("editor");
+        open.draft.steps.push(Step::new(&key.path));
+        crate::shell::auto_save::tests::run(&mut ui, 1.5, false);
+        assert!(!ui.workflow_dirty(&wf));
+        let text =
+            std::fs::read_to_string(root.join("workflows").join("smoke.toml")).expect("file");
+        assert!(text.contains("[[steps]]"), "{text}");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// Marks the project's only environment protected, and makes it the active one.
+    fn protect(ui: &mut TortugaUi, root: &Path) {
+        use tortuga_core::format::Environment;
+        let production = Environment {
+            id: "production".into(),
+            name: "Production".into(),
+            protected: true,
+            ..Environment::default()
+        };
+        ui.state
+            .run(root, |c, s| c.save_config(s, &c.manifest, &[production]));
+    }
+
+    /// R-SRV-9: to a protected environment a POST waits for a yes, a GET goes at once;
+    /// a workflow with a step that writes asks before it runs.
+    #[test]
+    fn protected_environments_ask_before_writes() {
+        let (mut ui, root, key) = crate::shell::tests::setup("protected-send");
+        protect(&mut ui, &root);
+        assert_eq!(
+            ui.state.protected_environment(&root).as_deref(),
+            Some("Production")
+        );
+        let ctx = egui::Context::default();
+        ui.send(&ctx);
+        assert!(ui.modal.is_none() && ui.in_flight.is_some(), "a GET goes");
+
+        ui.in_flight = None;
+        ui.current.method = HttpMethod::Delete;
+        ui.send(&ctx);
+        let Some(crate::shell::Modal::Protected(crate::shell::Guarded::Send, d)) = &ui.modal else {
+            panic!("asks first: {:?}", ui.modal.is_some())
+        };
+        assert_eq!(d.title, "Send DELETE to “Production”?");
+        assert!(ui.in_flight.is_none(), "nothing sent yet");
+
+        ui.modal = None;
+        ui.current.method = HttpMethod::Get;
+        ui.save();
+        let wf = {
+            ui.create_workflow(&root, "Smoke");
+            ui.workflows.open.clone().expect("opened")
+        };
+        ui.run_workflow(&wf, &ctx);
+        assert!(ui.modal.is_none(), "no steps that write: no question");
+        let mut post = Request::new(HttpMethod::Post, "https://a.test/orders");
+        post.name = "Create order".into();
+        let path = ui
+            .state
+            .run(&root, |c, s| c.new_request(s, Path::new(""), &post))
+            .expect("request");
+        let c = Collection::open(&FsStorage, &root).expect("open");
+        let mut saved = c.workflow(&wf.id).expect("workflow").clone();
+        saved.steps = vec![Step::new(&path)];
+        ui.state.run(&root, |c, s| c.save_workflow(s, &saved));
+        ui.workflows.editors.clear();
+        ui.run_workflow(&wf, &ctx);
+        let Some(crate::shell::Modal::Protected(crate::shell::Guarded::RunWorkflow(_), d)) =
+            &ui.modal
+        else {
+            panic!("asks before the run")
+        };
+        assert!(d.message.contains("POST Create order"), "{}", d.message);
+        let _ = key;
+        std::fs::remove_dir_all(root).expect("clean up");
     }
 }

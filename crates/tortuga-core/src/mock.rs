@@ -487,6 +487,8 @@ pub fn environment(collection: &Collection, base: &str) -> Environment {
         name: "Mock".to_owned(),
         seq: None,
         color: None,
+        // Only answers from examples: nothing to protect (R-SRV-9).
+        protected: false,
         servers: servers
             .iter()
             .map(|s| {

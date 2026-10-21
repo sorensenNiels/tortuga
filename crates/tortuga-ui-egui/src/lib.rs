@@ -19,10 +19,11 @@ mod mocks;
 mod shell;
 mod state;
 mod theme;
+mod variables;
 
 pub use host::{
     BoxTask, DraftConflict, Host, LocalState, MockHandle, OnMockHit, SavedDraft, SavedDrafts,
-    SavedTab, SavedTabs, SavedWorkflowDraft, Workspace,
+    SavedSplit, SavedTab, SavedTabs, SavedWorkflowDraft, Workspace,
 };
 pub use shell::TortugaUi;
 
@@ -256,7 +257,7 @@ mod tests {
         let mut harness = test_host::harness(|ui| {
             for symbol in [
                 "⏵", "⏷", "⏺", "⚠", "🗙", "⚙", "✏", "•", "…", "—", "“", "”", "🐢", "·", "🔒", "›",
-                "↑", "↓", "→", "☰", "✓", "✗",
+                "↑", "↓", "→", "☰", "✓", "✗", "−",
             ] {
                 ui.label(symbol);
                 ui.monospace(symbol);

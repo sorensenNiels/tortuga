@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use tortuga_core::import::ImportKind;
-use tortuga_core::settings::ImporterSettings;
+use tortuga_core::settings::{Feature, ImporterSettings};
 use tortuga_core::{Item, Request};
 
 use super::{Modal, Selection, TortugaUi, WorkspaceAction};
@@ -27,6 +27,8 @@ pub(super) enum PaletteChoice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Command {
     Send,
+    /// The shown request to each of its project's environments (R-SRV-10).
+    SendEverywhere,
     Save,
     Revert,
     CopyCurl,
@@ -39,6 +41,10 @@ pub(super) enum Command {
     ProjectDefaults(PathBuf),
     Settings,
     History,
+    /// Hide or show the sidebar (R-COL-26).
+    ToggleSidebar,
+    /// The keyboard shortcut sheet (R-COL-27).
+    Shortcuts,
     /// Workflows (R-FLOW-2, R-FLOW-3) and runtime variables (R-TEST-5).
     RunWorkflow(crate::state::WorkflowKey),
     NewWorkflow(PathBuf),
@@ -166,13 +172,82 @@ impl TortugaUi {
                 run("Mock server…", Command::ShowMock(root.clone())),
                 run("Stop mock server", Command::StopMock(root.clone())),
             ]
-        } else {
+        } else if self.state.settings.features.enabled(Feature::Examples) {
             vec![run("Start mock server", Command::StartMock(root.clone()))]
+        } else {
+            // Turned off (R-SET-13); one that is running can still be stopped.
+            Vec::new()
         };
         items
             .into_iter()
             .map(|item| item.detail(c.name()).keywords("mock examples"))
             .collect()
+    }
+
+    /// The project the palette's commands are for (R-COL-25): the open workflow's, else
+    /// the selected request's, else the first one.
+    fn current_project(&self) -> Option<&Path> {
+        self.workflows
+            .open
+            .as_ref()
+            .map(|w| w.root.as_path())
+            .or_else(|| self.selection.as_ref().map(|k| k.root.as_path()))
+            .or_else(|| self.state.collections.first().map(|c| c.root.as_path()))
+    }
+
+    /// The commands for project `c`: its workflows, environments, defaults and mock.
+    fn project_items(&self, c: &tortuga_core::Collection) -> Vec<PaletteItem<PaletteChoice>> {
+        let run =
+            |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+        let workflows = self.state.settings.features.enabled(Feature::Workflows);
+        let mut items = Vec::new();
+        for w in c.workflows.iter().filter(|_| workflows) {
+            let key = crate::state::WorkflowKey {
+                root: c.root.clone(),
+                id: w.id.clone(),
+            };
+            items.push(
+                run(
+                    &format!("Run workflow: {}", w.name),
+                    Command::RunWorkflow(key),
+                )
+                .detail(c.name())
+                .keywords("test"),
+            );
+        }
+        if workflows && !c.read_only {
+            items.push(run("New workflow…", Command::NewWorkflow(c.root.clone())).detail(c.name()));
+        }
+        items.push(
+            run(
+                "Environments, servers and variables…",
+                Command::Environments(c.root.clone()),
+            )
+            .detail(c.name()),
+        );
+        if !c.read_only
+            && self.state.settings.importers.enabled(ImportKind::Postman)
+            && self.state.host.can_pick_folders()
+        {
+            items.push(
+                run(
+                    "Import Postman environments…",
+                    Command::ImportEnvironments(c.root.clone()),
+                )
+                .detail(c.name())
+                .keywords("postman environment json"),
+            );
+        }
+        items.push(
+            run(
+                "Project defaults…",
+                Command::ProjectDefaults(c.root.clone()),
+            )
+            .detail(c.name())
+            .keywords("headers auth timeout redirects cookies settings"),
+        );
+        items.extend(self.mock_items(c));
+        items
     }
 
     /// The command palette's commands; those that don't apply right now are left out.
@@ -181,6 +256,9 @@ impl TortugaUi {
             |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
         let mut items = vec![
             run("Send request", Command::Send).hint("Ctrl+Enter"),
+            run("Send to every environment", Command::SendEverywhere)
+                .hint("Ctrl+Shift+Enter")
+                .keywords("compare environments all"),
             run("Quick open: go to a request", Command::QuickOpen).hint("Ctrl+P"),
         ];
         let key = self.selection.clone();
@@ -206,55 +284,14 @@ impl TortugaUi {
                 );
             }
         }
+        let current = self.current_project();
         for c in &self.state.collections {
-            for w in &c.workflows {
-                let key = crate::state::WorkflowKey {
-                    root: c.root.clone(),
-                    id: w.id.clone(),
-                };
-                items.push(
-                    run(
-                        &format!("Run workflow: {}", w.name),
-                        Command::RunWorkflow(key),
-                    )
-                    .detail(c.name())
-                    .keywords("test"),
-                );
-            }
-            if !c.read_only {
-                items.push(
-                    run("New workflow…", Command::NewWorkflow(c.root.clone())).detail(c.name()),
-                );
-            }
-            items.push(
-                run(
-                    "Environments, servers and variables…",
-                    Command::Environments(c.root.clone()),
-                )
-                .detail(c.name()),
-            );
-            if !c.read_only
-                && self.state.settings.importers.enabled(ImportKind::Postman)
-                && self.state.host.can_pick_folders()
-            {
-                items.push(
-                    run(
-                        "Import Postman environments…",
-                        Command::ImportEnvironments(c.root.clone()),
-                    )
-                    .detail(c.name())
-                    .keywords("postman environment json"),
-                );
-            }
-            items.push(
-                run(
-                    "Project defaults…",
-                    Command::ProjectDefaults(c.root.clone()),
-                )
-                .detail(c.name())
-                .keywords("headers auth timeout redirects cookies settings"),
-            );
-            items.extend(self.mock_items(c));
+            // Other projects' commands only when the text names the project (R-COL-25).
+            let elsewhere = Some(c.root.as_path()) != current;
+            items.extend(self.project_items(c).into_iter().map(|mut item| {
+                item.elsewhere = elsewhere;
+                item
+            }));
         }
         let root = self.selection.as_ref().map(|k| k.root.clone());
         let place = root
@@ -268,6 +305,21 @@ impl TortugaUi {
         );
         items.extend(workspace_commands(&self.state.workspace().name));
         items.push(run("Settings…", Command::Settings).keywords("preferences options"));
+        let sidebar = if self.state.sidebar_hidden() {
+            "Show the sidebar"
+        } else {
+            "Hide the sidebar"
+        };
+        items.push(
+            run(sidebar, Command::ToggleSidebar)
+                .hint("Ctrl+B")
+                .keywords("projects panel toggle"),
+        );
+        items.push(
+            run("Keyboard shortcuts", Command::Shortcuts)
+                .hint("F1")
+                .keywords("keys help"),
+        );
         if self.state.host.keeps_history() {
             items.push(run("Show history", Command::History).keywords("sent past responses"));
         }
@@ -307,6 +359,7 @@ impl TortugaUi {
                     self.send(ctx);
                 }
             }
+            Command::SendEverywhere => self.send_everywhere(ctx),
             Command::Save => self.save(),
             Command::Revert => self.revert(),
             Command::CopyCurl => self.copy_as_curl(ctx),
@@ -332,7 +385,7 @@ impl TortugaUi {
             Command::Environment(name) => self.state.set_workspace_environment(&name),
             Command::MockEnvironment => self.state.use_mock_environment(),
             Command::StartMock(root) => self.start_mock(&root),
-            Command::StopMock(root) => self.state.stop_mock(&root),
+            Command::StopMock(root) => self.stop_mock(&root),
             Command::ShowMock(root) => self.show_mock(root),
             Command::Workspace(i) => self.on_workspace(WorkspaceAction::Switch(i)),
             Command::Environments(root) => {
@@ -347,7 +400,12 @@ impl TortugaUi {
             Command::Settings => {
                 self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
             }
-            Command::History => self.sidebar_view = super::SidebarView::History,
+            Command::History => {
+                self.state.set_sidebar_hidden(false);
+                self.sidebar_view = super::SidebarView::History;
+            }
+            Command::ToggleSidebar => self.toggle_sidebar(),
+            Command::Shortcuts => self.show_shortcuts(ctx),
             Command::RunWorkflow(key) => self.run_workflow(&key, ctx),
             Command::NewWorkflow(root) => self.new_workflow_dialog(root),
             Command::RuntimeVars(root) => self.show_runtime_vars(root),
@@ -430,5 +488,56 @@ mod tests {
                 "Import Postman collection…"
             ]
         );
+    }
+
+    /// R-SET-13: features that are off leave the palette, the sidebar and the editor's
+    /// tabs, except where a request already uses them.
+    #[test]
+    fn features_that_are_off_are_hidden() {
+        use egui_kittest::kittest::Queryable;
+
+        let (mut ui, root, key) = crate::shell::tests::setup("features-off");
+        ui.create_workflow(&root, "Smoke");
+        ui.select(Some(key.clone()));
+        let labels = |ui: &TortugaUi| -> Vec<String> {
+            ui.command_items().into_iter().map(|i| i.label).collect()
+        };
+        let has = |labels: &[String], label: &str| labels.iter().any(|l| l == label);
+        let before = labels(&ui);
+        assert!(has(&before, "Run workflow: Smoke") && has(&before, "Start mock server"));
+
+        ui.state.update_settings(|s| {
+            for feature in [Feature::Workflows, Feature::Examples, Feature::Scripts] {
+                s.features.set_enabled(feature, false);
+            }
+        });
+        let after = labels(&ui);
+        for gone in ["Run workflow: Smoke", "New workflow…", "Start mock server"] {
+            assert!(!has(&after, gone), "{gone} is hidden");
+        }
+        {
+            ui.styled = false;
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1200.0, 900.0))
+                .build_ui(|egui_ui| ui.ui(egui_ui));
+            h.run();
+            assert!(h.query_by_label("Scripts").is_none(), "no Scripts tab");
+            assert!(h.query_by_label("Examples").is_none(), "no Examples tab");
+            assert!(
+                h.query_by_label_contains("Workflows").is_none(),
+                "no workflows"
+            );
+            h.get_by_label("Docs");
+        }
+
+        ui.current.scripts.tests = "test(\"ok\", () => {});".into();
+        ui.styled = false;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1200.0, 900.0))
+            .build_ui(|egui_ui| ui.ui(egui_ui));
+        h.run();
+        h.get_by_label("Scripts (⏺)");
+        drop(h);
+        std::fs::remove_dir_all(root).expect("clean up");
     }
 }

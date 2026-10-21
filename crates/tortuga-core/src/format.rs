@@ -91,6 +91,10 @@ pub struct Environment {
         deserialize_with = "known_color"
     )]
     pub color: Option<EnvironmentColor>,
+    /// Ask before anything but GET, HEAD or OPTIONS is sent to it, and before a workflow
+    /// runs against it (R-SRV-9), e.g. for production. Shared, so the team decides once.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
     /// Server id → base URL.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub servers: BTreeMap<String, String>,
@@ -887,6 +891,7 @@ password = "{{token}}"
             name: "Development".into(),
             seq: Some(1),
             color: None,
+            protected: false,
             servers: BTreeMap::from([("users".into(), "http://localhost:8080".into())]),
             variables: BTreeMap::from([("b".into(), "2".into()), ("a".into(), "1".into())]),
         };
@@ -896,6 +901,33 @@ password = "{{token}}"
             "name = \"Development\"\nseq = 1\n\n[servers]\nusers = \"http://localhost:8080\"\n\n[variables]\na = \"1\"\nb = \"2\"\n"
         );
         assert_eq!(parse_environment(&text, "dev"), Ok(env));
+    }
+
+    /// R-SRV-9: `protected = true` is written only when on, and files without it load.
+    #[test]
+    fn protected_environments_round_trip() {
+        let env = Environment {
+            id: "prod".into(),
+            name: "Production ü😀".into(),
+            protected: true,
+            ..Environment::default()
+        };
+        let text = write_environment(&env);
+        assert!(text.contains("protected = true\n"), "{text}");
+        assert_eq!(parse_environment(&text, "prod").expect("read"), env);
+        let plain = write_environment(&Environment {
+            protected: false,
+            ..env
+        });
+        assert!(
+            !plain.contains("protected"),
+            "only written when on: {plain}"
+        );
+        assert!(
+            !parse_environment(&plain, "prod")
+                .expect("old file")
+                .protected
+        );
     }
 
     /// R-SRV-8: an environment's colour is saved by name; one a newer build added

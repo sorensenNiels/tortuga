@@ -37,6 +37,8 @@ Options:
   --port N              The mock's port
   --check-examples      Also check each response against its request's examples:
                         status, Content-Type and JSON shape (a difference fails)
+  --allow-protected     Run steps that may change data (not GET, HEAD or OPTIONS)
+                        against an environment marked protected
   --insecure            Do not verify TLS certificates
   --cacert FILE         Also trust the CA certificates in this PEM file (repeatable)
   --report junit|json   Write a report ...
@@ -63,6 +65,8 @@ struct Args {
     vars: BTreeMap<String, String>,
     workspace: Option<PathBuf>,
     insecure: bool,
+    /// Whether steps that write may run against a protected environment (R-SRV-9).
+    protected: ProtectedRuns,
     cacerts: Vec<PathBuf>,
     report: Option<(ReportKind, PathBuf)>,
     /// Run against the project's mock (R-MOCK-5).
@@ -163,6 +167,7 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
             }
             "--workspace" => args.workspace = Some(value("--workspace")?.into()),
             "--insecure" | "-k" => args.insecure = true,
+            "--allow-protected" => args.protected = ProtectedRuns::Allowed,
             "--cacert" => args.cacerts.push(value("--cacert")?.into()),
             "--report" => {
                 report_kind = Some(match value("--report")?.as_str() {
@@ -228,6 +233,38 @@ fn read_workspace(path: &Path) -> Result<tortuga_core::workspace::WorkspaceFile,
     tortuga_core::workspace::read(&text, path).map_err(|e| e.to_string())
 }
 
+/// Whether a run may change data in a protected environment (R-SRV-9).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum ProtectedRuns {
+    #[default]
+    Refused,
+    /// `--allow-protected`.
+    Allowed,
+}
+
+/// Refuses a run whose steps may change data against a protected environment, unless
+/// `--allow-protected` says so (R-SRV-9).
+fn check_protected(
+    collection: &Collection,
+    workflow: &Workflow,
+    environment: Option<&str>,
+    protected: ProtectedRuns,
+) -> Result<(), String> {
+    let Some(env) = environment.and_then(|id| collection.environment(id)) else {
+        return Ok(());
+    };
+    let writes = workflow.writes(collection);
+    if !env.protected || protected == ProtectedRuns::Allowed || writes.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "environment {} is protected and this run may change its data ({}); add \
+         --allow-protected to run it anyway",
+        env.name,
+        writes.join(", ")
+    ))
+}
+
 /// The id of the environment called `name` (by name or id), if one is asked for.
 fn environment_id(collection: &Collection, name: Option<&str>) -> Result<Option<String>, String> {
     let Some(name) = name else { return Ok(None) };
@@ -254,6 +291,14 @@ fn run(args: &Args) -> Result<bool, String> {
     let collection = Collection::open(&FsStorage, &args.project).map_err(|e| e.to_string())?;
     let workflow = find_target(&collection, args.target.as_deref())?;
     let environment = environment_id(&collection, args.env.as_deref())?;
+    if !args.mock {
+        check_protected(
+            &collection,
+            &workflow,
+            environment.as_deref(),
+            args.protected,
+        )?;
+    }
     let data_file = args
         .data
         .clone()

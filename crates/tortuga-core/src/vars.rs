@@ -268,7 +268,7 @@ impl Context {
 /// on every send, R-VAR-8). Cookies from the jar are not included.
 pub fn preview(request: &Request, ctx: &Context) -> Result<Request> {
     let mut ctx = ctx.masked();
-    for name in used_in(request, &ctx) {
+    for name in names_in(request, &ctx) {
         let placeholder = format!("{{{{{name}}}}}");
         ctx.variables.entry(name).or_insert(placeholder);
     }
@@ -412,14 +412,15 @@ pub fn prepare(request: &Request, ctx: &Context) -> Result<Request> {
 
 /// Undefined variables used anywhere in the request (for live warnings, R-VAR-5).
 pub fn undefined_in(request: &Request, ctx: &Context) -> Vec<String> {
-    used_in(request, ctx)
+    names_in(request, ctx)
         .into_iter()
         .filter(|n| !ctx.is_defined(n))
         .collect()
 }
 
-/// Every variable name used anywhere in the request, sorted.
-fn used_in(request: &Request, ctx: &Context) -> Vec<String> {
+/// Every variable name used anywhere in the request, inherited headers and auth
+/// included, sorted.
+pub fn names_in(request: &Request, ctx: &Context) -> Vec<String> {
     let mut texts: Vec<&str> = vec![&request.url];
     texts.extend(ctx.auth_for(request).fields());
     texts.extend(request.path_vars.iter().map(|v| v.value.as_str()));
@@ -453,6 +454,95 @@ fn used_in(request: &Request, ctx: &Context) -> Vec<String> {
         .map(str::to_owned)
         .collect();
     set.into_iter().collect()
+}
+
+/// Where each `{{name}}` is in `text`: the byte range of the whole `{{…}}` and the
+/// name, in order of appearance (R-VAR-9).
+pub fn spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    scan(text, |part| match part {
+        Part::Text(t) => at += t.len(),
+        Part::Var(name) => {
+            // `scan` gives the trimmed name; the braces and spaces are around it.
+            let end = text
+                .get(at..)
+                .and_then(|rest| rest.find("}}"))
+                .map_or(text.len(), |i| at + i + 2);
+            found.push((at..end, name));
+            at = end;
+        }
+    });
+    found
+}
+
+/// Where a variable's value comes from (R-VAR-9), from the level that wins down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// Captured or set by a script while the app runs (R-TEST-5).
+    Runtime,
+    /// Captured or set as `workspace.<name>` (R-WS-8).
+    WorkspaceRuntime,
+    /// This machine's value of a secret variable (R-VAR-3).
+    Secret,
+    /// The environment of that name (R-VAR-2).
+    Environment(String),
+    /// The folder of that name, at `path` in the project (R-COL-11).
+    Folder {
+        name: String,
+        path: std::path::PathBuf,
+    },
+    /// The project's own value (`tortuga.toml`).
+    Project,
+    /// The workspace's variables (R-WS-8).
+    Workspace,
+    /// A dynamic variable: a new value at every use (R-VAR-8).
+    Dynamic,
+}
+
+impl Source {
+    /// "the environment “Staging”", to show after "From".
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Runtime => "a capture or script, kept while the app runs".to_owned(),
+            Self::WorkspaceRuntime => {
+                "a capture or script for the workspace, kept while the app runs".to_owned()
+            }
+            Self::Secret => "this computer's secret value".to_owned(),
+            Self::Environment(name) => format!("the environment “{name}”"),
+            Self::Folder { name, .. } => format!("the folder “{name}”"),
+            Self::Project => "the project".to_owned(),
+            Self::Workspace => "the workspace".to_owned(),
+            Self::Dynamic => "a dynamic variable: a new value every time".to_owned(),
+        }
+    }
+}
+
+/// Which of the project's levels gives `name` its value for the request at `path` with
+/// environment `env`: the environment, else the nearest folder, else the project; by
+/// the same rules as [`Context::for_request_in`] (an empty value inherits).
+pub fn project_source(
+    collection: &Collection,
+    env: Option<&crate::format::Environment>,
+    path: Option<&std::path::Path>,
+    name: &str,
+) -> Option<Source> {
+    let set = |vars: &BTreeMap<String, String>| vars.get(name).is_some_and(|v| !v.is_empty());
+    if let Some(env) = env.filter(|e| set(&e.variables)) {
+        return Some(Source::Environment(env.name.clone()));
+    }
+    let folders = path.map(|p| collection.folders_of(p)).unwrap_or_default();
+    if let Some(folder) = folders.iter().rev().find(|f| set(&f.defaults.variables)) {
+        return Some(Source::Folder {
+            name: folder.name.clone(),
+            path: folder.path.clone(),
+        });
+    }
+    collection
+        .manifest
+        .variables
+        .contains_key(name)
+        .then_some(Source::Project)
 }
 
 /// The variable names used in `text`, in order of appearance.
@@ -958,5 +1048,76 @@ mod tests {
         let scratch = Context::default();
         let err = prepare(&r, &scratch).expect_err("relative path without a project");
         assert!(err.to_string().contains("full path"), "{err}");
+    }
+
+    /// R-VAR-9: each `{{name}}` with its place, spaces inside the braces included,
+    /// after non-ASCII text, and not text that only looks like one.
+    #[test]
+    fn variables_are_found_with_their_place() {
+        let text = "ü😀/{{ base }}/x{{id}}{{}}{{ open";
+        let found = spans(text);
+        let parts: Vec<(&str, &str)> = found
+            .iter()
+            .map(|(r, name)| (&text[r.clone()], *name))
+            .collect();
+        assert_eq!(parts, [("{{ base }}", "base"), ("{{id}}", "id")]);
+        assert_eq!(spans(""), []);
+    }
+
+    /// R-VAR-9: the environment wins, then the nearest folder, then the project; an
+    /// empty value inherits.
+    #[test]
+    fn the_source_of_a_value() {
+        use crate::storage::FsStorage;
+        let dir = tempfile::tempdir().expect("dir");
+        let c = Collection::create(&FsStorage, dir.path(), "C").expect("create");
+        let mut manifest = c.manifest.clone();
+        manifest.variables = [
+            ("a".to_owned(), "p".to_owned()),
+            ("b".to_owned(), "p".to_owned()),
+            ("c".to_owned(), "p".to_owned()),
+        ]
+        .into();
+        c.save_config(&FsStorage, &manifest, &[]).expect("config");
+        let folder = c
+            .new_folder(&FsStorage, std::path::Path::new(""), "Users ü")
+            .expect("folder");
+        let c = Collection::open(&FsStorage, dir.path()).expect("open");
+        let defaults = crate::format::FolderDefaults {
+            variables: [
+                ("b".to_owned(), "f".to_owned()),
+                ("c".to_owned(), String::new()),
+            ]
+            .into(),
+            ..crate::format::FolderDefaults::default()
+        };
+        c.save_folder_defaults(&FsStorage, &folder, &defaults)
+            .expect("defaults");
+        let c = Collection::open(&FsStorage, dir.path()).expect("open");
+        let env = crate::format::Environment {
+            name: "Staging".into(),
+            variables: [
+                ("a".to_owned(), "e".to_owned()),
+                ("b".to_owned(), String::new()),
+            ]
+            .into(),
+            ..crate::format::Environment::default()
+        };
+        let request = folder.join("get.toml");
+        let at = |name| project_source(&c, Some(&env), Some(&request), name);
+        assert_eq!(at("a"), Some(Source::Environment("Staging".into())));
+        assert!(matches!(at("b"), Some(Source::Folder { name, .. }) if name == "Users ü"));
+        assert_eq!(
+            at("c"),
+            Some(Source::Project),
+            "an empty folder value inherits"
+        );
+        assert_eq!(at("nope"), None);
+        assert_eq!(dynamic::describe("$guid"), Some("a random UUID"));
+        assert!(
+            dynamic::SUGGESTED
+                .iter()
+                .all(|(n, _)| dynamic::is_dynamic(n))
+        );
     }
 }

@@ -11,10 +11,14 @@ use egui::{
     Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Margin,
     Response, RichText, Role, Stroke, TextStyle, Theme, Ui, Visuals, WidgetInfo,
 };
+use tortuga_core::settings::Density;
 use tortuga_core::{EnvironmentColor, HttpMethod};
 
 /// Named font family for headings and emphasis (Inter `SemiBold`).
 pub const SEMIBOLD: &str = "semibold";
+
+/// The name egui knows the user's code font by (R-SET-10).
+const CODE_FONT: &str = "user-code-font";
 
 /// Width of a scroll bar while the pointer is on it (floating bars are thinner otherwise).
 const SCROLL_BAR_WIDTH: f32 = 6.0;
@@ -97,7 +101,31 @@ pub fn palette(ui: &Ui) -> Palette {
 
 /// Installs Tortuga's fonts and light/dark styles.
 pub fn install(ctx: &Context) {
-    ctx.set_fonts(fonts());
+    ctx.set_fonts(fonts(None));
+    set_sizes(ctx, Density::Comfortable, 1.0);
+    ctx.all_styles_mut(|style| {
+        fixed_spacing(&mut style.spacing);
+        style.interaction.tooltip_delay = 0.3;
+    });
+    ctx.style_mut_of(Theme::Dark, |s| s.visuals = visuals(&DARK, true));
+    ctx.style_mut_of(Theme::Light, |s| s.visuals = visuals(&LIGHT, false));
+}
+
+/// Spacing that doesn't change with the density.
+fn fixed_spacing(s: &mut egui::style::Spacing) {
+    s.menu_margin = Margin::same(6);
+    s.window_margin = Margin::same(20);
+    s.combo_height = 320.0;
+    s.scroll = egui::style::ScrollStyle {
+        // Thin until hovered, then 6 px rather than egui's 10.
+        bar_width: SCROLL_BAR_WIDTH,
+        ..egui::style::ScrollStyle::floating()
+    };
+}
+
+/// Text sizes, with code at `code_scale` of its usual size, and the room around
+/// controls for `density` (R-SET-10).
+pub fn set_sizes(ctx: &Context, density: Density, code_scale: f32) {
     ctx.all_styles_mut(|style| {
         use TextStyle::{Body, Button, Heading, Monospace, Small};
         let semibold = FontFamily::Name(SEMIBOLD.into());
@@ -106,28 +134,32 @@ pub fn install(ctx: &Context) {
             (Body, FontId::proportional(13.5)),
             (Button, FontId::proportional(13.5)),
             (Heading, FontId::new(17.0, semibold)),
-            (Monospace, FontId::monospace(12.5)),
+            (Monospace, FontId::monospace(12.5 * code_scale)),
         ]
         .into();
         let s = &mut style.spacing;
-        s.item_spacing = egui::vec2(8.0, 6.0);
-        s.button_padding = egui::vec2(10.0, 4.0);
-        s.interact_size.y = 28.0;
-        s.menu_margin = Margin::same(6);
-        s.window_margin = Margin::same(20);
-        s.combo_height = 320.0;
-        s.scroll = egui::style::ScrollStyle {
-            // Thin until hovered, then 6 px rather than egui's 10.
-            bar_width: SCROLL_BAR_WIDTH,
-            ..egui::style::ScrollStyle::floating()
-        };
-        style.interaction.tooltip_delay = 0.3;
+        match density {
+            Density::Comfortable => {
+                s.item_spacing = egui::vec2(8.0, 6.0);
+                s.button_padding = egui::vec2(10.0, 4.0);
+                s.interact_size.y = 28.0;
+            }
+            Density::Compact => {
+                s.item_spacing = egui::vec2(6.0, 3.0);
+                s.button_padding = egui::vec2(7.0, 2.0);
+                s.interact_size.y = 22.0;
+            }
+        }
     });
-    ctx.style_mut_of(Theme::Dark, |s| s.visuals = visuals(&DARK, true));
-    ctx.style_mut_of(Theme::Light, |s| s.visuals = visuals(&LIGHT, false));
 }
 
-fn fonts() -> FontDefinitions {
+/// Uses `code_font` (the bytes of a font file) for code, or the bundled font when
+/// `None` (R-SET-10). The bundled one stays behind it for characters it lacks.
+pub fn set_code_font(ctx: &Context, code_font: Option<Vec<u8>>) {
+    ctx.set_fonts(fonts(code_font));
+}
+
+fn fonts(code_font: Option<Vec<u8>>) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let mut add = |name: &str, bytes: &'static [u8]| {
         fonts
@@ -155,6 +187,12 @@ fn fonts() -> FontDefinitions {
         .insert(FontFamily::Name(SEMIBOLD.into()), with("Inter-SemiBold"));
     let mono = fonts.families.entry(FontFamily::Monospace).or_default();
     mono.insert(0, "JetBrainsMono".to_owned());
+    if let Some(bytes) = code_font {
+        mono.insert(0, CODE_FONT.to_owned());
+        fonts
+            .font_data
+            .insert(CODE_FONT.to_owned(), Arc::new(FontData::from_owned(bytes)));
+    }
     fonts
 }
 
@@ -237,6 +275,15 @@ pub fn semibold(text: impl Into<String>) -> RichText {
 }
 
 /// Small upper-case label above a group (e.g. "COLLECTIONS").
+/// A row of buttons from the right, as tall as a button. A plain
+/// `right_to_left(Align::Center)` layout takes all the height left to centre in, so a
+/// dialog that was ever taller (another tab, an error since fixed) stays that tall.
+pub fn button_row<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), add)
+        .inner
+}
+
 pub fn section_label(ui: &mut Ui, text: &str) {
     let color = palette(ui).muted;
     ui.label(semibold(text.to_uppercase()).size(10.5).color(color));
@@ -535,14 +582,6 @@ pub fn sized_edit(ui: &mut Ui, width: f32, edit: egui::TextEdit<'_>) -> Response
 /// Background for fields that use an undefined `{{variable}}` (R-VAR-5).
 pub fn undefined_bg(ui: &Ui) -> Color32 {
     palette(ui).warning_bg
-}
-
-/// Whether `text` uses any of the `undefined` variable names.
-pub fn uses_undefined(text: &str, undefined: &[String]) -> bool {
-    !undefined.is_empty()
-        && tortuga_core::vars::names(text)
-            .iter()
-            .any(|n| undefined.iter().any(|u| u == n))
 }
 
 // ---------------------------------------------------------------- buttons

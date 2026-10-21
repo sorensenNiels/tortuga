@@ -212,3 +212,78 @@ fn errors_exit_with_2() {
     let (code, stdout, _) = cli(&["--version"], &[]);
     assert_eq!((code, stdout.starts_with("tortuga-cli ")), (0, true));
 }
+
+/// R-SRV-9: against a protected environment, a run that may change data is refused
+/// unless `--allow-protected` is given; one that only reads runs as usual.
+#[tokio::test(flavor = "multi_thread")]
+async fn protected_environments_need_allow_protected() {
+    let server = server().await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let project_dir = dir.path().join("shop");
+    project(&project_dir, &server.uri());
+    let col = Collection::open(&FS, &project_dir).expect("open");
+    let production = tortuga_core::format::Environment {
+        id: "production".into(),
+        name: "Production".into(),
+        protected: true,
+        ..tortuga_core::format::Environment::default()
+    };
+    col.save_config(&FS, &col.manifest, &[production])
+        .expect("environment");
+    let p = project_dir.to_str().expect("utf-8");
+    let secret = [("TORTUGA_VAR_api_key", "k-1")];
+
+    let (code, stdout, stderr) = cli(
+        &[
+            "run",
+            p,
+            "Lifecycle",
+            "--env",
+            "Production",
+            "--var",
+            "user=ann",
+        ],
+        &secret,
+    );
+    assert_eq!(code, 2, "{stdout}\n{stderr}");
+    assert!(stderr.contains("Production is protected"), "{stderr}");
+    assert!(stderr.contains("POST Log in"), "{stderr}");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("recorded")
+            .is_empty()
+    );
+
+    let (code, stdout, stderr) = cli(
+        &[
+            "run",
+            p,
+            "Lifecycle",
+            "--env",
+            "Production",
+            "--var",
+            "user=ann",
+            "--allow-protected",
+        ],
+        &secret,
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+
+    let (code, stdout, stderr) = cli(
+        &[
+            "run",
+            p,
+            "get-user",
+            "--env",
+            "Production",
+            "--var",
+            "user=ann",
+            "--var",
+            "token=t-1",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "only reads: {stdout}\n{stderr}");
+}

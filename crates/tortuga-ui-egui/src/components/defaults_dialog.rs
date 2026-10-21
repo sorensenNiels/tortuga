@@ -3,12 +3,12 @@ use std::path::PathBuf;
 
 use egui::{ComboBox, Context, TextEdit, Ui};
 use tortuga_core::format::FolderDefaults;
-use tortuga_core::settings::{Inherited, Level, RequestSettings, ResolvedSettings};
+use tortuga_core::settings::{Feature, Inherited, Level, RequestSettings, ResolvedSettings};
 use tortuga_core::{Auth, Item, KeyValue};
 
 use super::auth_editor::{auth_fields, kind_picker};
 use super::request_editor::parse_timeout;
-use super::{DialogResult, description_editor, dialog, key_value_table};
+use super::{DialogResult, VarHelp, description_editor, dialog, key_value_table};
 use crate::state::AppState;
 use crate::theme;
 
@@ -138,6 +138,13 @@ impl DefaultsDialog {
         self
     }
 
+    /// Opens on the Variables tab (a folder's, from a Ctrl+click on a variable, R-VAR-9).
+    #[must_use]
+    pub fn on_variables(mut self) -> Self {
+        self.tab = Tab::Variables;
+        self
+    }
+
     /// Opens on the Description tab (from "Description…" in a menu, R-COL-22).
     #[must_use]
     pub fn on_description(mut self) -> Self {
@@ -154,15 +161,22 @@ impl DefaultsDialog {
         let folder = matches!(self.target, DefaultsTarget::Folder(..));
         let workspace = self.target == DefaultsTarget::Workspace;
         // Each project defines its own variables, so a workspace's can't be checked.
-        let undefined = if workspace {
-            Vec::new()
-        } else {
-            undefined_names(state, root.as_deref(), &self.headers, self.auth.as_ref())
+        let vars = VarHelp {
+            undefined: if workspace {
+                Vec::new()
+            } else {
+                undefined_names(state, root.as_deref(), &self.headers, self.auth.as_ref())
+            },
+            ..VarHelp::default()
         };
         dialog(ctx, "collection-defaults", &title, 640.0, false, |ui| {
             theme::hint(ui, explanation(&self.target));
             ui.add_space(8.0);
-            self.tabs(ui, folder, inherited.is_some(), !workspace);
+            // Descriptions that are off still show one that was written (R-SET-13).
+            let description = !workspace
+                && (state.settings.features.enabled(Feature::Docs)
+                    || !self.description.trim().is_empty());
+            self.tabs(ui, folder, inherited.is_some(), description);
             let file = match self.target {
                 DefaultsTarget::Folder(..) => "folder file (_folder.toml)",
                 DefaultsTarget::Project(_) => "project file (tortuga.toml)",
@@ -171,22 +185,16 @@ impl DefaultsDialog {
             };
             match self.tab {
                 Tab::Headers => {
-                    key_value_table(
-                        ui,
-                        "default-headers",
-                        &mut self.headers,
-                        "Header",
-                        &undefined,
-                    );
+                    key_value_table(ui, "default-headers", &mut self.headers, "Header", &vars);
                 }
-                Tab::Auth => auth_tab(ui, &mut self.auth, &undefined, file, folder, workspace),
+                Tab::Auth => auth_tab(ui, &mut self.auth, &vars, file, folder, workspace),
                 Tab::Variables => {
                     key_value_table(
                         ui,
                         "default-variables",
                         &mut self.variables,
                         "Variable",
-                        &[],
+                        &VarHelp::default(),
                     );
                     theme::hint(
                         ui,
@@ -432,7 +440,7 @@ fn inherit_picker(
 fn auth_tab(
     ui: &mut Ui,
     auth: &mut Option<Auth>,
-    undefined: &[String],
+    vars: &VarHelp,
     file: &str,
     folder: bool,
     workspace: bool,
@@ -459,7 +467,7 @@ fn auth_tab(
              some. A folder or request can still choose its own."
         }
         (Some(a), ..) => {
-            auth_fields(ui, "default-auth", a, undefined, file);
+            auth_fields(ui, "default-auth", a, vars, file);
             return;
         }
     };

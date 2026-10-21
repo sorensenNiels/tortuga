@@ -1,6 +1,7 @@
 //! Settings of the app itself, kept on this machine (R-LOC-1): the HTTP client's
 //! (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-SET-3), which importers are offered (R-COL-18),
-//! appearance (R-SET-4, R-SET-5, R-SET-7) and history (R-SET-6); and the request
+//! appearance (R-SET-4, R-SET-5, R-SET-7, R-SET-10), history (R-SET-6) and editing
+//! (R-SET-9, R-SET-11); and the request
 //! settings a workspace or project can override (R-SET-1, D39).
 //!
 //! Every setting has a default that suits most developers, and only settings that
@@ -27,6 +28,135 @@ pub struct AppSettings {
     pub appearance: Appearance,
     #[serde(skip_serializing_if = "HistorySettings::is_default")]
     pub history: HistorySettings,
+    #[serde(skip_serializing_if = "EditingSettings::is_default")]
+    pub editing: EditingSettings,
+    #[serde(skip_serializing_if = "FeatureSettings::is_default")]
+    pub features: FeatureSettings,
+}
+
+/// A part of the app that can be turned off where it isn't used (R-SET-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    /// Pre-request and test scripts, and captures (R-TEST-1, R-TEST-4).
+    Scripts,
+    /// Example responses and the mock server (R-MOCK-1, R-MOCK-2).
+    Examples,
+    /// Workflows (R-FLOW-1).
+    Workflows,
+    /// Descriptions of requests, folders and projects (R-COL-22).
+    Docs,
+}
+
+impl Feature {
+    /// Every feature, in the order Settings lists them.
+    pub const ALL: [Self; 4] = [Self::Scripts, Self::Examples, Self::Workflows, Self::Docs];
+
+    /// The name the settings file keeps it under.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Scripts => "scripts",
+            Self::Examples => "examples",
+            Self::Workflows => "workflows",
+            Self::Docs => "docs",
+        }
+    }
+
+    /// What Settings calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Scripts => "Scripts, tests and captures",
+            Self::Examples => "Examples and the mock server",
+            Self::Workflows => "Workflows",
+            Self::Docs => "Descriptions",
+        }
+    }
+
+    /// What turning it off hides.
+    pub fn hides(self) -> &'static str {
+        match self {
+            Self::Scripts => "the Scripts tab",
+            Self::Examples => "the Examples tab, “Save as example” and the mock server",
+            Self::Workflows => "workflows in the sidebar and the palette",
+            Self::Docs => "the Docs tab and the “Description…” items",
+        }
+    }
+}
+
+/// Which features are shown (R-SET-13). All are on by default, including ones added in
+/// later versions; turning one off only hides it, its files stay as they are.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FeatureSettings {
+    /// Ids of the features turned off ([`Feature::id`]). Kept as text, so a file written
+    /// by a newer version with features this one doesn't know still loads.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub disabled: BTreeSet<String>,
+}
+
+impl FeatureSettings {
+    pub fn is_default(&self) -> bool {
+        self.disabled.is_empty()
+    }
+
+    pub fn enabled(&self, feature: Feature) -> bool {
+        !self.disabled.contains(feature.id())
+    }
+
+    pub fn set_enabled(&mut self, feature: Feature, enabled: bool) {
+        if enabled {
+            self.disabled.remove(feature.id());
+        } else {
+            self.disabled.insert(feature.id().to_owned());
+        }
+    }
+}
+
+/// How requests open and are saved (R-SET-9, R-SET-11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditingSettings {
+    /// A single click opens a request in the preview tab (R-COL-13). Off: in a tab
+    /// that stays (R-SET-9).
+    pub preview_tab: bool,
+    /// Edits are written to disk shortly after typing stops (R-SET-11, D53).
+    pub auto_save: bool,
+}
+
+impl Default for EditingSettings {
+    fn default() -> Self {
+        Self {
+            preview_tab: true,
+            auto_save: false,
+        }
+    }
+}
+
+impl EditingSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Where the response goes relative to the request (R-SET-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RequestLayout {
+    /// The request above, the response below.
+    #[default]
+    Stacked,
+    /// The request on the left, the response on the right.
+    SideBySide,
+    /// Side by side when the window is wide enough, else stacked.
+    Automatic,
+}
+
+/// Room around controls (R-SET-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Density {
+    #[default]
+    Comfortable,
+    Compact,
 }
 
 /// Light, dark, or whatever the operating system uses (R-SET-4).
@@ -39,8 +169,8 @@ pub enum Theme {
     Dark,
 }
 
-/// How the app looks (R-SET-4, R-SET-5, R-SET-7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How the app looks (R-SET-4, R-SET-5, R-SET-7, R-SET-10).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
     pub theme: Theme,
@@ -48,6 +178,43 @@ pub struct Appearance {
     pub text_size: u16,
     /// Wrap long lines in response bodies (R-SET-7).
     pub wrap_lines: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub density: Density,
+    /// A font file for code: bodies, scripts, URLs (R-SET-10). `None`: the bundled one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_font: Option<std::path::PathBuf>,
+    /// Size of code relative to the rest of the UI, in percent (R-SET-10).
+    #[serde(skip_serializing_if = "is_hundred")]
+    pub code_size: u16,
+    #[serde(skip_serializing_if = "is_default")]
+    pub layout: RequestLayout,
+}
+
+/// Checks that `bytes`, read from `path`, are a font egui can draw with (R-SET-10):
+/// TrueType or OpenType, or a collection of them. A file that only looks right is
+/// still skipped by egui without harm, with the bundled font used instead.
+pub fn check_font_file(path: &std::path::Path, bytes: &[u8]) -> crate::Result<()> {
+    const SIGNATURES: [&[u8]; 4] = [b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf"];
+    if SIGNATURES.iter().any(|s| bytes.starts_with(s)) {
+        Ok(())
+    } else {
+        Err(crate::Error::InvalidFile {
+            path: path.to_owned(),
+            message: "not a TrueType or OpenType font (.ttf, .otf, .ttc)".into(),
+        })
+    }
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_hundred(percent: &u16) -> bool {
+    *percent == 100
 }
 
 impl Default for Appearance {
@@ -56,6 +223,10 @@ impl Default for Appearance {
             theme: Theme::System,
             text_size: 100,
             wrap_lines: false,
+            density: Density::Comfortable,
+            code_font: None,
+            code_size: 100,
+            layout: RequestLayout::Stacked,
         }
     }
 }
@@ -63,6 +234,16 @@ impl Default for Appearance {
 impl Appearance {
     /// Text sizes egui's zoom keys can reach that make sense here, in percent.
     pub const TEXT_SIZES: std::ops::RangeInclusive<u16> = 50..=300;
+    /// Code sizes the settings offer, in percent of the UI's (R-SET-10).
+    pub const CODE_SIZES: std::ops::RangeInclusive<u16> = 70..=200;
+
+    /// The code size as a factor, within [`Self::CODE_SIZES`] (R-SET-10).
+    pub fn code_scale(&self) -> f32 {
+        let percent = self
+            .code_size
+            .clamp(*Self::CODE_SIZES.start(), *Self::CODE_SIZES.end());
+        f32::from(percent) / 100.0
+    }
 
     pub fn is_default(&self) -> bool {
         *self == Self::default()
@@ -370,6 +551,7 @@ mod tests {
             theme: Theme::Dark,
             text_size: 125,
             wrap_lines: true,
+            ..Appearance::default()
         };
         settings.history.size = 0;
         let text = toml::to_string(&settings).expect("toml");
@@ -388,6 +570,97 @@ mod tests {
             ..Appearance::default()
         };
         assert_eq!(silly.zoom(), 0.5);
+    }
+
+    /// R-SET-9..11, R-HTTP-20: new settings are only written when changed, come back,
+    /// and files without them load with the defaults.
+    #[test]
+    fn editing_density_code_font_and_proxy_round_trip() {
+        let defaults = toml::to_string(&AppSettings::default()).expect("toml");
+        assert!(!defaults.contains("editing"), "{defaults}");
+        assert!(!defaults.contains("density"), "{defaults}");
+        assert!(!defaults.contains("layout"), "{defaults}");
+        assert!(!defaults.contains("proxy"), "{defaults}");
+        let back: AppSettings = toml::from_str("").expect("empty");
+        assert!(back.editing.preview_tab && !back.editing.auto_save);
+        assert_eq!(back.appearance.density, Density::Comfortable);
+        assert_eq!(back.client.proxy, crate::ProxyMode::System);
+
+        let mut settings = AppSettings {
+            editing: EditingSettings {
+                preview_tab: false,
+                auto_save: true,
+            },
+            ..AppSettings::default()
+        };
+        settings.appearance.density = Density::Compact;
+        settings.appearance.code_font = Some("/fonts/Fira Code ü😀.ttf".into());
+        settings.appearance.code_size = 125;
+        settings.appearance.layout = RequestLayout::SideBySide;
+        settings.client.proxy = crate::ProxyMode::Manual;
+        settings.client.proxy_url = "http://127.0.0.1:8080".into();
+        settings.client.no_proxy = vec!["localhost".into(), "*.internal".into()];
+        let text = toml::to_string(&settings).expect("toml");
+        assert!(
+            text.contains("proxy = \"manual\"\nproxy_url = \"http://127.0.0.1:8080\"\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[editing]\npreview_tab = false\nauto_save = true\n"),
+            "{text}"
+        );
+        assert!(text.contains("density = \"compact\"\n"), "{text}");
+        assert!(text.contains("layout = \"side-by-side\"\n"), "{text}");
+        let back: AppSettings = toml::from_str(&text).expect("read");
+        assert_eq!(back, settings);
+        assert!((back.appearance.code_scale() - 1.25).abs() < 1e-6);
+        let tiny = Appearance {
+            code_size: 1,
+            ..Appearance::default()
+        };
+        assert!((tiny.code_scale() - 0.7).abs() < 1e-6, "clamped");
+    }
+
+    /// R-SET-10: font files are recognised by their first bytes.
+    #[test]
+    fn font_files_are_checked() {
+        let path = std::path::Path::new("font.ttf");
+        for ok in [
+            &b"\x00\x01\x00\x00rest"[..],
+            b"OTTOrest",
+            b"truerest",
+            b"ttcfrest",
+        ] {
+            assert!(check_font_file(path, ok).is_ok());
+        }
+        for bad in [&b""[..], b"\x00\x01", b"<html>", "ü😀".as_bytes()] {
+            let err = check_font_file(path, bad)
+                .expect_err("not a font")
+                .to_string();
+            assert!(err.contains("not a TrueType or OpenType font"), "{err}");
+        }
+    }
+
+    /// R-SET-13: features are on by default, turned off by id, and an id a newer version
+    /// wrote still loads.
+    #[test]
+    fn features_default_on_and_round_trip() {
+        let mut settings = AppSettings::default();
+        assert!(Feature::ALL.iter().all(|f| settings.features.enabled(*f)));
+        settings.features.set_enabled(Feature::Workflows, false);
+        settings.features.set_enabled(Feature::Docs, false);
+        settings.features.set_enabled(Feature::Docs, true);
+        let text = toml::to_string(&settings).expect("toml");
+        assert!(
+            text.contains("[features]\ndisabled = [\"workflows\"]\n"),
+            "{text}"
+        );
+        let back: AppSettings = toml::from_str(&text).expect("read");
+        assert!(!back.features.enabled(Feature::Workflows));
+        assert!(back.features.enabled(Feature::Docs));
+        let newer: AppSettings =
+            toml::from_str("[features]\ndisabled = [\"graphql\"]\n").expect("newer");
+        assert!(Feature::ALL.iter().all(|f| newer.features.enabled(*f)));
     }
 
     /// Settings saved before `AppSettings` existed (HTTP settings only) still load,

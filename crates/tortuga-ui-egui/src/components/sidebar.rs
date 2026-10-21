@@ -1,3 +1,7 @@
+mod drag;
+mod menus;
+mod problems;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -6,12 +10,14 @@ use egui::{Atom, AtomExt as _, Button, Key, RichText, ScrollArea, Sides, TextEdi
 use tortuga_core::collection::Direction;
 use tortuga_core::git::{FileStatus, GitStatus};
 use tortuga_core::import::ImportKind;
-use tortuga_core::settings::ImporterSettings;
-use tortuga_core::workspace::ProjectRef;
+use tortuga_core::settings::Feature;
 use tortuga_core::{Collection, Item};
 
 use crate::state::{AppState, ItemKey, WorkflowKey};
 use crate::theme;
+use drag::{drag_and_drop, drag_label, drop_on_project};
+use menus::{MenuChoice, add_menu, apply, collection_menu, context_menu, item_menu, menu_button};
+use problems::{broken_row, missing_row};
 
 /// Something the user asked for in the sidebar; handled by the shell.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +149,16 @@ struct MenuOffers {
     /// The Postman importer is on (R-COL-18) and files can be picked, so projects offer
     /// to import its environments (R-COL-20).
     postman_environments: bool,
+    /// Which features are on (R-SET-13).
+    features: ShownFeatures,
+}
+
+/// The features a project's menu and rows show (R-SET-13).
+#[derive(Debug, Clone, Copy, Default)]
+struct ShownFeatures {
+    workflows: bool,
+    mock: bool,
+    docs: bool,
 }
 
 struct Tree<'a> {
@@ -178,49 +194,6 @@ pub struct Marks<'a> {
     pub dirty_workflows: &'a HashSet<WorkflowKey>,
 }
 
-/// The "+ Add" menu: new, existing and imported projects; only the importers that are
-/// on (R-COL-18).
-fn add_menu(ui: &mut Ui, importers: &ImporterSettings) -> Option<SidebarAction> {
-    let entries = [
-        (
-            "New project…",
-            "Create a project in a folder of your choice",
-            SidebarAction::NewProject,
-        ),
-        (
-            "Add existing projects…",
-            "Find the projects in a folder or git repository",
-            SidebarAction::AddProjects,
-        ),
-        (
-            "Import OpenAPI…",
-            "Create a project from an OpenAPI 3 description (JSON or YAML)",
-            SidebarAction::Import(ImportKind::OpenApi),
-        ),
-        (
-            "Import Postman collection…",
-            "Create a project from a Postman collection (v2.0 or v2.1 JSON)",
-            SidebarAction::Import(ImportKind::Postman),
-        ),
-        (
-            "Import .http file…",
-            "Create a project from a .http file (VS Code REST Client, JetBrains HTTP Client)",
-            SidebarAction::Import(ImportKind::Http),
-        ),
-    ];
-    let mut action = None;
-    let shown = entries.into_iter().filter(|(_, _, entry)| match entry {
-        SidebarAction::Import(kind) => importers.enabled(*kind),
-        _ => true,
-    });
-    for (label, hover, entry) in shown {
-        if ui.button(label).on_hover_text(hover).clicked() {
-            action = Some(entry);
-        }
-    }
-    action
-}
-
 /// The projects of the workspace and their requests (R-COL-1, R-COL-2, R-COL-3, R-WS-4).
 pub fn sidebar(
     ui: &mut Ui,
@@ -246,6 +219,11 @@ pub fn sidebar(
             open_folders: state.host.can_open_folders(),
             postman_environments: state.settings.importers.enabled(ImportKind::Postman)
                 && state.host.can_pick_folders(),
+            features: ShownFeatures {
+                workflows: state.settings.features.enabled(Feature::Workflows),
+                mock: state.settings.features.enabled(Feature::Examples),
+                docs: state.settings.features.enabled(Feature::Docs),
+            },
         },
         color_dots: state.collections.len() > 1,
         actions: Vec::new(),
@@ -253,9 +231,15 @@ pub fn sidebar(
 
     scratch_row(ui, scratch_selected, &mut tree);
     ui.add_space(14.0);
+    // The Projects | History tabs already say it, where there is a history (R-COL-26).
+    let heading = !state.host.keeps_history();
     egui::Sides::new().show(
         ui,
-        |ui| theme::section_label(ui, "Projects"),
+        |ui| {
+            if heading {
+                theme::section_label(ui, "Projects");
+            }
+        },
         |ui| {
             if state.host.can_pick_folders() {
                 let (response, inner) =
@@ -446,7 +430,9 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
                 )));
             }
         }
-        workflows(ui, c, depth + 1, tree);
+        if tree.offers.features.workflows {
+            workflows(ui, c, depth + 1, tree);
+        }
     }
 }
 
@@ -623,59 +609,6 @@ fn repository_row(
     collapsed
 }
 
-/// A project of the workspace that isn't on this machine (moved, or not cloned yet), R-WS-5.
-fn missing_row(ui: &mut Ui, project: &ProjectRef, reason: &str, tree: &mut Tree<'_>) {
-    let p = theme::palette(ui);
-    let name = project.path.file_name().map_or_else(
-        || project.path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let atoms = [
-        Atom::from(RichText::new("⚠").color(p.muted)),
-        Atom::from(RichText::new(name).color(p.muted)),
-        Atom::from(RichText::new("missing").small().color(p.muted)),
-        Atom::grow(),
-    ];
-    let path = project.path.clone();
-    let remote = project.remote.clone();
-    let menu = |ui: &mut Ui| {
-        let mut choice = None;
-        if ui
-            .button("Locate…")
-            .on_hover_text("Pick the folder where the project is now")
-            .clicked()
-        {
-            choice = Some(MenuChoice::Action(SidebarAction::LocateMissing(
-                path.clone(),
-            )));
-        }
-        if let Some(remote) = &remote
-            && ui
-                .button("Copy clone URL")
-                .on_hover_text(remote.as_str())
-                .clicked()
-        {
-            ui.ctx().copy_text(remote.clone());
-        }
-        if ui.button("Remove from workspace").clicked() {
-            choice = Some(MenuChoice::Action(SidebarAction::RemoveMissing(
-                path.clone(),
-            )));
-        }
-        choice
-    };
-    let (row, from_button) = tree_row(ui, 0, false, atoms, |ui| menu_button(ui, menu));
-    let mut hover = format!("{}\n{reason}", project.path.display());
-    if let Some(remote) = &project.remote {
-        hover = format!("{hover}\nClone it from {remote}, then use Locate…");
-    }
-    let row = row.on_hover_text(hover);
-    let choice = from_button.or_else(|| context_menu(&row, menu));
-    if let Some(MenuChoice::Action(action)) = choice {
-        tree.actions.push(action);
-    }
-}
-
 fn items(
     ui: &mut Ui,
     root: &std::path::Path,
@@ -842,7 +775,8 @@ fn tree_item(
             atoms.push(git_marker(ui, status));
         }
         let selected = tree.selected == Some(&key);
-        let menu = |ui: &mut Ui| item_menu(ui, &key, is_folder);
+        let docs = tree.offers.features.docs;
+        let menu = |ui: &mut Ui| item_menu(ui, &key, is_folder, docs);
         let (mut row, from_button) = tree_row(ui, depth, selected, atoms, |ui| {
             if read_only {
                 None
@@ -883,234 +817,6 @@ fn tree_item(
     {
         items(ui, root, &key.path, &f.items, depth + 1, read_only, tree);
     }
-}
-
-/// What the user picked in a `…` or right-click menu.
-enum MenuChoice {
-    Action(SidebarAction),
-    Rename,
-}
-
-fn apply(tree: &mut Tree<'_>, choice: Option<MenuChoice>, key: &ItemKey, name: &str) {
-    match choice {
-        Some(MenuChoice::Action(a)) => tree.actions.push(a),
-        Some(MenuChoice::Rename) => {
-            tree.st.rename = Some(Rename::new(key.clone(), name.to_owned()));
-        }
-        None => {}
-    }
-}
-
-/// Actions for a collection.
-fn collection_menu(
-    ui: &mut Ui,
-    c: &Collection,
-    cookie_count: usize,
-    offers: MenuOffers,
-    // Set when the project doesn't follow the workspace's environment (R-WS-6).
-    environments: Option<&[(String, String)]>,
-    // The port of its running mock server (R-MOCK-2).
-    mock_port: Option<u16>,
-) -> Option<MenuChoice> {
-    let root = &c.root;
-    let mut choice = None;
-    let mut item = |ui: &mut Ui, label: String, pick: &dyn Fn() -> MenuChoice| {
-        if ui.button(label).clicked() {
-            choice = Some(pick());
-        }
-    };
-    if !c.read_only {
-        item(ui, "New request".into(), &|| {
-            MenuChoice::Action(SidebarAction::NewRequest {
-                root: root.clone(),
-                parent: PathBuf::new(),
-            })
-        });
-        item(ui, "New folder".into(), &|| {
-            MenuChoice::Action(SidebarAction::NewFolder {
-                root: root.clone(),
-                parent: PathBuf::new(),
-            })
-        });
-        item(ui, "Rename".into(), &|| MenuChoice::Rename);
-    }
-    let mut picked_environment = None;
-    if let Some(envs) = environments {
-        ui.menu_button("Use environment", |ui| {
-            for (id, name) in envs {
-                if ui.button(name).clicked() {
-                    picked_environment = Some(id.clone());
-                }
-            }
-        });
-    }
-    let environments = format!("Environments ({})…", c.environments.len());
-    item(ui, environments, &|| {
-        MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
-    });
-    if offers.postman_environments && !c.read_only {
-        item(ui, "Import Postman environments…".into(), &|| {
-            MenuChoice::Action(SidebarAction::ImportEnvironments(root.clone()))
-        });
-    }
-    item(ui, "Defaults (headers, auth, requests)…".into(), &|| {
-        MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
-    });
-    item(ui, "Description…".into(), &|| {
-        MenuChoice::Action(SidebarAction::ProjectDescription(root.clone()))
-    });
-    if !c.read_only {
-        item(ui, "New workflow…".into(), &|| {
-            MenuChoice::Action(SidebarAction::NewWorkflow(root.clone()))
-        });
-    }
-    match mock_port {
-        None => item(ui, "Start mock server".into(), &|| {
-            MenuChoice::Action(SidebarAction::StartMock(root.clone()))
-        }),
-        Some(port) => {
-            item(ui, format!("Mock server (port {port})…"), &|| {
-                MenuChoice::Action(SidebarAction::ShowMock(root.clone()))
-            });
-            item(ui, "Stop mock server".into(), &|| {
-                MenuChoice::Action(SidebarAction::StopMock(root.clone()))
-            });
-        }
-    }
-    item(ui, "Runtime variables…".into(), &|| {
-        MenuChoice::Action(SidebarAction::RuntimeVariables(root.clone()))
-    });
-    item(ui, format!("Cookies ({cookie_count})…"), &|| {
-        MenuChoice::Action(SidebarAction::ShowCookies(root.clone()))
-    });
-    item(ui, "Reload from disk".into(), &|| {
-        MenuChoice::Action(SidebarAction::Reload(root.clone()))
-    });
-    // R-GIT-13: commit, pull and push happen outside the app.
-    if offers.open_folders {
-        item(ui, "Open in file manager".into(), &|| {
-            MenuChoice::Action(SidebarAction::OpenInFileManager(root.clone()))
-        });
-        item(ui, "Open in terminal".into(), &|| {
-            MenuChoice::Action(SidebarAction::OpenInTerminal(root.clone()))
-        });
-    }
-    item(ui, "Remove from workspace".into(), &|| {
-        MenuChoice::Action(SidebarAction::Close(root.clone()))
-    });
-    if let Some(id) = picked_environment {
-        return Some(MenuChoice::Action(SidebarAction::SetProjectEnvironment {
-            root: root.clone(),
-            id,
-        }));
-    }
-    choice
-}
-
-/// A request file that could not be read (R-GIT-8), e.g. with merge-conflict markers.
-fn broken_row(
-    ui: &mut Ui,
-    b: &tortuga_core::collection::Broken,
-    key: ItemKey,
-    depth: usize,
-    read_only: bool,
-    tree: &mut Tree<'_>,
-) {
-    let file = b.path.file_name().unwrap_or_default().to_string_lossy();
-    let mut atoms = vec![Atom::from(format!("⚠ {file}")), Atom::grow()];
-    if let Some(status) = tree.git.and_then(|g| g.file(&key.path)) {
-        atoms.push(git_marker(ui, status));
-    }
-    let (row, delete) = tree_row(ui, depth, false, atoms, |ui| {
-        !read_only
-            && ui
-                .add(theme::icon_button(ui, "🗙"))
-                .on_hover_text("Delete this file")
-                .clicked()
-    });
-    if row.on_hover_text(&b.error).clicked() {
-        tree.actions.push(SidebarAction::ShowError(format!(
-            "Could not read {}: {}. Fix the file in an editor, then use “Reload from disk”.",
-            b.path.display(),
-            b.error
-        )));
-    }
-    if delete {
-        tree.actions.push(SidebarAction::Delete(key));
-    }
-}
-
-/// Actions for a request or folder.
-fn item_menu(ui: &mut Ui, key: &ItemKey, is_folder: bool) -> Option<MenuChoice> {
-    let act = |a: SidebarAction| Some(MenuChoice::Action(a));
-    let mut choice = None;
-    if is_folder {
-        if ui.button("New request").clicked() {
-            choice = act(SidebarAction::NewRequest {
-                root: key.root.clone(),
-                parent: key.path.clone(),
-            });
-        }
-        if ui.button("New folder").clicked() {
-            choice = act(SidebarAction::NewFolder {
-                root: key.root.clone(),
-                parent: key.path.clone(),
-            });
-        }
-        if ui
-            .button("Folder defaults…")
-            .on_hover_text("Headers, auth and variables every request in this folder inherits")
-            .clicked()
-        {
-            choice = act(SidebarAction::EditFolderDefaults(key.clone()));
-        }
-        if ui
-            .button("Description…")
-            .on_hover_text("What this folder holds, in Markdown")
-            .clicked()
-        {
-            choice = act(SidebarAction::FolderDescription(key.clone()));
-        }
-    }
-    if ui.button("Rename").clicked() {
-        choice = Some(MenuChoice::Rename);
-    }
-    if ui.button("Duplicate").clicked() {
-        choice = act(SidebarAction::Duplicate(key.clone()));
-    }
-    if ui.button("Move up").clicked() {
-        choice = act(SidebarAction::MoveBy(key.clone(), Direction::Up));
-    }
-    if ui.button("Move down").clicked() {
-        choice = act(SidebarAction::MoveBy(key.clone(), Direction::Down));
-    }
-    if ui.button("Move to…").clicked() {
-        choice = act(SidebarAction::MoveTo(key.clone()));
-    }
-    let danger = theme::palette(ui).fail;
-    if ui.button(RichText::new("Delete…").color(danger)).clicked() {
-        choice = act(SidebarAction::Delete(key.clone()));
-    }
-    choice
-}
-
-fn menu_button(
-    ui: &mut Ui,
-    menu: impl FnOnce(&mut Ui) -> Option<MenuChoice>,
-) -> Option<MenuChoice> {
-    let (response, inner) =
-        egui::containers::menu::MenuButton::from_button(theme::ghost_button("…")).ui(ui, menu);
-    response.on_hover_text("Actions");
-    inner.and_then(|i| i.inner)
-}
-
-fn context_menu(
-    row: &egui::Response,
-    menu: impl FnOnce(&mut Ui) -> Option<MenuChoice>,
-) -> Option<MenuChoice> {
-    let mut choice = None;
-    row.context_menu(|ui| choice = menu(ui));
-    choice
 }
 
 fn twisty(collapsed: bool) -> &'static str {
@@ -1174,124 +880,6 @@ fn skip_hidden_row(ui: &mut Ui) -> bool {
     true
 }
 
-/// What is being dragged in the tree (R-COL-12).
-#[derive(Debug, Clone)]
-struct TreeDrag {
-    key: ItemKey,
-    name: String,
-}
-
-/// Makes a row draggable, and a place to drop rows of the same project: on the upper
-/// part before it, on the lower part after it, and on most of a folder into it.
-fn drag_and_drop(
-    ui: &Ui,
-    row: &egui::Response,
-    key: &ItemKey,
-    name: &str,
-    is_folder: bool,
-    next: Option<&Path>,
-    tree: &mut Tree<'_>,
-) {
-    row.dnd_set_drag_payload(TreeDrag {
-        key: key.clone(),
-        name: name.to_owned(),
-    });
-    let Some(drag) = row.dnd_hover_payload::<TreeDrag>() else {
-        return;
-    };
-    let Some(pointer) = ui.ctx().pointer_latest_pos() else {
-        return;
-    };
-    if drag.key.root != key.root || drag.key == *key {
-        return;
-    }
-    let rect = row.rect;
-    let parent = key.path.parent().map(Path::to_path_buf).unwrap_or_default();
-    let top = pointer.y < rect.top() + rect.height() * if is_folder { 0.3 } else { 0.5 };
-    let (into, before, mark) = if top {
-        (parent, Some(key.path.clone()), Mark::Line(rect.top()))
-    } else if is_folder {
-        (key.path.clone(), None, Mark::Box)
-    } else {
-        (
-            parent,
-            next.map(Path::to_path_buf),
-            Mark::Line(rect.bottom()),
-        )
-    };
-    if into.starts_with(&drag.key.path) {
-        return; // a folder into itself
-    }
-    mark.paint(ui, rect);
-    if row.dnd_release_payload::<TreeDrag>().is_some() {
-        tree.actions.push(SidebarAction::Place {
-            key: drag.key.clone(),
-            parent: into,
-            before,
-        });
-    }
-}
-
-/// Dropping a row on its project's row puts it at the end of the top level.
-fn drop_on_project(ui: &Ui, row: &egui::Response, root: &Path, tree: &mut Tree<'_>) {
-    let Some(drag) = row.dnd_hover_payload::<TreeDrag>() else {
-        return;
-    };
-    if drag.key.root != root {
-        return;
-    }
-    Mark::Box.paint(ui, row.rect);
-    if row.dnd_release_payload::<TreeDrag>().is_some() {
-        tree.actions.push(SidebarAction::Place {
-            key: drag.key.clone(),
-            parent: PathBuf::new(),
-            before: None,
-        });
-    }
-}
-
-/// Where a dragged row will land.
-#[derive(Debug, Clone, Copy)]
-enum Mark {
-    /// Between rows, at this height.
-    Line(f32),
-    /// Into the folder or project of this row.
-    Box,
-}
-
-impl Mark {
-    fn paint(self, ui: &Ui, rect: egui::Rect) {
-        let stroke = egui::Stroke::new(2.0, theme::palette(ui).accent);
-        match self {
-            Self::Line(y) => {
-                ui.painter().hline(rect.x_range(), y, stroke);
-            }
-            Self::Box => {
-                ui.painter()
-                    .rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
-            }
-        }
-    }
-}
-
-/// The name of what is being dragged, next to the pointer.
-fn drag_label(ui: &Ui) {
-    let Some(drag) = egui::DragAndDrop::payload::<TreeDrag>(ui.ctx()) else {
-        return;
-    };
-    let Some(pos) = ui.ctx().pointer_latest_pos() else {
-        return;
-    };
-    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    egui::Area::new(egui::Id::unique("tree-drag"))
-        .order(egui::Order::Tooltip)
-        .fixed_pos(pos + egui::vec2(14.0, 6.0))
-        .interactable(false)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| ui.label(&drag.name));
-        });
-}
-
 fn toggle(set: &mut HashSet<ItemKey>, key: &ItemKey) {
     if !set.remove(key) {
         set.insert(key.clone());
@@ -1339,6 +927,8 @@ fn rename_row(ui: &mut Ui, depth: usize, tree: &mut Tree<'_>, key: &ItemKey) -> 
 mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
+
+    use tortuga_core::settings::ImporterSettings;
 
     use super::*;
 
@@ -1407,7 +997,7 @@ mod tests {
                 Atom::grow(),
             ];
             tree_row(ui, 2, false, atoms, |ui| {
-                menu_button(ui, |ui: &mut Ui| item_menu(ui, &key, false))
+                menu_button(ui, |ui: &mut Ui| item_menu(ui, &key, false, true))
             });
             d.set(ui.cursor().min.y - top);
 

@@ -78,11 +78,7 @@ impl MockDialog {
             });
             log(ui, view.hits, view.offset_minutes);
             ui.add_space(12.0);
-            let close = ui
-                .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.button("Close").clicked()
-                })
-                .inner;
+            let close = theme::button_row(ui, |ui| ui.button("Close").clicked());
             finish::<()>(close, None)
         });
         (result, action)
@@ -121,7 +117,7 @@ fn controls(ui: &mut Ui, port_text: &mut String, view: MockView<'_>) -> Option<M
                 action = Some(MockAction::SetPort(port));
             }
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        theme::button_row(ui, |ui| {
             if view.running.is_some() {
                 if ui.add(theme::danger_button(ui, "Stop")).clicked() {
                     action = Some(MockAction::Stop);

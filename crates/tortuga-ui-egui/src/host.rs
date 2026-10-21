@@ -32,6 +32,28 @@ pub struct LocalState {
     /// Before workspaces (M6.5): collection root → environment id. Moved like `open_collections`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub active_environments: BTreeMap<String, String>,
+    /// Where the divider between request and response was left (R-SET-12).
+    #[serde(skip_serializing_if = "SavedSplit::is_default")]
+    pub split: SavedSplit,
+}
+
+/// The divider between request and response, as the user dragged it (R-SET-12). Whole
+/// numbers, so local state stays comparable; `None` until it is first moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedSplit {
+    /// Stacked: the most height the request may take, in points.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_height: Option<u16>,
+    /// Side by side: the request's share of the width, in thousandths.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_share: Option<u16>,
+}
+
+impl SavedSplit {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl LocalState {
@@ -95,6 +117,9 @@ pub struct Workspace {
     /// The open request tabs (R-COL-13, R-COL-14).
     #[serde(skip_serializing_if = "SavedTabs::is_empty")]
     pub tabs: SavedTabs,
+    /// The sidebar is hidden (R-COL-26).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub sidebar_hidden: bool,
     /// Projects in sidebar order, including ones that are missing on this machine.
     pub projects: Vec<ProjectRef>,
     /// Variables every project can use (R-WS-8); kept in the workspace file too, if any.

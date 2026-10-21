@@ -26,6 +26,26 @@ enum Dynamic {
     },
 }
 
+/// The dynamic variables to suggest after `{{` (R-VAR-9), with what each makes.
+pub const SUGGESTED: [(&str, &str); 6] = [
+    ("$guid", "a random UUID"),
+    ("$uuid", "a random UUID"),
+    ("$timestamp", "the time in seconds since 1970"),
+    ("$isoTimestamp", "the time in ISO 8601, UTC"),
+    ("$randomInt", "a whole number from 0 to 1000"),
+    ("$random.uuid", "a random UUID"),
+];
+
+/// What the dynamic variable `name` makes, e.g. "a random UUID" (R-VAR-9).
+pub fn describe(name: &str) -> Option<&'static str> {
+    Some(match parse(name)? {
+        Dynamic::Uuid => "a random UUID",
+        Dynamic::Timestamp => "the time in seconds since 1970",
+        Dynamic::IsoTimestamp => "the time in ISO 8601, UTC",
+        Dynamic::RandomInt { .. } => "a random whole number",
+    })
+}
+
 /// Whether `name` (as written between `{{` and `}}`, trimmed) is a dynamic variable.
 pub fn is_dynamic(name: &str) -> bool {
     parse(name).is_some()

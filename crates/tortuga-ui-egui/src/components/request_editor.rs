@@ -1,13 +1,17 @@
-use egui::{Color32, ComboBox, Key, Label, RichText, Stroke, TextEdit, Ui};
+use egui::{Color32, ComboBox, Key, RichText, Stroke, TextEdit, Ui};
 use tortuga_core::script::{Breakpoints, ScriptKind};
-use tortuga_core::settings::ResolvedSettings;
+use tortuga_core::settings::{Feature, FeatureSettings, ResolvedSettings};
 use tortuga_core::{Auth, HttpMethod, KeyValue, Request, RequestBody};
 
 use super::TestsView;
 use super::auth_editor::EditDefaults;
 use super::request_examples::{ExamplesState, request_examples};
+use super::request_preview::{ServerLine, preview_line, preview_panel};
 use super::request_scripts::{ScriptTab, request_scripts};
-use super::{BodyDrafts, body_editor, description_editor, key_value_table, request_auth};
+use super::{
+    BodyDrafts, FieldWidth, Lines, VarHelp, body_editor, description_editor, key_value_table,
+    request_auth, var_edit,
+};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,8 +27,6 @@ enum Tab {
     Examples,
     /// The request's description (R-COL-22).
     Docs,
-    /// The request as it will be sent (R-HTTP-14).
-    Preview,
 }
 
 /// Editor state that is not part of the request. Recreated (with [`EditorState::new`])
@@ -45,6 +47,8 @@ pub struct EditorState {
     examples: ExamplesState,
     /// The Docs tab shows the description's text, not its rendering (R-COL-22).
     editing_docs: bool,
+    /// The request as it will be sent shows under the URL (R-HTTP-14, R-COL-24).
+    preview_open: bool,
 }
 
 impl EditorState {
@@ -85,9 +89,14 @@ impl EditorState {
         self.examples.open(index);
     }
 
-    /// Whether the Preview tab is open (so the shell works out the preview).
+    /// Puts the cursor in the URL field on the next frame (Ctrl+L, R-COL-27).
+    pub fn focus_url(&mut self) {
+        self.focus_url = true;
+    }
+
+    /// Whether the preview under the URL is open (so the shell works out the preview).
     pub fn shows_preview(&self) -> bool {
-        self.tab == Tab::Preview
+        self.preview_open
     }
 
     pub fn new(request: &Request) -> Self {
@@ -108,6 +117,7 @@ impl EditorState {
             script_tab: ScriptTab::first_for(request),
             examples: ExamplesState::default(),
             editing_docs: false,
+            preview_open: false,
         }
     }
 }
@@ -119,8 +129,9 @@ pub struct EditorContext<'a> {
     pub servers: &'a [(String, String)],
     /// Base URL of the selected server in the active environment.
     pub server_base: Option<&'a str>,
-    /// Variables used by the request that are not defined (R-VAR-5).
-    pub undefined: &'a [String],
+    /// The variables the request may use: undefined ones (R-VAR-5) and what hovering
+    /// and `{{` show (R-VAR-9).
+    pub vars: &'a VarHelp,
     pub sending: bool,
     /// The timeout, redirect and cookie settings the request inherits, with where each
     /// comes from (R-SET-1).
@@ -150,6 +161,19 @@ pub struct EditorContext<'a> {
     pub last_run: Option<&'a TestsView>,
     /// Whether the tests can run again on the last response (R-TEST-12).
     pub rerun: Rerun,
+    /// How much of the editor shows (R-SET-12).
+    pub view: EditorView,
+    /// Which features are on (R-SET-13).
+    pub features: &'a FeatureSettings,
+}
+
+/// How much of the request editor shows (R-SET-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorView {
+    /// The URL line and the tabs.
+    Full,
+    /// Only the URL line: the response has the room.
+    UrlOnly,
 }
 
 /// Whether "Re-run tests" can run (R-TEST-12).
@@ -164,6 +188,8 @@ pub enum Rerun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorAction {
     Send,
+    /// Send to each environment of the project and compare (R-SRV-10).
+    SendEverywhere,
     Cancel,
     /// Open the collection's default headers and auth.
     EditCollectionDefaults,
@@ -193,16 +219,18 @@ pub fn request_editor(
     };
     let action = request_bar(ui, request, st, cx, &base_hint);
 
-    if request.server.is_some() {
-        let text = RichText::new(&base_hint).small().monospace();
-        if cx.server_base.is_some() {
-            ui.label(text.weak());
-        } else {
-            ui.label(text.color(theme::palette(ui).warning_text));
-        }
+    let server = match (&request.server, cx.server_base) {
+        (None, _) => ServerLine::None,
+        (Some(_), Some(_)) => ServerLine::Base(&base_hint),
+        (Some(_), None) => ServerLine::Missing(&base_hint),
+    };
+    preview_line(ui, &mut st.preview_open, server);
+    if st.preview_open {
+        preview_panel(ui, cx.preview);
     }
-    if !cx.undefined.is_empty() {
+    if !cx.vars.undefined.is_empty() {
         let names: Vec<String> = cx
+            .vars
             .undefined
             .iter()
             .map(|n| format!("{{{{{n}}}}}"))
@@ -225,6 +253,10 @@ pub fn request_editor(
         );
     }
 
+    if cx.view == EditorView::UrlOnly {
+        return action;
+    }
+
     let param_count =
         request.params.iter().filter(|p| p.is_active()).count() + request.path_vars.len();
     let header_count = request.headers.iter().filter(|h| h.is_active()).count();
@@ -233,6 +265,10 @@ pub fn request_editor(
     let has_auth = effective_auth.is_some_and(|a| !a.is_none());
     ui.add_space(6.0);
     let count = |n: usize| (n > 0).then(|| n.to_string());
+    let scripted = !request.scripts.is_empty() || !request.capture.is_empty();
+    let documented = !request.description.trim().is_empty();
+    // A feature that is off hides its tab, unless this request uses it (R-SET-13).
+    let shown = |feature: Feature, used: bool| used || cx.features.enabled(feature);
     let mut tabs = vec![
         (Tab::Params, "Params", count(param_count)),
         (
@@ -243,22 +279,18 @@ pub fn request_editor(
         (Tab::Auth, "Auth", has_auth.then(|| "⏺".to_owned())),
         (Tab::Body, "Body", has_body.then(|| "⏺".to_owned())),
         (Tab::Options, "Options", None),
-        (
-            Tab::Scripts,
-            "Scripts",
-            (!request.scripts.is_empty() || !request.capture.is_empty()).then(|| "⏺".to_owned()),
-        ),
-        (Tab::Preview, "Preview", None),
     ];
+    if shown(Feature::Scripts, scripted) {
+        tabs.push((Tab::Scripts, "Scripts", scripted.then(|| "⏺".to_owned())));
+    }
     // Only a project's requests are served by its mock, and documented.
-    if cx.in_collection {
-        tabs.insert(
-            6,
-            (Tab::Examples, "Examples", count(request.examples.len())),
-        );
-        let documented = !request.description.trim().is_empty();
-        tabs.insert(7, (Tab::Docs, "Docs", documented.then(|| "⏺".to_owned())));
-    } else if matches!(st.tab, Tab::Examples | Tab::Docs) {
+    if cx.in_collection && shown(Feature::Examples, !request.examples.is_empty()) {
+        tabs.push((Tab::Examples, "Examples", count(request.examples.len())));
+    }
+    if cx.in_collection && shown(Feature::Docs, documented) {
+        tabs.push((Tab::Docs, "Docs", documented.then(|| "⏺".to_owned())));
+    }
+    if !tabs.iter().any(|(tab, _, _)| *tab == st.tab) {
         st.tab = Tab::Params;
     }
     theme::tabs(ui, &mut st.tab, &tabs);
@@ -282,15 +314,15 @@ fn tab_content(
     match st.tab {
         Tab::Params => {
             if !request.path_vars.is_empty() {
-                path_variables(ui, &mut request.path_vars, cx.undefined);
+                path_variables(ui, &mut request.path_vars, cx.vars);
                 ui.add_space(12.0);
             }
-            if key_value_table(ui, "params", &mut request.params, "Parameter", cx.undefined) {
+            if key_value_table(ui, "params", &mut request.params, "Parameter", cx.vars) {
                 st.url_text = request.display_url();
             }
         }
         Tab::Headers => {
-            key_value_table(ui, "headers", &mut request.headers, "Header", cx.undefined);
+            key_value_table(ui, "headers", &mut request.headers, "Header", cx.vars);
             if !cx.inherited_headers.is_empty() {
                 ui.add_space(8.0);
                 inherited_headers(ui, cx.inherited_headers);
@@ -318,7 +350,7 @@ fn tab_content(
                 &mut request.auth,
                 cx.collection_auth,
                 cx.auth_origin,
-                cx.undefined,
+                cx.vars,
             ) {
                 Some(EditDefaults::Project) => action = Some(EditorAction::EditCollectionDefaults),
                 Some(EditDefaults::Workspace) => {
@@ -328,8 +360,7 @@ fn tab_content(
             }
         }
         Tab::Body => {
-            if let Some(i) = body_editor(ui, request, &mut st.body, cx.undefined, cx.can_pick_files)
-            {
+            if let Some(i) = body_editor(ui, request, &mut st.body, cx.vars, cx.can_pick_files) {
                 action = Some(EditorAction::ChooseFile(i));
             }
         }
@@ -340,7 +371,7 @@ fn tab_content(
             }
         }
         Tab::Examples => {
-            request_examples(ui, &mut request.examples, &mut st.examples, cx.undefined);
+            request_examples(ui, &mut request.examples, &mut st.examples, cx.vars);
         }
         Tab::Docs => {
             description_editor(
@@ -352,7 +383,6 @@ fn tab_content(
                 f32::INFINITY,
             );
         }
-        Tab::Preview => request_preview(ui, cx.preview),
     }
     action
 }
@@ -412,12 +442,20 @@ fn request_bar(
             {
                 action = Some(EditorAction::Cancel);
             }
-        } else if ui
-            .add_sized(size, theme::primary_button(ui, "Send"))
-            .on_hover_text("Send (Ctrl+Enter)")
-            .clicked()
-        {
-            action = Some(EditorAction::Send);
+        } else {
+            let send = ui
+                .add_sized(size, theme::primary_button(ui, "Send"))
+                .on_hover_text("Send (Ctrl+Enter). Right-click to send to every environment.");
+            if send.clicked() {
+                action = Some(EditorAction::Send);
+            }
+            if cx.in_collection {
+                send.context_menu(|ui| {
+                    if ui.button("Send to every environment").clicked() {
+                        action = Some(EditorAction::SendEverywhere);
+                    }
+                });
+            }
         }
     });
     ui.add_space(2.0);
@@ -425,7 +463,7 @@ fn request_bar(
 }
 
 /// Values of the URL's `:name` path variables (R-HTTP-10). Names follow the URL.
-fn path_variables(ui: &mut Ui, vars: &mut [KeyValue], undefined: &[String]) {
+fn path_variables(ui: &mut Ui, vars: &mut [KeyValue], help: &VarHelp) {
     // Same column layout as the params table below, so the two line up.
     let width = ((ui.available_width() - 90.0) / 2.0).max(80.0);
     egui::Grid::new("path-vars")
@@ -447,14 +485,11 @@ fn path_variables(ui: &mut Ui, vars: &mut [KeyValue], undefined: &[String]) {
                     .hint_text("Name");
                 theme::sized_edit(ui, width, name_field)
                     .on_hover_text("Change the name in the URL");
-                let flagged = theme::uses_undefined(&var.value, undefined);
-                let mut edit = TextEdit::singleline(&mut var.value)
-                    .id_salt(("path-var", i))
-                    .hint_text("Value");
-                if flagged {
-                    edit = edit.background_color(theme::undefined_bg(ui));
-                }
-                theme::sized_edit(ui, width, edit);
+                let id = ui.make_persistent_id(("path-var", i));
+                let size = FieldWidth::Fixed(width);
+                var_edit(ui, id, &mut var.value, help, Lines::One, size, |e| {
+                    e.hint_text("Value")
+                });
                 ui.end_row();
             }
         });
@@ -547,27 +582,33 @@ fn url_field(
     st: &mut EditorState,
     cx: EditorContext<'_>,
 ) -> Option<EditorAction> {
-    let flagged = theme::uses_undefined(&st.url_text, cx.undefined);
-    let mut url = TextEdit::singleline(&mut st.url_text)
-        .id(id)
-        .font(egui::TextStyle::Monospace)
-        .align(egui::Align2::LEFT_CENTER)
-        .min_size(egui::vec2(0.0, ui.spacing().interact_size.y))
-        .hint_text(if request.server.is_some() {
-            "/path"
-        } else {
-            "Enter request URL"
-        })
-        .desired_width(ui.available_width());
-    if flagged {
-        url = url.background_color(theme::undefined_bg(ui));
-    }
+    let hint = if request.server.is_some() {
+        "/path"
+    } else {
+        "Enter request URL"
+    };
+    let min_size = egui::vec2(0.0, ui.spacing().interact_size.y);
+    let width = ui.available_width();
     // A pasted curl command fills the whole request instead of the URL (R-HTTP-11).
     let pasted_curl = ui
         .memory(|m| m.has_focus(id))
         .then(|| ui.input_mut(take_pasted_curl))
         .flatten();
-    let url = ui.add(url);
+    let url = var_edit(
+        ui,
+        id,
+        &mut st.url_text,
+        cx.vars,
+        Lines::One,
+        FieldWidth::AsBuilt,
+        |e| {
+            e.font(egui::TextStyle::Monospace)
+                .align(egui::Align2::LEFT_CENTER)
+                .min_size(min_size)
+                .hint_text(hint)
+                .desired_width(width)
+        },
+    );
     if let Some(text) = pasted_curl {
         return Some(EditorAction::PasteCurl(text));
     }
@@ -592,91 +633,6 @@ fn take_pasted_curl(input: &mut egui::InputState) -> Option<String> {
         _ => None,
     }
 }
-
-/// The request exactly as it will be sent, secrets masked (R-HTTP-14).
-fn request_preview(ui: &mut Ui, preview: Option<&Result<Request, String>>) {
-    let p = theme::palette(ui);
-    let request = match preview {
-        None => return,
-        Some(Err(message)) => return theme::warning(ui, message),
-        Some(Ok(request)) => request,
-    };
-    let mono = |text: &str| {
-        Label::new(RichText::new(text).monospace())
-            .selectable(true)
-            .wrap()
-    };
-    let url = tortuga_core::query::join_url(&request.url, &request.params);
-    ui.horizontal_wrapped(|ui| {
-        ui.label(theme::method_text(ui, request.method));
-        ui.add(mono(&url));
-    });
-    ui.add_space(8.0);
-    theme::section_label(ui, "Headers");
-    let active: Vec<&KeyValue> = request.headers.iter().filter(|h| h.is_active()).collect();
-    if active.is_empty() {
-        theme::hint(ui, "No headers.");
-    }
-    for h in active {
-        // Basic credentials are readable here (and secrets stay masked); they are base64 when sent.
-        let value = h
-            .name
-            .eq_ignore_ascii_case("authorization")
-            .then(|| tortuga_core::curl::basic_credentials(&h.value))
-            .flatten()
-            .map_or_else(|| h.value.clone(), |user| format!("Basic {user}"));
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(format!("{}:", h.name))
-                    .monospace()
-                    .color(p.muted),
-            );
-            ui.add(mono(&value));
-        });
-    }
-    let body = match &request.body {
-        RequestBody::None => None,
-        RequestBody::Text(t) | RequestBody::Json(t) | RequestBody::Xml(t) => Some(t.clone()),
-        RequestBody::Form(fields) => Some(tortuga_core::query::encode_form(fields)),
-        RequestBody::Multipart(parts) => Some(
-            parts
-                .iter()
-                .filter(|p| p.is_active())
-                .map(|p| {
-                    let ct = p
-                        .content_type
-                        .as_deref()
-                        .map(|c| format!(" ({c})"))
-                        .unwrap_or_default();
-                    if p.file {
-                        format!("{}: file {}{ct}", p.name, p.value)
-                    } else {
-                        format!("{}: {}{ct}", p.name, p.value)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-    };
-    if let Some(body) = body {
-        ui.add_space(8.0);
-        theme::section_label(ui, "Body");
-        let (shown, cut) = crate::format::truncate(&body, PREVIEW_BODY_BYTES);
-        ui.add(mono(shown));
-        if cut {
-            theme::hint(ui, "The body is longer; only the start is shown.");
-        }
-    }
-    ui.add_space(8.0);
-    theme::hint(
-        ui,
-        "Variables, server and path variables filled in; secret values shown as <secret:name>. \
-         Basic credentials are base64-encoded when sent. Cookies from the jar are added when sending.",
-    );
-}
-
-/// Longest body shown in the preview.
-const PREVIEW_BODY_BYTES: usize = 64 * 1024;
 
 /// Per-request options: timeout (R-HTTP-7).
 fn request_options(
@@ -764,7 +720,7 @@ mod tests {
                     EditorContext {
                         servers: &[],
                         server_base: None,
-                        undefined: &[],
+                        vars: &VarHelp::default(),
                         sending: false,
                         settings: test_settings(),
                         unverified_host: None,
@@ -778,6 +734,8 @@ mod tests {
                         breakpoints: &Breakpoints::default(),
                         last_run: None,
                         rerun: Rerun::Unavailable,
+                        view: EditorView::Full,
+                        features: &FeatureSettings::default(),
                     },
                 );
             });
@@ -814,7 +772,7 @@ mod tests {
                     EditorContext {
                         servers: &[],
                         server_base: None,
-                        undefined: &[],
+                        vars: &VarHelp::default(),
                         sending: false,
                         settings: test_settings(),
                         unverified_host: None,
@@ -828,6 +786,8 @@ mod tests {
                         breakpoints: &Breakpoints::default(),
                         last_run: None,
                         rerun: Rerun::Unavailable,
+                        view: EditorView::Full,
+                        features: &FeatureSettings::default(),
                     },
                 );
             });
@@ -843,9 +803,10 @@ mod tests {
         }
     }
 
-    /// R-HTTP-14: the Preview tab shows the resolved request with Basic credentials readable.
+    /// R-HTTP-14, R-COL-24: the line under the URL opens the resolved request, with Basic
+    /// credentials readable.
     #[test]
-    fn preview_tab_shows_the_request_as_sent() {
+    fn the_preview_opens_under_the_url() {
         let mut request = Request::new(HttpMethod::Get, "https://a.test/");
         let mut st = EditorState::new(&request);
         st.focus_url = false;
@@ -865,7 +826,7 @@ mod tests {
                 EditorContext {
                     servers: &[],
                     server_base: None,
-                    undefined: &[],
+                    vars: &VarHelp::default(),
                     sending: false,
                     settings: test_settings(),
                     unverified_host: None,
@@ -879,15 +840,31 @@ mod tests {
                     breakpoints: &Breakpoints::default(),
                     last_run: None,
                     rerun: Rerun::Unavailable,
+                    view: EditorView::Full,
+                    features: &FeatureSettings::default(),
                 },
             );
         });
         h.run();
-        h.get_by_label("Preview").click();
+        assert!(
+            h.query_by_label("https://api.test/users?page=2").is_none(),
+            "closed"
+        );
+        h.get_by_label_contains("Preview").click();
         h.run();
         h.get_by_label("https://api.test/users?page=2");
         h.get_by_label("Basic alice:<secret:pw>");
         h.get_by_label("{\"a\": 1}");
+        assert!(
+            h.query_by_label("Preview").is_none(),
+            "no Preview tab any more"
+        );
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(
+            h.query_by_label("https://api.test/users?page=2").is_none(),
+            "Escape closes it"
+        );
     }
 
     /// R-TEST-1, R-TEST-4, R-TEST-11: scripts and captures are edited in the Scripts
@@ -907,7 +884,7 @@ mod tests {
                     EditorContext {
                         servers: &[],
                         server_base: None,
-                        undefined: &[],
+                        vars: &VarHelp::default(),
                         sending: false,
                         settings: test_settings(),
                         unverified_host: None,
@@ -921,6 +898,8 @@ mod tests {
                         breakpoints: &Breakpoints::default(),
                         last_run: None,
                         rerun: Rerun::Unavailable,
+                        view: EditorView::Full,
+                        features: &FeatureSettings::default(),
                     },
                 );
             });
@@ -963,7 +942,7 @@ mod tests {
                     EditorContext {
                         servers: &[],
                         server_base: None,
-                        undefined: &[],
+                        vars: &VarHelp::default(),
                         sending: false,
                         settings: test_settings(),
                         unverified_host: None,
@@ -977,6 +956,8 @@ mod tests {
                         breakpoints: &Breakpoints::default(),
                         last_run: None,
                         rerun: Rerun::Unavailable,
+                        view: EditorView::Full,
+                        features: &FeatureSettings::default(),
                     },
                 );
             });

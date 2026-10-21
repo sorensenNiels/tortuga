@@ -41,6 +41,10 @@ pub enum Error {
     #[error("could not create HTTP client: {0}")]
     ClientSetup(String),
 
+    /// The manual proxy's URL can't be used (R-HTTP-20). Never holds the URL itself.
+    #[error("the proxy can't be used: {0}")]
+    InvalidProxy(String),
+
     #[error("{}: {source}", .path.display())]
     Io {
         path: PathBuf,

@@ -141,7 +141,7 @@ impl ImportDialog {
             }
 
             ui.add_space(16.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            theme::button_row(ui, |ui| {
                 let import = ui
                     .add_enabled(!target.taken, theme::primary_button(ui, "Import"))
                     .clicked();
@@ -154,7 +154,6 @@ impl ImportDialog {
                     DialogResult::Open
                 }
             })
-            .inner
         });
         (result, action)
     }
@@ -308,7 +307,7 @@ impl EnvironmentImportDialog {
                     );
                 }
                 ui.add_space(16.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                theme::button_row(ui, |ui| {
                     let import = ui.add(theme::primary_button(ui, "Import")).clicked();
                     let cancel = ui.button("Cancel").clicked();
                     if import {
@@ -319,7 +318,6 @@ impl EnvironmentImportDialog {
                         DialogResult::Open
                     }
                 })
-                .inner
             },
         )
     }

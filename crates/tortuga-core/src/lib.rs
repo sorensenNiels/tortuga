@@ -3,6 +3,7 @@
 //! This crate must stay free of any UI framework so the desktop app, the web build
 //! and `tortuga-cli` all behave the same (P7).
 
+pub mod changes;
 pub mod collection;
 pub mod cookies;
 pub mod curl;
@@ -39,7 +40,7 @@ pub use collection::{Collection, Direction, Item, NewItem};
 pub use cookies::{CookieInfo, CookieJar};
 pub use error::{Error, Result};
 pub use format::{Environment, EnvironmentColor, Manifest, Server};
-pub use http::{Client, ClientSettings, FileReader};
+pub use http::{Client, ClientSettings, FileReader, ProxyMode, check_proxy_url};
 pub use model::{
     Auth, BodyView, FormPart, HttpMethod, KeyValue, Request, RequestBody, Response, Scripts,
 };

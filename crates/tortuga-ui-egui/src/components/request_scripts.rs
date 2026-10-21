@@ -8,7 +8,7 @@ use tortuga_core::script::{ConsoleEntry, ScriptKind};
 
 use super::request_editor::{EditorAction, EditorContext, EditorState, Rerun};
 use super::script_editor::{LineMark, line_marks, script_editor, script_toolbar};
-use super::{TestsView, key_value_table};
+use super::{TestsView, VarHelp, key_value_table};
 use crate::theme;
 
 /// Snippets for a pre-request script (R-TEST-15): (menu label, code).
@@ -313,7 +313,13 @@ fn reference(ui: &mut Ui, id: &str, text: &str) {
 }
 
 fn captures(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
-    if key_value_table(ui, "captures", &mut st.captures, "Variable", &[]) {
+    if key_value_table(
+        ui,
+        "captures",
+        &mut st.captures,
+        "Variable",
+        &VarHelp::default(),
+    ) {
         request.capture = st
             .captures
             .iter()

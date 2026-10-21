@@ -12,8 +12,8 @@ use tortuga_core::history::{Entry, Summary, now_ms};
 
 use super::{Modal, Selection, TortugaUi};
 use crate::components::{
-    ClearHistory, ConfirmDialog, HistoryAction, HistoryContext, HistoryRow, Outcome, ResponseView,
-    history_list,
+    ChangesDialog, ClearHistory, ConfirmDialog, HistoryAction, HistoryContext, HistoryRow, Outcome,
+    ResponseView, TREND_LENGTH, TrendPoint, history_list,
 };
 use crate::format::{clock, day_label, sentence};
 use crate::state::ItemKey;
@@ -36,6 +36,8 @@ pub(super) struct HistoryState {
     filter: String,
     /// A past response shown instead of the latest one.
     pub(super) past: Option<Past>,
+    /// The entry chosen with "Select for comparing" (R-HIST-5): (project, id).
+    selected_for_comparing: Option<(Option<PathBuf>, String)>,
 }
 
 /// A response from history in the response panel.
@@ -63,6 +65,27 @@ impl TortugaUi {
             self.history.loaded.insert(key.clone(), list);
         }
         self.history.loaded.get(&key).map_or(&[], Vec::as_slice)
+    }
+
+    /// The last sends of the request `key`, oldest first, for its trend (R-HIST-4).
+    pub(super) fn trend_points(&mut self, key: &Selection) -> Vec<TrendPoint> {
+        if !self.state.host.keeps_history() {
+            return Vec::new();
+        }
+        let path = key.as_ref().map(|k| k.path.as_path());
+        let mut points: Vec<TrendPoint> = self
+            .history_of(key.as_ref().map(|k| k.root.as_path()))
+            .iter()
+            .filter(|s| s.path.as_deref() == path)
+            .take(TREND_LENGTH)
+            .map(|s| TrendPoint {
+                sent_at_ms: s.sent_at_ms,
+                elapsed_ms: s.elapsed_ms,
+                status: s.status,
+            })
+            .collect();
+        points.reverse();
+        points
     }
 
     /// Keeps a finished send in the history (R-HIST-1), as many entries as the settings
@@ -134,6 +157,11 @@ impl TortugaUi {
             offset_minutes: self.state.host.utc_offset_minutes(),
             open: open.as_deref(),
             places: &with_history,
+            selected_for_comparing: self
+                .history
+                .selected_for_comparing
+                .as_ref()
+                .map(|(_, id)| id.as_str()),
         };
         if !self.state.settings.history.on() {
             crate::theme::hint(
@@ -147,6 +175,24 @@ impl TortugaUi {
         self.history.filter = filter;
         match action {
             Some(HistoryAction::Open { root, id }) => self.open_history(root.as_deref(), &id),
+            Some(HistoryAction::CompareWithBefore { root, id }) => {
+                match self.send_before(root.as_deref(), &id) {
+                    Some(before) => self.compare_history(&(root.clone(), before), &(root, id)),
+                    None => self
+                        .state
+                        .inform("This is the request's first send with a response in history."),
+                }
+            }
+            Some(HistoryAction::SelectForComparing { root, id }) => {
+                self.history.selected_for_comparing = Some((root, id));
+                self.state
+                    .inform("Selected: now right-click another send and compare it.");
+            }
+            Some(HistoryAction::CompareWithSelected { root, id }) => {
+                if let Some(selected) = self.history.selected_for_comparing.clone() {
+                    self.compare_history(&selected, &(root, id));
+                }
+            }
             Some(HistoryAction::Clear(target)) => {
                 let (title, message) = match &target {
                     ClearHistory::One(_, name) => (
@@ -167,6 +213,62 @@ impl TortugaUi {
             }
             None => {}
         }
+    }
+
+    /// The id of the send of the same request before entry `id` that got a response
+    /// (R-HIST-5).
+    fn send_before(&mut self, root: Option<&Path>, id: &str) -> Option<String> {
+        let list = self.history_of(root);
+        let at = list.iter().position(|s| s.id == id)?;
+        let path = list.get(at)?.path.clone();
+        list.get(at + 1..)?
+            .iter()
+            .find(|s| s.path == path && s.status.is_some())
+            .map(|s| s.id.clone())
+    }
+
+    /// Shows what changed between two history entries, the older one first (R-HIST-5).
+    fn compare_history(&mut self, a: &(Option<PathBuf>, String), b: &(Option<PathBuf>, String)) {
+        let load = |ui: &Self, (root, id): &(Option<PathBuf>, String)| {
+            ui.state.host.history_entry(root.as_deref(), id)
+        };
+        let (a, b) = match (load(self, a), load(self, b)) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => {
+                return self
+                    .state
+                    .notify(format!("Could not open the history entry: {e}"));
+            }
+        };
+        let (before, after) = if a.summary.sent_at_ms <= b.summary.sent_at_ms {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let (Some(old), Some(new)) = (&before.response, &after.response) else {
+            return self
+                .state
+                .inform("Only sends that got a response can be compared.");
+        };
+        let comparison = tortuga_core::changes::compare(&old.to_response(), &new.to_response());
+        let offset = self.state.host.utc_offset_minutes();
+        let now = now_ms();
+        let label = |s: &Summary| {
+            let mut text = format!(
+                "{} {} · {}",
+                day_label(s.sent_at_ms, now, offset),
+                clock(s.sent_at_ms, offset),
+                s.name
+            );
+            if let Some(env) = &s.environment {
+                let _ = write!(text, " · {env}");
+            }
+            text
+        };
+        self.modal = Some(Modal::Changes(ChangesDialog {
+            between: format!("{} → {}", label(&before.summary), label(&after.summary)),
+            comparison: Arc::new(comparison),
+        }));
     }
 
     /// Shows an entry: selects its request (or the scratch request, if it is gone) with
@@ -311,9 +413,126 @@ impl TortugaUi {
                 self.state.host.clear_all_history()
             }
         };
-        if let Err(e) = result {
-            self.state
-                .notify(format!("Could not clear the history: {e}"));
+        match result {
+            Ok(()) => self.state.inform("History cleared."),
+            Err(e) => self
+                .state
+                .notify(format!("Could not clear the history: {e}")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R-HIST-4: the request's last sends show as a trend next to its response, oldest
+    /// first; other requests' sends don't count.
+    #[test]
+    fn a_request_shows_its_trend() {
+        use egui_kittest::kittest::Queryable;
+        use tortuga_core::history::Summary;
+
+        let (mut ui, root, key) = crate::shell::tests::setup("trend");
+        let summary = |i: u64, path: &Path, status: u16| Summary {
+            id: format!("{i:04}"),
+            sent_at_ms: 1_000 * i,
+            path: Some(path.to_path_buf()),
+            name: "Get user".into(),
+            method: tortuga_core::HttpMethod::Get,
+            url: "https://a.test/".into(),
+            environment: None,
+            status: Some(status),
+            elapsed_ms: Some(10 * i),
+            error: None,
+        };
+        let other = Path::new("other.toml");
+        ui.history.loaded.insert(
+            Some(root.clone()),
+            vec![
+                summary(4, &key.path, 500),
+                summary(3, other, 200),
+                summary(2, &key.path, 200),
+                summary(1, &key.path, 200),
+            ],
+        );
+        let points = ui.trend_points(&Some(key.clone()));
+        assert_eq!(
+            points.iter().map(|p| p.sent_at_ms).collect::<Vec<_>>(),
+            [1_000, 2_000, 4_000],
+            "oldest first, this request only"
+        );
+        let response = tortuga_core::Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            elapsed: std::time::Duration::from_millis(3),
+        };
+        ui.sent.entry(Some(key)).or_default().outcome =
+            Some(Outcome::Response(Arc::new(ResponseView::new(response))));
+        {
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1200.0, 900.0))
+                .build_ui(|egui_ui| ui.ui(egui_ui));
+            h.run();
+            h.get_by_label("Last 3 sends: 10 ms to 40 ms, 1 failed");
+        }
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-HIST-5: "Compare with the send before" finds the same request's previous send
+    /// that got a response, and shows what changed, the older one first.
+    #[test]
+    fn a_send_is_compared_with_the_one_before() {
+        let (mut ui, root, key) = crate::shell::tests::setup("compare-history");
+        let request = ui.current.clone();
+        let response = |total: &str| tortuga_core::Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: vec![tortuga_core::KeyValue::new(
+                "Content-Type",
+                "application/json",
+            )],
+            body: format!(r#"{{"total": {total}}}"#).into_bytes(),
+            elapsed: std::time::Duration::from_millis(5),
+        };
+        let entry = |seq: u64, path: &Path, result: Result<&tortuga_core::Response, String>| {
+            Entry::new(
+                tortuga_core::history::new_id(1_000 * seq, seq),
+                1_000 * seq,
+                Some(path.to_path_buf()),
+                &request,
+                None,
+                result,
+            )
+        };
+        let (old, new) = (response("9.5"), response("12"));
+        ui.record_history(Some(&root), entry(1, &key.path, Ok(&old)));
+        ui.record_history(Some(&root), entry(2, &key.path, Err("refused".into())));
+        ui.record_history(Some(&root), entry(3, Path::new("other.toml"), Ok(&new)));
+        ui.record_history(Some(&root), entry(4, &key.path, Ok(&new)));
+        let latest = tortuga_core::history::new_id(4_000, 4);
+        let before = ui.send_before(Some(&root), &latest).expect("one before");
+        assert_eq!(
+            before,
+            tortuga_core::history::new_id(1_000, 1),
+            "skips the error"
+        );
+        assert_eq!(ui.send_before(Some(&root), &before), None, "the first");
+
+        ui.compare_history(&(Some(root.clone()), latest), &(Some(root.clone()), before));
+        let Some(Modal::Changes(d)) = &ui.modal else {
+            panic!("the comparison")
+        };
+        let tortuga_core::changes::BodyChanges::Json { changes, .. } = &d.comparison.body else {
+            panic!("{:?}", d.comparison.body)
+        };
+        assert_eq!(
+            (changes[0].before.as_deref(), changes[0].after.as_deref()),
+            (Some("9.5"), Some("12")),
+            "older first, whatever the order chosen"
+        );
+        std::fs::remove_dir_all(root).expect("clean up");
     }
 }

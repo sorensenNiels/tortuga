@@ -285,6 +285,61 @@ async fn redirect_setting() {
     assert_eq!(not_followed.header("location"), Some("/new"));
 }
 
+/// R-HTTP-20: with a manual proxy, requests go through it, except to hosts in the
+/// bypass list; "None" goes straight to the server.
+#[tokio::test]
+async fn manual_proxy_and_its_bypass_list() {
+    use tortuga_core::ProxyMode;
+
+    let proxy = server_replying(200).await;
+    let target = server_replying(204).await;
+    let req = Request::new(HttpMethod::Get, format!("{}/through", target.uri()));
+    let manual = |no_proxy: Vec<String>| ClientSettings {
+        proxy: ProxyMode::Manual,
+        proxy_url: proxy.uri(),
+        no_proxy,
+        ..ClientSettings::default()
+    };
+
+    let res = Client::new(manual(Vec::new()))
+        .expect("client")
+        .execute(&req)
+        .await
+        .expect("sent");
+    assert_eq!(res.status, 200, "answered by the proxy");
+    assert_eq!(only_received(&proxy).await.url.path(), "/through");
+    assert!(
+        target
+            .received_requests()
+            .await
+            .expect("recorded")
+            .is_empty()
+    );
+
+    let res = Client::new(manual(vec!["127.0.0.1".into()]))
+        .expect("client")
+        .execute(&req)
+        .await
+        .expect("sent");
+    assert_eq!(res.status, 204, "bypassed the proxy");
+
+    let direct = ClientSettings {
+        proxy: ProxyMode::None,
+        ..manual(Vec::new())
+    };
+    let res = Client::new(direct)
+        .expect("client")
+        .execute(&req)
+        .await
+        .expect("sent");
+    assert_eq!(res.status, 204, "no proxy");
+    assert_eq!(
+        proxy.received_requests().await.expect("recorded").len(),
+        1,
+        "only the first request went through the proxy"
+    );
+}
+
 #[tokio::test]
 async fn invalid_url_is_reported() {
     let req = Request::new(HttpMethod::Get, "not a url");

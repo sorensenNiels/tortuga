@@ -81,6 +81,21 @@ pub fn path_text(path: &Path) -> String {
 }
 
 impl Workflow {
+    /// The steps whose request may change data: not GET, HEAD or OPTIONS (R-SRV-9), as
+    /// "POST Create order". A protected environment asks or refuses before these.
+    pub fn writes(&self, collection: &Collection) -> Vec<String> {
+        self.steps
+            .iter()
+            .filter_map(|step| {
+                let r = collection.request(Path::new(&step.request))?;
+                (!r.request.method.is_safe()).then(|| {
+                    let name = step.name.as_deref().unwrap_or(&r.request.name);
+                    format!("{} {name}", r.request.method.as_str())
+                })
+            })
+            .collect()
+    }
+
     /// A workflow that runs every request in `folder` (`""`: the whole project), in tree
     /// order, for the command-line runner (R-CLI-1).
     pub fn from_folder(collection: &Collection, folder: &Path) -> Self {

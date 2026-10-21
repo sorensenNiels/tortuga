@@ -1,6 +1,7 @@
-use egui::{AsIdSalt, Grid, TextEdit, Ui};
+use egui::{AsIdSalt, Grid, Ui};
 use tortuga_core::KeyValue;
 
+use super::{FieldWidth, Lines, VarHelp, var_edit};
 use crate::theme;
 
 /// Editable name/value table with enable toggles (params, headers, form fields).
@@ -11,8 +12,9 @@ pub fn key_value_table(
     id_salt: impl AsIdSalt,
     rows: &mut Vec<KeyValue>,
     name_hint: &str,
-    // Undefined variable names; cells using them are highlighted (R-VAR-5).
-    undefined: &[String],
+    // The variables cells may use: undefined ones are marked (R-VAR-5), and hovering or
+    // typing `{{` helps (R-VAR-9).
+    vars: &VarHelp,
 ) -> bool {
     let mut changed = false;
     let mut remove = None;
@@ -27,7 +29,7 @@ pub fn key_value_table(
         .show(ui, |ui| {
             let cx = RowContext {
                 name_hint,
-                undefined,
+                vars,
                 text_width,
             };
             ui.label("");
@@ -55,7 +57,7 @@ pub fn key_value_table(
 
 struct RowContext<'a> {
     name_hint: &'a str,
-    undefined: &'a [String],
+    vars: &'a VarHelp,
     text_width: f32,
 }
 
@@ -77,7 +79,7 @@ fn row_ui(
             .changed();
     }
     // Ids by row index, so focus stays put when the blank row becomes a real one.
-    let (hint, undefined, width) = (cx.name_hint, cx.undefined, cx.text_width);
+    let (hint, vars, width) = (cx.name_hint, cx.vars, cx.text_width);
     // Placeholders only show in empty fields; they also name the fields for screen readers.
     let name_hint = if is_blank {
         format!("Add {}", hint.to_lowercase())
@@ -85,15 +87,8 @@ fn row_ui(
         hint.to_owned()
     };
     let value_hint = "Value";
-    changed |= cell(ui, ("name", i), &mut row.name, &name_hint, undefined, width);
-    changed |= cell(
-        ui,
-        ("value", i),
-        &mut row.value,
-        value_hint,
-        undefined,
-        width,
-    );
+    changed |= cell(ui, ("name", i), &mut row.name, &name_hint, vars, width);
+    changed |= cell(ui, ("value", i), &mut row.value, value_hint, vars, width);
     let remove = !is_blank
         && ui
             .add(theme::icon_button(ui, "🗙"))
@@ -103,22 +98,27 @@ fn row_ui(
     (changed, remove)
 }
 
-fn cell(
+/// One text cell of a table, `width` wide, that knows its variables (R-VAR-5, R-VAR-9).
+/// Returns whether it changed.
+pub(super) fn cell(
     ui: &mut Ui,
     id_salt: (&str, usize),
     text: &mut String,
     hint: &str,
-    undefined: &[String],
+    vars: &VarHelp,
     width: f32,
 ) -> bool {
-    let flagged = theme::uses_undefined(text, undefined);
-    let mut edit = TextEdit::singleline(text)
-        .id_salt(id_salt)
-        .hint_text(hint.to_owned());
-    if flagged {
-        edit = edit.background_color(theme::undefined_bg(ui));
-    }
-    theme::sized_edit(ui, width, edit).changed()
+    let id = ui.make_persistent_id(id_salt);
+    var_edit(
+        ui,
+        id,
+        text,
+        vars,
+        Lines::One,
+        FieldWidth::Fixed(width),
+        |e| e.hint_text(hint.to_owned()),
+    )
+    .changed()
 }
 
 /// Adds the blank row once the user typed in it.
@@ -148,7 +148,7 @@ mod tests {
     fn renders_rows_plus_one_blank_row() {
         let mut rows = vec![KeyValue::new("Accept", "text/html")];
         let mut harness = crate::test_host::harness(|ui| {
-            key_value_table(ui, "t", &mut rows, "Header", &[]);
+            key_value_table(ui, "t", &mut rows, "Header", &VarHelp::default());
         });
         harness.run();
         assert!(harness.query_all_by_value("Accept").next().is_some());
@@ -162,7 +162,7 @@ mod tests {
         let mut rows = vec![KeyValue::new("a", "1"), KeyValue::new("b", "2")];
         {
             let mut harness = crate::test_host::harness(|ui| {
-                key_value_table(ui, "t", &mut rows, "Header", &[]);
+                key_value_table(ui, "t", &mut rows, "Header", &VarHelp::default());
             });
             harness.run();
             harness
@@ -188,7 +188,13 @@ mod dialog_tests {
             let mut h = crate::test_host::harness(|ui| {
                 egui::Modal::new(egui::Id::unique("m")).show(ui.ctx(), |ui| {
                     ui.set_width(600.0);
-                    super::key_value_table(ui, "t", &mut rows, "Header", &[]);
+                    super::key_value_table(
+                        ui,
+                        "t",
+                        &mut rows,
+                        "Header",
+                        &super::VarHelp::default(),
+                    );
                 });
             });
             h.run();

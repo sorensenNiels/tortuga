@@ -312,6 +312,8 @@ fn environments_and_servers_round_trip() {
         seq: Some(1),
         // R-SRV-8: the colour is kept in the environment file.
         color: Some(tortuga_core::EnvironmentColor::Teal),
+        // R-SRV-9: and whether it is protected.
+        protected: true,
         servers: [("users".to_owned(), "http://localhost:8080".to_owned())].into(),
         variables: [("version".to_owned(), "v2".to_owned())].into(),
     };

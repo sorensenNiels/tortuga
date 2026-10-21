@@ -7,7 +7,7 @@ use egui::{ComboBox, Label, RichText, ScrollArea, TextEdit, Ui};
 use tortuga_core::workflow::{FlowEnd, Step, StepResult, Workflow};
 use tortuga_core::{HttpMethod, KeyValue};
 
-use super::{TestsView, key_value_table, tests_details};
+use super::{TestsView, VarHelp, key_value_table, tests_details};
 use crate::theme;
 
 /// Most of a response body shown in the results.
@@ -456,7 +456,7 @@ fn step_details(
                 });
                 ui.add_space(4.0);
                 theme::section_label(ui, "Captures");
-                if key_value_table(ui, "step-captures", captures, "Variable", &[]) {
+                if key_value_table(ui, "step-captures", captures, "Variable", &VarHelp::default()) {
                     step.capture = captures
                         .iter()
                         .filter(|c| c.is_active())

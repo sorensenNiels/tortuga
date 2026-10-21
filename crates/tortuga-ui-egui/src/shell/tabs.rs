@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use egui::{Frame, Margin, Panel, Ui};
 use tortuga_core::{HttpMethod, Item, Request};
 
-use super::{CLOSE_TAB, NEXT_TAB, PREVIOUS_TAB, Selection, TAB_BEFORE, TortugaUi, breadcrumb};
+use super::{
+    CLOSE_TAB, GO_TO_TAB, NEXT_TAB, PREVIOUS_TAB, Selection, TAB_BEFORE, TortugaUi, breadcrumb,
+};
 use crate::components::{GroupChip, TabAction, TabGroup, TabView, tab_strip};
 use crate::host::{SavedTab, SavedTabs};
 use crate::state::ItemKey;
@@ -24,13 +26,17 @@ impl TortugaUi {
     }
 
     /// Once per frame: an edited preview tab is kept, tabs of deleted requests close,
-    /// the shown request always has a tab, and the tabs are remembered (R-COL-13).
+    /// the shown request always has a tab, and the tabs are remembered (R-COL-13). With
+    /// the preview tab turned off, every tab stays (R-SET-9).
     pub(super) fn sync_tabs(&mut self) {
         self.keep_if_edited();
         self.prune_tabs();
         self.tabs.tidy_collapsed();
         if self.workflows.open.is_none() && !self.tabs.contains(&self.selection) {
             self.tabs.open(&self.selection, false);
+        }
+        if !self.state.settings.editing.preview_tab {
+            self.tabs.keep_preview();
         }
         self.state.remember_tabs(self.tabs.to_saved());
     }
@@ -246,17 +252,20 @@ impl TortugaUi {
         }
     }
 
-    /// Ctrl+Tab, Ctrl+PageDown/PageUp and Ctrl+W (R-COL-13).
+    /// Ctrl+Tab, Ctrl+PageDown/PageUp, Ctrl+W (R-COL-13) and Ctrl+1 … Ctrl+9 (R-COL-27).
     pub(super) fn tab_shortcuts(&mut self, ui: &Ui) {
-        let (previous, next, before, close) = ui.input_mut(|i| {
+        let (previous, next, before, close, place) = ui.input_mut(|i| {
             (
                 i.consume_shortcut(&PREVIOUS_TAB),
                 i.consume_shortcut(&NEXT_TAB),
                 i.consume_shortcut(&TAB_BEFORE),
                 i.consume_shortcut(&CLOSE_TAB),
+                GO_TO_TAB.iter().position(|k| i.consume_shortcut(k)),
             )
         });
-        let target = if previous {
+        let target = if let Some(place) = place {
+            self.tabs.at_place(place, place + 1 == GO_TO_TAB.len())
+        } else if previous {
             self.tabs.previously_used(&self.selection)
         } else if next {
             self.tabs.neighbour(&self.selection, 1)
@@ -376,6 +385,24 @@ impl Tabs {
         }
         self.used.retain(|u| u != key);
         self.used.insert(0, key.clone());
+    }
+
+    /// The tab at `place` (from 0) in strip order, or the last tab when `last` (Ctrl+9,
+    /// as in browsers) (R-COL-27).
+    pub fn at_place(&self, place: usize, last: bool) -> Option<Selection> {
+        if last {
+            self.strip().last()
+        } else {
+            self.strip().nth(place)
+        }
+        .map(|(k, _)| k.clone())
+    }
+
+    /// Turns the preview tab, if there is one, into a kept tab (R-SET-9).
+    pub fn keep_preview(&mut self) {
+        if let Some(key) = self.preview.clone() {
+            self.keep(&key);
+        }
     }
 
     /// Turns the preview tab into a kept tab, in its project's group.
@@ -617,5 +644,27 @@ mod tests {
         let restored = Tabs::from_saved(&tabs.to_saved());
         assert_eq!(strip(&restored), strip(&tabs));
         assert!(restored.is_collapsed(Path::new("/a")));
+    }
+
+    /// R-SET-9: with the preview tab off, a single click opens a tab that stays, and a
+    /// preview tab left from before (or restored) is kept too.
+    #[test]
+    fn without_the_preview_tab_every_request_gets_a_tab() {
+        let (mut ui, root, first) = crate::shell::tests::setup("no-preview-tab");
+        let second = crate::shell::tests::add_request(&mut ui, &root, "List users ü😀");
+        ui.sync_tabs();
+        assert!(ui.tabs.is_preview(&Some(first.clone())), "on by default");
+
+        ui.state.update_settings(|s| s.editing.preview_tab = false);
+        ui.sync_tabs();
+        assert_eq!(strip(&ui.tabs), [(Some(first.clone()), false)], "kept");
+        ui.select(Some(second.clone()));
+        ui.sync_tabs();
+        assert_eq!(
+            strip(&ui.tabs),
+            [(Some(first), false), (Some(second), false)],
+            "a single click keeps its tab"
+        );
+        std::fs::remove_dir_all(root).expect("clean up");
     }
 }

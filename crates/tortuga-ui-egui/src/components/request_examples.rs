@@ -7,7 +7,7 @@ use egui::{Grid, RichText, TextEdit, Ui};
 use tortuga_core::KeyValue;
 use tortuga_core::mock::{EXAMPLE_HEADER, Example};
 
-use super::key_value_table;
+use super::{VarHelp, key_value_table};
 use crate::theme;
 
 /// Which example is open, and the text of its fields that are not plain strings.
@@ -58,7 +58,7 @@ pub fn request_examples(
     ui: &mut Ui,
     examples: &mut Vec<Example>,
     st: &mut ExamplesState,
-    undefined: &[String],
+    help: &VarHelp,
 ) {
     theme::hint(
         ui,
@@ -82,7 +82,7 @@ pub fn request_examples(
         return;
     };
     ui.add_space(8.0);
-    match example_fields(ui, &mut examples[index], drafts, undefined) {
+    match example_fields(ui, &mut examples[index], drafts, help) {
         Some(Change::Up) if index > 0 => {
             examples.swap(index, index - 1);
             st.open(index - 1);
@@ -140,7 +140,7 @@ fn example_fields(
     ui: &mut Ui,
     example: &mut Example,
     drafts: &mut Drafts,
-    undefined: &[String],
+    help: &VarHelp,
 ) -> Option<Change> {
     let mut change = None;
     Grid::new("example-fields")
@@ -203,7 +203,7 @@ fn example_fields(
     theme::section_label(ui, "Headers");
     // Each table in its own id scope: their fields are salted by row only.
     ui.push_id("example-headers", |ui| {
-        key_value_table(ui, "table", &mut example.headers, "Header", undefined);
+        key_value_table(ui, "table", &mut example.headers, "Header", help);
     });
     theme::hint(
         ui,
@@ -258,7 +258,9 @@ fn conditions(ui: &mut Ui, example: &mut Example, drafts: &mut Drafts) {
     ];
     for (id, hint, rows, map) in tables {
         if ui
-            .push_id(id, |ui| key_value_table(ui, "table", rows, hint, &[]))
+            .push_id(id, |ui| {
+                key_value_table(ui, "table", rows, hint, &VarHelp::default())
+            })
             .inner
         {
             *map = rows
@@ -287,7 +289,7 @@ mod tests {
     ) -> egui_kittest::Harness<'static, (Vec<Example>, ExamplesState)> {
         crate::test_host::harness_with_state(
             |ui, (examples, st): &mut (Vec<Example>, ExamplesState)| {
-                request_examples(ui, examples, st, &[]);
+                request_examples(ui, examples, st, &VarHelp::default());
             },
             (examples, ExamplesState::default()),
         )

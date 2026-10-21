@@ -6,11 +6,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat};
-use egui::{Align2, Color32, FontId, Id, Key, Margin, Modifiers, Pos2, Rect, Sense, TextEdit, Ui};
+use egui::{
+    Align2, Color32, FontId, Id, Key, KeyboardShortcut, Margin, Modifiers, Pos2, Rect, Sense,
+    TextEdit, Ui,
+};
 use tortuga_core::js_format::{Token, scan};
 use tortuga_core::script::{ConsoleEntry, ScriptKind};
 
 use super::script_editing::{self, Edited};
+
+/// Keys of a script field (R-TEST-14), also listed on the shortcut sheet (R-COL-27).
+pub(crate) const INDENT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Tab);
+pub(crate) const OUTDENT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::Tab);
+pub(crate) const TOGGLE_COMMENT: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND, Key::Slash);
 use crate::{format, theme};
 
 /// Longest script that is coloured; longer ones are shown plain, so typing stays quick.
@@ -102,14 +111,16 @@ fn editing_keys(ui: &Ui, field: Id, script: &mut String) {
         return;
     }
     // Shift is ignored by `consume_key` unless asked for, so Shift+Tab goes first.
+    let pressed =
+        |i: &mut egui::InputState, k: KeyboardShortcut| i.consume_key(k.modifiers, k.logical_key);
     let edit: Option<Edit> = ui.input_mut(|i| {
-        if i.consume_key(Modifiers::SHIFT, Key::Tab) {
+        if pressed(i, OUTDENT) {
             Some(script_editing::outdent as Edit)
-        } else if i.consume_key(Modifiers::NONE, Key::Tab) {
+        } else if pressed(i, INDENT) {
             Some(script_editing::indent as Edit)
         } else if i.consume_key(Modifiers::NONE, Key::Enter) {
             Some(script_editing::newline as Edit)
-        } else if i.consume_key(Modifiers::COMMAND, Key::Slash) {
+        } else if pressed(i, TOGGLE_COMMENT) {
             Some(script_editing::toggle_comment as Edit)
         } else {
             None

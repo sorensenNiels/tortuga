@@ -2,6 +2,7 @@ use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use egui::{Grid, Key, Label, RichText, ScrollArea, TextEdit, TextStyle, Ui};
+use tortuga_core::changes::Comparison;
 use tortuga_core::script::{ConsoleEntry, ScriptKind};
 use tortuga_core::{BodyView, Response};
 
@@ -13,6 +14,7 @@ mod filter;
 mod json_menu;
 mod picture;
 mod rows;
+mod trend;
 
 use filter::Syntax;
 pub use filter::{Filtered, filter_body};
@@ -20,6 +22,7 @@ pub use filter::{Filtered, filter_body};
 use picture::MAX_IMAGE_SIDE;
 use picture::{ImageBody, ImageTexture, decode_image, image_view};
 use rows::{RowMenus, text_rows};
+pub use trend::{TREND_LENGTH, Trend, TrendPoint};
 
 /// Longest piece of a line drawn as one row; longer lines are split so a
 /// minified multi-megabyte body never becomes one giant text layout.
@@ -422,6 +425,10 @@ pub struct PanelContext<'a> {
     pub wrap: bool,
     /// Whether the response can become one of the request's examples (R-MOCK-1).
     pub example: SaveExample,
+    /// The request's last sends, from history (R-HIST-4).
+    pub trend: Trend<'a>,
+    /// How this response differs from the request's previous one (R-HIST-5).
+    pub changes: Option<&'a Comparison>,
 }
 
 /// "Save as example" is offered for requests of projects that can be changed (R-MOCK-1).
@@ -445,6 +452,22 @@ pub enum ResponseAction {
         name: String,
         from: String,
     },
+    /// Show what changed since the previous response (R-HIST-5).
+    ShowChanges,
+}
+
+/// "3 changes" (or "Same as before") since the previous response (R-HIST-5); returns
+/// whether it was clicked.
+fn changes_chip(ui: &mut Ui, c: &Comparison) -> bool {
+    let p = theme::palette(ui);
+    let (text, color) = match c.count() {
+        0 => ("Same as before".to_owned(), p.muted),
+        1 => ("1 change".to_owned(), p.redirect),
+        n => (format!("{n} changes"), p.redirect),
+    };
+    ui.add(egui::Button::new(RichText::new(text).small().color(color)).small())
+        .on_hover_text("What changed since the previous response")
+        .clicked()
 }
 
 /// Body, Headers, and Tests and Console when the request has scripts; Tests and Console
@@ -560,6 +583,8 @@ fn details(
         filtered,
         tests,
         wrap,
+        trend,
+        changes,
         ..
     } = cx;
     let response = &view.response;
@@ -571,6 +596,7 @@ fn details(
         _ => p.fail,
     };
 
+    let mut show_changes = false;
     egui::Sides::new().shrink_left().show(
         ui,
         |ui| {
@@ -586,6 +612,11 @@ fn details(
             ui.label(RichText::new("·").color(p.muted));
             ui.label(RichText::new(format::size(response.body.len())).color(p.muted))
                 .on_hover_text("Size");
+            ui.add_space(6.0);
+            trend::trend(ui, trend);
+            if let Some(c) = changes {
+                show_changes = changes_chip(ui, c);
+            }
         },
         |ui| {
             if can_save && ui.button("Save to file…").clicked() {
@@ -605,6 +636,9 @@ fn details(
             }
         },
     );
+    if show_changes {
+        action = Some(ResponseAction::ShowChanges);
+    }
     ui.add_space(6.0);
     if st.focus_search {
         st.tab = Tab::Body;
@@ -959,6 +993,8 @@ mod tests {
                 tests: None,
                 wrap: false,
                 example: SaveExample::Offered,
+                trend: Trend::default(),
+                changes: None,
             };
             response_panel(ui, outcome.as_ref(), &mut st, cx);
         });
@@ -983,6 +1019,8 @@ mod tests {
                 tests: None,
                 wrap: false,
                 example: SaveExample::Offered,
+                trend: Trend::default(),
+                changes: None,
             };
             if let Some(a) = response_panel(ui, outcome.as_ref(), &mut st, cx) {
                 asked = Some(a);
@@ -1329,5 +1367,51 @@ mod tests {
         let r: Vec<&str> = rows(&long).into_iter().map(|r| &long[r]).collect();
         assert_eq!(r.len(), 2);
         assert_eq!(r[1], "é");
+    }
+
+    /// R-HIST-5: the chip says how many things changed since the previous response, and
+    /// clicking it asks for the details.
+    #[test]
+    fn the_changes_chip_counts_and_opens() {
+        let json = |total: &str| Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: vec![tortuga_core::KeyValue::new(
+                "Content-Type",
+                "application/json",
+            )],
+            body: format!(r#"{{"total": {total}, "id": 1}}"#).into_bytes(),
+            elapsed: std::time::Duration::from_millis(3),
+        };
+        let changed = tortuga_core::changes::compare(&json("1"), &json("2"));
+        let same = tortuga_core::changes::compare(&json("1"), &json("1"));
+        for (c, label) in [(&changed, "1 change"), (&same, "Same as before")] {
+            let outcome = Outcome::Response(Arc::new(ResponseView::new(json("2"))));
+            let mut st = ResponseState::default();
+            let mut filter = String::new();
+            let mut asked = None;
+            {
+                let mut h = crate::test_host::harness(|ui| {
+                    let cx = PanelContext {
+                        sending: false,
+                        can_save: false,
+                        filter: &mut filter,
+                        filtered: Filtered::Off,
+                        tests: None,
+                        wrap: false,
+                        example: SaveExample::Hidden,
+                        trend: Trend::default(),
+                        changes: Some(c),
+                    };
+                    if let Some(a) = response_panel(ui, Some(&outcome), &mut st, cx) {
+                        asked = Some(a);
+                    }
+                });
+                h.run();
+                h.get_by_label(label).click();
+                h.run();
+            }
+            assert_eq!(asked, Some(ResponseAction::ShowChanges), "{label}");
+        }
     }
 }

@@ -27,6 +27,8 @@ pub struct EnvColumn {
     pub name: String,
     /// Its dot's colour (R-SRV-8); `None`: the default.
     pub color: Option<EnvironmentColor>,
+    /// Ask before writes are sent to it (R-SRV-9).
+    pub protected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -71,6 +73,7 @@ impl Draft {
                     id: Some(e.id.clone()),
                     name: e.name.clone(),
                     color: e.color,
+                    protected: e.protected,
                 })
                 .collect(),
             servers: c
@@ -121,6 +124,7 @@ impl Draft {
             id: None,
             name,
             color: None,
+            protected: false,
         });
         self.servers
             .iter_mut()
@@ -277,6 +281,7 @@ impl Draft {
                 name: e.name.trim().to_owned(),
                 seq: Some(seq),
                 color: e.color,
+                protected: e.protected,
                 servers,
                 variables,
             });
@@ -511,13 +516,12 @@ fn footer(ui: &mut Ui, state: &AppState, error: Option<&str>, read_only: bool) -
         theme::error(ui, err);
     }
     ui.add_space(8.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    theme::button_row(ui, |ui| {
         let save = ui
             .add_enabled(!read_only, theme::primary_button(ui, "Save"))
             .clicked();
         (ui.button("Cancel").clicked(), save)
     })
-    .inner
 }
 
 /// "Defaults" and the environments, in order; click one to edit it, drag to reorder (R-SRV-6).
@@ -658,6 +662,21 @@ fn defaults_view(ui: &mut Ui, d: &mut Draft, new_server: &mut String, new_variab
     }
 }
 
+/// An environment's colour (R-SRV-8) and whether it is protected (R-SRV-9).
+fn colour_and_protection(ui: &mut Ui, env: &mut EnvColumn) {
+    ui.horizontal(|ui| {
+        ui.label("Colour");
+        color_choice(ui, &mut env.color);
+    });
+    ui.checkbox(&mut env.protected, "Protected")
+        .on_hover_text("Saved in the environment's file, so it is protected for the whole team");
+    theme::hint(
+        ui,
+        "Asks before anything but GET, HEAD or OPTIONS is sent here, and before a workflow runs \
+         here. tortuga-cli refuses such runs without --allow-protected.",
+    );
+}
+
 /// One environment: its name, each server's base URL and each variable's value (R-SRV-7).
 /// Returns how many environments are left when this one was removed.
 fn environment_view(
@@ -686,10 +705,7 @@ fn environment_view(
         d.remove_environment(col);
         return Some(d.environments.len());
     }
-    ui.horizontal(|ui| {
-        ui.label("Colour");
-        color_choice(ui, &mut env.color);
-    });
+    colour_and_protection(ui, env);
     ui.add_space(10.0);
 
     let mut remove_server = None;
@@ -1333,6 +1349,34 @@ mod tests {
             "the left edge moved {moved} instead of 40"
         );
         drop(h);
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// R-SRV-9: "Protected" is ticked per environment and saved in its file.
+    #[test]
+    fn an_environment_is_protected() {
+        use egui_kittest::kittest::Queryable;
+        let (root, state) = open_project("protected");
+        let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+        dialog.draft = draft();
+        dialog.shown = Shown::Environment(1);
+        {
+            let mut h = harness(&mut dialog, &state);
+            h.run();
+            h.get_by_label("Protected").click();
+            h.run();
+        }
+        assert!(dialog.draft.environments[1].protected);
+        assert!(
+            !dialog.draft.environments[0].protected,
+            "only the shown one"
+        );
+        let config = dialog
+            .draft
+            .to_config(&Manifest::new("C"), &[])
+            .expect("valid");
+        let text = tortuga_core::format::write_environment(&config.environments[1]);
+        assert!(text.contains("protected = true"), "{text}");
         std::fs::remove_dir_all(&root).expect("clean up");
     }
 }

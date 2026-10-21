@@ -207,6 +207,11 @@ impl TortugaUi {
                     .map(|((env, name), value)| ((Some(env.clone()), name.clone()), value.clone())),
             );
         self.keep_secrets(dir, found);
+        let name = self
+            .state
+            .collection(dir)
+            .map_or_else(String::new, |c| c.name().to_owned());
+        self.state.inform(format!("Imported “{name}”."));
         let missing = import
             .manifest
             .secrets

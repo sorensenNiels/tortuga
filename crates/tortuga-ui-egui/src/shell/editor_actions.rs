@@ -21,6 +21,7 @@ impl TortugaUi {
         let root = key.as_ref().map(|k| k.root.clone());
         match action {
             EditorAction::Send => self.send(ctx),
+            EditorAction::SendEverywhere => self.send_everywhere(ctx),
             EditorAction::Cancel => self.cancel(),
             EditorAction::PasteCurl(text) => self.paste_curl(&text),
             EditorAction::ToggleBreakpoint(script, line) => {

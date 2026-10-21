@@ -30,8 +30,63 @@ pub enum ClearHistory {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryAction {
-    Open { root: Option<PathBuf>, id: String },
+    Open {
+        root: Option<PathBuf>,
+        id: String,
+    },
     Clear(ClearHistory),
+    /// What changed since the request's send before this one (R-HIST-5).
+    CompareWithBefore {
+        root: Option<PathBuf>,
+        id: String,
+    },
+    /// Remember this entry to compare another one with (R-HIST-5).
+    SelectForComparing {
+        root: Option<PathBuf>,
+        id: String,
+    },
+    /// What changed between the selected entry and this one (R-HIST-5).
+    CompareWithSelected {
+        root: Option<PathBuf>,
+        id: String,
+    },
+}
+
+/// The right-click menu of an entry: compare it with another one (R-HIST-5).
+fn compare_menu(
+    response: &egui::Response,
+    row: &HistoryRow<'_>,
+    cx: HistoryContext<'_>,
+) -> Option<HistoryAction> {
+    let (root, id) = (row.root.map(Path::to_path_buf), row.summary.id.clone());
+    let mut action = None;
+    response.context_menu(|ui| {
+        if row.summary.status.is_none() {
+            ui.label("No response to compare");
+            return;
+        }
+        if ui.button("Compare with the send before").clicked() {
+            action = Some(HistoryAction::CompareWithBefore {
+                root: root.clone(),
+                id: id.clone(),
+            });
+        }
+        if cx.selected_for_comparing.is_some_and(|s| s != id)
+            && ui.button("Compare with the selected one").clicked()
+        {
+            action = Some(HistoryAction::CompareWithSelected {
+                root: root.clone(),
+                id: id.clone(),
+            });
+        }
+        if ui.button("Select for comparing").clicked() {
+            action = Some(HistoryAction::SelectForComparing {
+                root: root.clone(),
+                id: id.clone(),
+            });
+        }
+    });
+    action
 }
 
 /// What the list needs besides the rows.
@@ -43,6 +98,8 @@ pub struct HistoryContext<'a> {
     pub open: Option<&'a str>,
     /// Places that have history: (project root, name).
     pub places: &'a [(Option<PathBuf>, String)],
+    /// The entry selected for comparing, if any (R-HIST-5).
+    pub selected_for_comparing: Option<&'a str>,
 }
 
 /// The workspace's history, newest first, grouped by day, with a filter field.
@@ -122,11 +179,15 @@ pub fn history_list(
                     day = label;
                 }
                 let selected = cx.open == Some(row.summary.id.as_str());
-                if history_row(ui, row, selected, cx).clicked() {
+                let response = history_row(ui, row, selected, cx);
+                if response.clicked() {
                     action = Some(HistoryAction::Open {
                         root: row.root.map(Path::to_path_buf),
                         id: row.summary.id.clone(),
                     });
+                }
+                if let Some(asked) = compare_menu(&response, row, cx) {
+                    action = Some(asked);
                 }
             }
             if shown.len() == MAX_ROWS {
@@ -257,6 +318,7 @@ mod tests {
                 offset_minutes: 0,
                 open: None,
                 places: &[],
+                selected_for_comparing: None,
             };
             if let Some(a) = history_list(ui, &rows, &mut shared_filter.borrow_mut(), cx) {
                 *shared.borrow_mut() = Some(a);

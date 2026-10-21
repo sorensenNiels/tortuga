@@ -1,6 +1,7 @@
-use egui::{Grid, RichText, TextEdit, Ui};
+use egui::{Grid, RichText, Ui};
 use tortuga_core::{Auth, vars};
 
+use super::{FieldWidth, Lines, VarHelp, var_edit};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +63,7 @@ pub fn request_auth(
     auth: &mut Option<Auth>,
     inherited: Option<&Auth>,
     origin: &str,
-    undefined: &[String],
+    help: &VarHelp,
 ) -> Option<EditDefaults> {
     let from_project = origin == "the project";
     let inherit = inherited.map(|_| {
@@ -104,7 +105,7 @@ pub fn request_auth(
         }
         (None, None) => theme::hint(ui, "This request sends no authentication."),
         (Some(a), _) => {
-            auth_fields(ui, "request-auth", a, undefined, "request file");
+            auth_fields(ui, "request-auth", a, help, "request file");
         }
     }
     edit_defaults
@@ -134,13 +135,7 @@ pub fn kind_picker(ui: &mut Ui, auth: &mut Option<Auth>, inherit: Option<&str>) 
 
 /// Fields of a concrete auth (no kind picker). `saved_in` names the file the
 /// values are written to, for the plain-text credential warning.
-pub fn auth_fields(
-    ui: &mut Ui,
-    id: &str,
-    auth: &mut Auth,
-    undefined: &[String],
-    saved_in: &str,
-) -> bool {
+pub fn auth_fields(ui: &mut Ui, id: &str, auth: &mut Auth, help: &VarHelp, saved_in: &str) -> bool {
     let mut changed = false;
     let width = ui.available_width().min(420.0);
     let mut credential = None;
@@ -153,28 +148,20 @@ pub fn auth_fields(
                 ui.end_row();
             }
             Auth::Basic { username, password } => {
-                changed |= field(
-                    ui,
-                    "Username",
-                    (id, "user"),
-                    username,
-                    undefined,
-                    width,
-                    false,
-                );
+                changed |= field(ui, "Username", (id, "user"), username, help, width, false);
                 changed |= field(
                     ui,
                     "Password",
                     (id, "password"),
                     password,
-                    undefined,
+                    help,
                     width,
                     true,
                 );
                 credential = Some(password.clone());
             }
             Auth::Bearer { token } => {
-                changed |= field(ui, "Token", (id, "token"), token, undefined, width, true);
+                changed |= field(ui, "Token", (id, "token"), token, help, width, true);
                 credential = Some(token.clone());
             }
         });
@@ -206,23 +193,28 @@ fn field(
     label: &str,
     id: (&str, &str),
     value: &mut String,
-    undefined: &[String],
+    help: &VarHelp,
     width: f32,
     sensitive: bool,
 ) -> bool {
     ui.label(RichText::new(label).color(theme::palette(ui).muted));
     // Literal credentials are masked; `{{variables}}` stay readable.
     let mask = sensitive && looks_like_plain_credential(value);
-    let flagged = theme::uses_undefined(value, undefined);
-    let mut edit = TextEdit::singleline(value)
-        .id_salt(id)
-        .font(egui::TextStyle::Monospace)
-        .password(mask)
-        .hint_text(if sensitive { "{{secret}}" } else { "" });
-    if flagged {
-        edit = edit.background_color(theme::undefined_bg(ui));
-    }
-    let changed = theme::sized_edit(ui, width, edit).changed();
+    let field_id = ui.make_persistent_id(id);
+    let changed = var_edit(
+        ui,
+        field_id,
+        value,
+        help,
+        Lines::One,
+        FieldWidth::Fixed(width),
+        |e| {
+            e.font(egui::TextStyle::Monospace)
+                .password(mask)
+                .hint_text(if sensitive { "{{secret}}" } else { "" })
+        },
+    )
+    .changed();
     ui.end_row();
     changed
 }

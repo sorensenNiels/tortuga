@@ -15,7 +15,7 @@ use tortuga_core::secrets::SecretValues;
 use tortuga_core::settings::{Level, ResolvedSettings};
 use tortuga_core::storage::Storage;
 use tortuga_core::workspace::{self, ProjectRef, WorkspaceDefaults, WorkspaceVariables};
-use tortuga_core::{AppSettings, Client, ClientSettings, Collection, Environment, Request, vars};
+use tortuga_core::{AppSettings, Client, ClientSettings, Collection, Request};
 
 use crate::format::sentence;
 use crate::host::{Host, LocalState, Workspace};
@@ -86,6 +86,8 @@ pub struct AppState {
     live: Live,
     /// Last problem or message to show the user; cleared when dismissed.
     pub notice: Option<String>,
+    /// A message that needs no action, shown for a moment in a corner (R-COL-28).
+    pub toast: Option<Toast>,
     /// Values captured or set by scripts, per project (`None`: the scratch request);
     /// kept until the app closes, never on disk (R-TEST-5, D26).
     pub runtime: BTreeMap<Option<PathBuf>, BTreeMap<String, String>>,
@@ -178,6 +180,7 @@ impl AppState {
             git: BTreeMap::new(),
             live: Live::default(),
             notice: (!problems.is_empty()).then(|| problems.join("\n")),
+            toast: None,
             runtime: BTreeMap::new(),
             workspace_runtime: BTreeMap::new(),
             workspace_secrets: BTreeMap::new(),
@@ -191,8 +194,18 @@ impl AppState {
         self.host.storage()
     }
 
+    /// Shows a problem, or something to act on, in the banner until it is dismissed.
     pub fn notify(&mut self, message: impl AsRef<str>) {
         self.notice = Some(sentence(message.as_ref()));
+    }
+
+    /// Shows a message that needs no action for a moment, e.g. "Mock server stopped"
+    /// (R-COL-28). A newer one replaces it.
+    pub fn inform(&mut self, message: impl AsRef<str>) {
+        self.toast = Some(Toast {
+            text: sentence(message.as_ref()),
+            shown_at: None,
+        });
     }
 
     /// Applies new settings and saves them: rebuilds the client if its settings changed,
@@ -648,6 +661,30 @@ impl AppState {
         }
     }
 
+    /// Moves the request/response divider (R-SET-12) in memory; `save_local` writes it,
+    /// once the user lets go of it rather than on every frame of a drag.
+    pub fn set_split(&mut self, split: crate::host::SavedSplit) {
+        self.local.split = split;
+    }
+
+    /// Where the request/response divider was left (R-SET-12).
+    pub fn remembered_split(&self) -> crate::host::SavedSplit {
+        self.local.split
+    }
+
+    /// The workspace's sidebar is hidden (R-COL-26).
+    pub fn sidebar_hidden(&self) -> bool {
+        self.workspace().sidebar_hidden
+    }
+
+    /// Hides or shows the workspace's sidebar, and remembers it (R-COL-26).
+    pub fn set_sidebar_hidden(&mut self, hidden: bool) {
+        if self.workspace().sidebar_hidden != hidden {
+            self.workspace_mut().sidebar_hidden = hidden;
+            self.save_local();
+        }
+    }
+
     /// The open tabs of the workspace as last remembered.
     pub fn remembered_tabs(&self) -> &crate::host::SavedTabs {
         &self.workspace().tabs
@@ -658,193 +695,6 @@ impl AppState {
         let (root, path) = self.workspace().selection.clone()?;
         let key = ItemKey::new(&root, path);
         self.saved_request(&key).is_some().then_some(key)
-    }
-
-    // ------------------------------------------------------------ environments
-
-    /// The active environment of a project: the workspace's environment if the project
-    /// has one with that name (R-WS-6), else the project's own choice, else its first.
-    pub fn active_environment(&self, root: &Path) -> Option<String> {
-        let c = self.collection(root)?;
-        let ws = self.workspace();
-        if let Some(name) = &ws.environment
-            && let Some(env) = c.environments.iter().find(|e| e.name == *name)
-        {
-            return Some(env.id.clone());
-        }
-        match ws.project_environments.get(&root_key(root)) {
-            Some(id) if c.environment(id).is_some() => Some(id.clone()),
-            _ => c.environments.first().map(|e| e.id.clone()),
-        }
-    }
-
-    /// False when the workspace's environment is one this project doesn't have (R-WS-6).
-    pub fn follows_workspace_environment(&self, root: &Path) -> bool {
-        let Some(name) = &self.workspace().environment else {
-            return true;
-        };
-        self.collection(root).is_none_or(|c| {
-            c.environments.is_empty() || c.environments.iter().any(|e| e.name == *name)
-        })
-    }
-
-    /// Environment names of all open projects, each once, in order of appearance.
-    pub fn environment_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = Vec::new();
-        for env in self.collections.iter().flat_map(|c| &c.environments) {
-            if !names.contains(&env.name) {
-                names.push(env.name.clone());
-            }
-        }
-        names
-    }
-
-    /// The colour of the environment called `name` (R-SRV-8): the one `root` gives it,
-    /// else the first project's that gives it one, since the picker switches them all.
-    pub fn environment_color(
-        &self,
-        root: &Path,
-        name: &str,
-    ) -> Option<tortuga_core::EnvironmentColor> {
-        let own = self
-            .collection(root)
-            .and_then(|c| c.environments.iter().find(|e| e.name == name))
-            .and_then(|e| e.color);
-        own.or_else(|| {
-            self.collections
-                .iter()
-                .flat_map(|c| &c.environments)
-                .filter(|e| e.name == name)
-                .find_map(|e| e.color)
-        })
-    }
-
-    /// Switches every project that has an environment called `name` (R-WS-6).
-    pub fn set_workspace_environment(&mut self, name: &str) {
-        self.mocks.selected = false;
-        self.refresh_mocks();
-        self.workspace_mut().environment = Some(name.to_owned());
-        self.save_local();
-    }
-
-    /// Keeps the project at `root` on its environment when a save renamed it (R-SRV-7): the
-    /// workspace picks environments by name (R-WS-6). `old` are its environments before.
-    pub fn follow_environment_renames(&mut self, root: &Path, old: &[Environment]) {
-        let (Some(chosen), Some(c)) = (self.workspace().environment.clone(), self.collection(root))
-        else {
-            return;
-        };
-        let Some(renamed) = old
-            .iter()
-            .filter(|e| e.name == chosen)
-            .find_map(|e| c.environment(&e.id))
-            .filter(|e| e.name != chosen)
-        else {
-            return;
-        };
-        let (id, name) = (renamed.id.clone(), renamed.name.clone());
-        if self.environment_names().contains(&chosen) {
-            // Other projects still have the old name and stay on it; only this one moves.
-            self.set_project_environment(root, &id);
-        } else {
-            self.set_workspace_environment(&name);
-        }
-    }
-
-    /// The environment a project uses when it has none named like the workspace's.
-    pub fn set_project_environment(&mut self, root: &Path, id: &str) {
-        self.workspace_mut()
-            .project_environments
-            .insert(root_key(root), id.to_owned());
-        self.refresh_mock(root);
-        self.save_local();
-    }
-
-    /// Servers and variables for requests of the collection at `root`; empty for scratch requests.
-    pub fn context(&self, root: Option<&Path>) -> vars::Context {
-        match root {
-            Some(root) => self.context_at(root, None),
-            None => self.with_runtime(vars::Context::default(), None),
-        }
-    }
-
-    /// The context of a request: the project's, with what its folders define (R-COL-11).
-    /// `None` is the scratch request.
-    pub fn request_context(&self, key: Option<&ItemKey>) -> vars::Context {
-        match key {
-            Some(key) => self.context_at(&key.root, Some(&key.path)),
-            None => self.with_runtime(vars::Context::default(), None),
-        }
-    }
-
-    /// Adds the workspace's variables below everything else (R-WS-8), then runtime
-    /// variables above everything else (R-TEST-5): the workspace's captured values,
-    /// then the project's.
-    fn with_runtime(&self, ctx: vars::Context, root: Option<&Path>) -> vars::Context {
-        let ws = self.workspace();
-        let mut ctx = ctx.with_workspace(&self.workspace_values(), &ws.variables.secrets);
-        if let Some(runtime) = self.workspace_runtime.get(&ws.id) {
-            ctx.variables.extend(runtime.clone());
-        }
-        if let Some(runtime) = self.runtime.get(&root.map(Path::to_path_buf)) {
-            ctx.variables.extend(runtime.clone());
-        }
-        ctx
-    }
-
-    /// The runtime variables of a project (`None`: the scratch request) (R-TEST-5).
-    pub fn runtime_vars(&self, root: Option<&Path>) -> Option<&BTreeMap<String, String>> {
-        self.runtime
-            .get(&root.map(Path::to_path_buf))
-            .filter(|v| !v.is_empty())
-    }
-
-    /// Applies variables set or unset by a run (R-TEST-5); `workspace.<name>` ones go
-    /// to the workspace (R-WS-8).
-    pub fn apply_runtime(
-        &mut self,
-        root: Option<&Path>,
-        changes: &BTreeMap<String, Option<String>>,
-    ) {
-        let (project, workspace) = tortuga_core::runner::split_changes(changes);
-        if !project.is_empty() {
-            let vars = self.runtime.entry(root.map(Path::to_path_buf)).or_default();
-            tortuga_core::runner::apply_changes(vars, &project);
-        }
-        if !workspace.is_empty() {
-            let id = self.workspace().id.clone();
-            let vars = self.workspace_runtime.entry(id).or_default();
-            tortuga_core::runner::apply_changes(vars, &workspace);
-        }
-    }
-
-    pub fn clear_runtime(&mut self, root: Option<&Path>) {
-        self.runtime.remove(&root.map(Path::to_path_buf));
-    }
-
-    fn context_at(&self, root: &Path, path: Option<&Path>) -> vars::Context {
-        let env = self.active_environment(root);
-        let secrets = self
-            .secrets
-            .get(root)
-            .map(|s| s.for_environment(env.as_deref()))
-            .unwrap_or_default();
-        let defaults = &self.workspace().defaults;
-        // While the mock is chosen, its environment sends this project's requests there
-        // (R-MOCK-4); secrets keep the values of the project's own environment.
-        let mock = self.mock_environment(root);
-        let ctx = self
-            .collection(root)
-            .map(|c| {
-                let env = mock
-                    .as_ref()
-                    .or_else(|| env.as_deref().and_then(|id| c.environment(id)));
-                vars::Context::for_request_in(c, env, path)
-                    .with_workspace_defaults(defaults)
-                    .with_secrets(secrets)
-            })
-            .unwrap_or_default();
-        self.with_runtime(ctx, Some(root))
     }
 
     // ------------------------------------------------------------ live changes (M6)
@@ -1000,6 +850,14 @@ impl AppState {
             self.notify(e);
         }
     }
+}
+
+/// A message shown for a moment (R-COL-28).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Toast {
+    pub text: String,
+    /// When it was first drawn (egui time); `None` until then.
+    pub shown_at: Option<f64>,
 }
 
 /// Results from background threads: changed collections and finished git statuses.

@@ -123,10 +123,13 @@ impl TortugaUi {
             }
             WorkspaceAction::SaveAsFile => {
                 let name = tortuga_core::workspace::file_name(&self.state.workspace().name);
-                if let Some(file) = self.state.host.pick_save_path("Save workspace as", &name)
-                    && let Err(e) = self.state.save_workspace_as(&file)
-                {
-                    self.state.notify(e);
+                if let Some(file) = self.state.host.pick_save_path("Save workspace as", &name) {
+                    match self.state.save_workspace_as(&file) {
+                        Ok(()) => self
+                            .state
+                            .inform(format!("Saved the workspace in {}.", file.display())),
+                        Err(e) => self.state.notify(e),
+                    }
                 }
             }
             WorkspaceAction::OpenFile => {

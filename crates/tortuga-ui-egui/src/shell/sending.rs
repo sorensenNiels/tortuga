@@ -6,8 +6,8 @@ use std::sync::Arc;
 use futures_util::future::abortable;
 use tortuga_core::vars;
 
-use super::{FilterDone, FilterJob, Finished, InFlight, Selection, TortugaUi};
-use crate::components::{Outcome, ResponseView, TestsView};
+use super::{FilterDone, FilterJob, Finished, Guarded, InFlight, Modal, Selection, TortugaUi};
+use crate::components::{ConfirmDialog, Outcome, ResponseView, TestsView};
 use crate::format::sentence;
 
 impl TortugaUi {
@@ -16,7 +16,31 @@ impl TortugaUi {
         self.in_flight.as_ref().map(|f| &f.key)
     }
 
+    /// Sends the shown request; to a protected environment, a method other than GET,
+    /// HEAD or OPTIONS asks first (R-SRV-9).
     pub(super) fn send(&mut self, egui_ctx: &egui::Context) {
+        let method = self.current.method;
+        let protected = self
+            .selection
+            .as_ref()
+            .and_then(|k| self.state.protected_environment(&k.root));
+        match protected {
+            Some(env) if !method.is_safe() => {
+                let dialog = ConfirmDialog {
+                    title: format!("Send {} to “{env}”?", method.as_str()),
+                    message: format!(
+                        "“{env}” is a protected environment: this request may change its data."
+                    ),
+                    confirm_label: "Send".into(),
+                };
+                self.modal = Some(Modal::Protected(Guarded::Send, dialog));
+            }
+            _ => self.send_now(egui_ctx),
+        }
+    }
+
+    /// Sends the shown request, without asking.
+    pub(super) fn send_now(&mut self, egui_ctx: &egui::Context) {
         if let Some(f) = self.in_flight.take() {
             f.abort.abort();
         }
@@ -54,6 +78,11 @@ impl TortugaUi {
             .map(|s| s.breakpoints.clone())
             .unwrap_or_default();
         let environment = ctx.environment.clone();
+        // What this send is compared with (R-HIST-5): the request's last response.
+        let previous = match self.sent.get(&key).and_then(|s| s.outcome.as_ref()) {
+            Some(Outcome::Response(view)) => Some(Arc::clone(view)),
+            _ => None,
+        };
         let (task, abort) = abortable(async move {
             // The pre-request script, sending, captures and tests (R-TEST-1..4).
             let mut step = tortuga_core::runner::run_step(
@@ -97,6 +126,14 @@ impl TortugaUi {
                 ran: request.scripts.clone(),
                 ..t
             });
+            // Off the UI thread too: comparing big JSON bodies takes a while.
+            let comparison = match (&previous, &step.response) {
+                (Some(before), Some(Ok(after))) => Some(Arc::new(tortuga_core::changes::compare(
+                    &before.response,
+                    after,
+                ))),
+                _ => None,
+            };
             // Prepared here, off the UI thread: pretty-printing big bodies takes a while (R-NF-2).
             let outcome = Outcome::from_step(step.response.take(), &step.errors);
             // The receiver only goes away with the app.
@@ -105,6 +142,7 @@ impl TortugaUi {
                 outcome,
                 entry: Some(entry),
                 tests,
+                comparison,
             });
             repaint.request_repaint();
         });
@@ -193,7 +231,9 @@ impl TortugaUi {
                         .apply_runtime(f.key.as_ref().map(|k| k.root.as_path()), &tests.vars);
                     self.sent.entry(f.key.clone()).or_default().tests = Some(tests);
                 }
-                self.sent.entry(f.key).or_default().outcome = Some(done.outcome);
+                let sent = self.sent.entry(f.key).or_default();
+                sent.outcome = Some(done.outcome);
+                sent.comparison = done.comparison;
             }
         }
     }
