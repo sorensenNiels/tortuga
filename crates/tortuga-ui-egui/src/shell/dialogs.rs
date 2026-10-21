@@ -439,4 +439,25 @@ mod tests {
             "Save at {save}, content ends at {last}"
         );
     }
+
+    /// The title bar's ⚙ opens Settings; it is named "Settings" for screen readers.
+    #[test]
+    fn the_settings_icon_opens_settings() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut ui = TortugaUi::new(Box::new(crate::test_host::TestHost::default()));
+        {
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1200.0, 800.0))
+                .build_ui(|egui_ui| ui.ui(egui_ui));
+            h.run();
+            assert!(
+                h.query_by_label("⚙  Settings").is_none(),
+                "no text any more"
+            );
+            h.get_by_label("Settings").click();
+            h.run();
+        }
+        assert!(matches!(ui.modal, Some(super::Modal::Settings(_))));
+    }
 }

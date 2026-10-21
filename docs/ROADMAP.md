@@ -194,6 +194,7 @@ Requirements still open: not built yet, or implemented but not yet verified ever
 | R-SRV-10 | **Send to every environment** (right-click on Send, the palette, Ctrl+Shift+Enter; D57): the request goes at once to each environment of its project with that environment's variables, secrets, servers, auth and the project's cookies, but without its scripts, captures or history, so nothing changes in the app. **Every environment** shows a row per environment as answers arrive: status, time and size, or why it failed (an undefined variable fails at once), and how the response's shape differs from the first environment's answer: keys added or missing and values of another type, not values; array items by their first. Closing it stops what is still on its way. A method other than GET, HEAD or OPTIONS asks first when one of the environments is protected (R-SRV-9). *(IDEA-83)* |
 | R-HIST-4 | **A request's trend**: in the response line, small bars for the request's last 20 sends from history, oldest first, as tall as they took, failures (no response, 4xx, 5xx) in red; hovering says "Last 12 sends: 80 ms to 1.2 s, 2 failed" and when the bar under the pointer was sent, its status and time. Only with two sends or more, and only where history is kept. *(IDEA-84)* |
 | R-SRV-9 | **Protected environments** (D56): **Protected** in an environment's view of the environments dialog, saved as `protected = true` in its file (only when on), so the team shares it. Sending anything but GET, HEAD or OPTIONS to a protected environment asks every time ("Send DELETE to “Production”?"); running a workflow against one asks once before it starts when a step may change data, naming those steps. The mock's environment is never protected. `tortuga-cli` refuses such a run with exit code 2, naming the steps, unless `--allow-protected` is given; a run that only reads goes as usual. *(IDEA-85)* |
+| R-SET-14 | **About** tab in Settings: the version, the OS and architecture it was built for, the project and workspace file formats it reads (newer project files open read-only), the licence and a link to the source; **Copy version information** copies one line for a bug report ("Tortuga 0.5.0 (linux x86_64, project format 2, workspace format 2)"); and that the app contacts nothing on its own (R-P-4). |
 
 ## 7. Ideas
 
@@ -225,6 +226,7 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-54 | Dynamic mock answers: templates that read the incoming request (`{{request.path.id}}`, `{{request.body.$.name}}`, a timestamp, a random id), or a response script in the script engine. | Static examples first (D46, R-MOCK-3). |
 | IDEA-55 | Stateful mocks: a `POST` that later `GET`s return, reset on restart. | Turns the mock into a fake backend; only if static examples prove too little. |
 | IDEA-57 | Fault injection in the mock: drop the connection, answer slowly, return 5xx for a share of calls. | `delay_ms` (R-MOCK-3) covers slow answers. |
+| IDEA-90 | **Find shared workspaces.** When "Add existing projects" (R-WS-3) finds a `*.tortuga-workspace.toml` in the chosen folder or repository, offer to open that workspace (R-WS-5) instead of adding its projects one by one; a project opened on its own whose repository has a workspace file that lists it gets a quiet hint with "Open workspace". | Today each teammate opens a committed workspace file once by hand ("Open workspace file…"), so a workspace in the repo is easy to miss. |
 
 ### UI and settings
 
@@ -323,4 +325,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-21` · `R-CK-6` · `R-COL-29` · `R-WS-9` · `R-VAR-10` · `R-SRV-11` · `R-GIT-15` · `R-HIST-6` · `R-LOC-3` · `R-NF-5` · `IDEA-90` · `D58` · `R-TEST-17` · `R-FLOW-7` · `R-CLI-5` · `R-SET-14` · `R-MOCK-9`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-21` · `R-CK-6` · `R-COL-29` · `R-WS-9` · `R-VAR-10` · `R-SRV-11` · `R-GIT-15` · `R-HIST-6` · `R-LOC-3` · `R-NF-5` · `IDEA-91` · `D58` · `R-TEST-17` · `R-FLOW-7` · `R-CLI-5` · `R-SET-15` · `R-MOCK-9`.

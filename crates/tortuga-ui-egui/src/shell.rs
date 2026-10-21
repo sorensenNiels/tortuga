@@ -588,7 +588,14 @@ impl TortugaUi {
                 self.environment_picker(ui);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(theme::ghost_button("⚙  Settings")).clicked() {
+                // Only the icon; the name is on hover and for screen readers.
+                let settings = ui
+                    .add(theme::ghost_button(RichText::new("⚙").size(16.0)))
+                    .on_hover_text("Settings");
+                settings.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, "Settings")
+                });
+                if settings.clicked() {
                     self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
                 }
                 let go_to = (

@@ -25,6 +25,7 @@ enum SettingsTab {
     Features,
     History,
     Importers,
+    About,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +85,7 @@ impl SettingsDialog {
     /// Done with the settings to apply. `can_pick_files`: offer "Add…" for CA
     /// certificates and "Choose…" for the code font.
     pub fn show(&mut self, ctx: &Context, can_pick_files: bool) -> DialogResult<AppSettings> {
-        super::dialog(ctx, "settings", "Settings", 480.0, true, |ui| {
+        super::dialog(ctx, "settings", "Settings", 560.0, true, |ui| {
             theme::tabs(
                 ui,
                 &mut self.tab,
@@ -95,6 +96,7 @@ impl SettingsDialog {
                     (SettingsTab::Features, "Features", None),
                     (SettingsTab::History, "History", None),
                     (SettingsTab::Importers, "Importers", None),
+                    (SettingsTab::About, "About", None),
                 ],
             );
             // Long tabs scroll, so Save stays on screen in a small window.
@@ -142,6 +144,7 @@ impl SettingsDialog {
                 history_settings(ui, &mut self.draft.history, &mut self.history_text);
             }
             SettingsTab::Importers => importer_settings(ui, &mut self.draft.importers),
+            SettingsTab::About => about(ui),
         }
     }
 }
@@ -496,6 +499,84 @@ fn history_settings(ui: &mut Ui, h: &mut HistorySettings, text: &mut String) {
     }
 }
 
+/// The app's version, for bug reports and to know what a teammate runs (R-SET-14).
+fn version_info() -> String {
+    format!(
+        "Tortuga {} ({} {}, project format {}, workspace format {})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tortuga_core::format::FORMAT_VERSION,
+        tortuga_core::workspace::WORKSPACE_FORMAT,
+    )
+}
+
+/// What this build is (R-SET-14).
+fn about(ui: &mut Ui) {
+    let p = theme::palette(ui);
+    ui.horizontal(|ui| {
+        ui.label(theme::semibold("🐢").size(28.0).color(p.accent));
+        ui.vertical(|ui| {
+            ui.label(theme::semibold("Tortuga").size(18.0));
+            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+        });
+    });
+    ui.add_space(8.0);
+    egui::Grid::new("about")
+        .num_columns(2)
+        .spacing([16.0, 6.0])
+        .show(ui, |ui| {
+            let row = |ui: &mut Ui, name: &str, value: String| {
+                ui.label(egui::RichText::new(name).color(p.muted));
+                ui.label(value);
+                ui.end_row();
+            };
+            row(
+                ui,
+                "Built for",
+                format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+            );
+            row(
+                ui,
+                "Project files",
+                format!(
+                    "format {}; newer ones open read-only",
+                    tortuga_core::format::FORMAT_VERSION
+                ),
+            );
+            row(
+                ui,
+                "Workspace files",
+                format!("format {}", tortuga_core::workspace::WORKSPACE_FORMAT),
+            );
+            row(
+                ui,
+                "Licence",
+                env!("CARGO_PKG_LICENSE").replace(" OR ", " or "),
+            );
+            ui.label(egui::RichText::new("Source").color(p.muted));
+            ui.hyperlink(REPOSITORY);
+            ui.end_row();
+        });
+    ui.add_space(8.0);
+    if ui
+        .button("Copy version information")
+        .on_hover_text(version_info())
+        .clicked()
+    {
+        ui.ctx().copy_text(version_info());
+    }
+    ui.add_space(4.0);
+    theme::hint(
+        ui,
+        "Tortuga sends nothing on its own: no telemetry, no update checks. It only contacts \
+         the servers your requests go to.",
+    );
+}
+
+/// Where the source and the issues are.
+const REPOSITORY: &str = "https://github.com/sorensenNiels/tortuga";
+
 /// Which importers "+ Add" and the command palette offer (R-COL-18).
 fn importer_settings(ui: &mut Ui, importers: &mut ImporterSettings) {
     theme::hint(
@@ -778,5 +859,29 @@ mod tests {
         assert!(!saved.features.enabled(Feature::Examples));
         assert!(saved.features.enabled(Feature::Scripts));
         assert!(saved.features.enabled(Feature::Docs));
+    }
+
+    /// R-SET-14: the About tab shows the version, and copies it for a bug report.
+    #[test]
+    fn about_shows_the_version() {
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        let mut h = harness(|ui| {
+            dialog.show(ui.ctx(), true);
+        });
+        h.run();
+        h.get_by_label("About").click();
+        h.run();
+        h.get_by_label(&format!("Version {}", env!("CARGO_PKG_VERSION")));
+        h.get_by_label("Copy version information").click();
+        // The press and the release take a frame each; the copy is in one of them.
+        let mut copied = false;
+        for _ in 0..3 {
+            h.step();
+            copied |= h.output().platform_output.commands.iter().any(|c| {
+                matches!(c, egui::OutputCommand::CopyText(t)
+                    if t.starts_with("Tortuga ") && t.contains(std::env::consts::OS))
+            });
+        }
+        assert!(copied);
     }
 }
