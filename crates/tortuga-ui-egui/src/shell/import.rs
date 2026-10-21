@@ -1,38 +1,58 @@
-//! Importing an OpenAPI description (R-COL-15), a Postman collection (R-COL-16) or a
-//! `.http` file (R-COL-17) as a new project, and Postman environments into a new or an
-//! existing project (R-COL-20).
+//! Importing an OpenAPI description (R-COL-15), a Postman collection (R-COL-16),
+//! `.http` files (R-COL-17, several at once R-COL-29), a Bruno collection (R-COL-31) or
+//! an Insomnia export (R-COL-32) as a new project, and Postman (R-COL-20), HTTP Client (R-COL-29) or Bruno
+//! (R-COL-31) environments into a new or an existing project.
 
 use std::path::{Path, PathBuf};
 
 use tortuga_core::collection::MANIFEST_FILE;
-use tortuga_core::import::{self, Import, ImportKind};
-use tortuga_core::postman::{self, PostmanEnvironment};
+use tortuga_core::import::{self, Import, ImportKind, ImportedEnvironment};
 use tortuga_core::settings::ImporterSettings;
+use tortuga_core::storage::Storage;
+use tortuga_core::{bruno, http_file, postman};
 
 use super::{Modal, TortugaUi};
 use crate::components::{
     DialogResult, EnvironmentImportDialog, EnvironmentsDialog, ImportAction, ImportDialog,
-    ImportTarget,
+    ImportTarget, file_names,
 };
 
-const PICK_ENVIRONMENTS: &str = "Choose Postman environments (exported as JSON)";
+/// The JetBrains HTTP Client's environment files, found next to `.http` files and
+/// added to their import (R-COL-29).
+const HTTP_ENVIRONMENT_FILES: [&str; 2] = ["http-client.env.json", "http-client.private.env.json"];
+
+/// The file picker's title and extensions for environment files of `kind`.
+fn pick_environments(kind: ImportKind) -> (&'static str, &'static [&'static str]) {
+    match kind {
+        ImportKind::Http | ImportKind::OpenApi | ImportKind::Insomnia => (
+            "Choose HTTP Client environment files, or VS Code settings with REST Client \
+             environments",
+            &["json", "code-workspace"],
+        ),
+        ImportKind::Postman => ("Choose Postman environments (exported as JSON)", &["json"]),
+        ImportKind::Bruno => (
+            "Choose Bruno environments (the .bru files in a collection's environments folder)",
+            &["bru"],
+        ),
+    }
+}
 
 /// The import dialog with what the shell found out about its folder (checked when
 /// the folder changes, not every frame).
 #[derive(Debug)]
 pub(super) struct OpenImport {
     dialog: ImportDialog,
-    /// The file as read, before environment files were added (R-COL-20).
+    /// The file as read, before environment files were added (R-COL-20, R-COL-29).
     read: Import,
-    environments: Vec<PostmanEnvironment>,
+    environments: Vec<ImportedEnvironment>,
     taken: bool,
     repository: Option<PathBuf>,
 }
 
 impl OpenImport {
-    fn new(import: Import, source: PathBuf) -> Self {
+    fn new(import: Import, sources: Vec<PathBuf>) -> Self {
         Self {
-            dialog: ImportDialog::new(import.clone(), source),
+            dialog: ImportDialog::new(import.clone(), sources),
             read: import,
             environments: Vec::new(),
             taken: false,
@@ -41,43 +61,122 @@ impl OpenImport {
     }
 }
 
-/// The dialog for Postman environments imported into a project, with the files it
-/// read: the import is worked out again from the project as it is when confirmed.
+/// The dialog for environments imported into a project, with the files it read: the
+/// import is worked out again from the project as it is when confirmed.
 #[derive(Debug)]
 pub(super) struct OpenEnvironmentImport {
     dialog: EnvironmentImportDialog,
-    files: Vec<PostmanEnvironment>,
+    files: Vec<ImportedEnvironment>,
 }
 
-/// Reads Postman environment files (R-COL-20).
+/// Reads environment files of `kind`: Postman's (R-COL-20), one environment each, or
+/// the HTTP clients' (R-COL-29), with an environment per name in them.
 fn read_environments(
-    storage: &dyn tortuga_core::storage::Storage,
+    storage: &dyn Storage,
+    kind: ImportKind,
     paths: &[PathBuf],
-) -> Result<Vec<PostmanEnvironment>, String> {
-    paths
+) -> Result<Vec<ImportedEnvironment>, String> {
+    let mut out = Vec::new();
+    for path in paths {
+        let read = storage
+            .read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                let parsed = match kind {
+                    ImportKind::Postman => postman::parse_environment(&text).map(|e| vec![e]),
+                    ImportKind::Http | ImportKind::OpenApi | ImportKind::Insomnia => {
+                        http_file::parse_environments(&text, &file_name(path))
+                    }
+                    ImportKind::Bruno => {
+                        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                        bruno::parse_environment(&text, &stem).map(|e| vec![e])
+                    }
+                };
+                parsed.map_err(|e| tortuga_core::error::message(&e))
+            })
+            .map_err(|e| format!("Could not import {}: {e}", path.display()))?;
+        out.extend(read);
+    }
+    Ok(out)
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Picked with `.http` files: an environment file rather than requests (R-COL-29).
+fn is_environment_path(path: &Path) -> bool {
+    let extension = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase());
+    http_file::is_environment_file_name(&file_name(path))
+        || matches!(extension.as_deref(), Some("json" | "code-workspace"))
+}
+
+/// Reads one file of any kind, several `.http` files as one project named after their
+/// folder (R-COL-29), or a Bruno collection's folder (R-COL-31).
+fn read_import(
+    storage: &dyn Storage,
+    paths: &[PathBuf],
+    kind: ImportKind,
+) -> Result<Import, String> {
+    if let [dir] = paths
+        && (kind == ImportKind::Bruno || bruno::is_collection(storage, dir))
+    {
+        return bruno::read(storage, dir).map_err(|e| tortuga_core::error::message(&e));
+    }
+    let texts = paths
         .iter()
         .map(|path| {
             storage
                 .read_to_string(path)
-                .map_err(|e| e.to_string())
-                .and_then(|text| {
-                    postman::parse_environment(&text).map_err(|e| tortuga_core::error::message(&e))
-                })
-                .map_err(|e| format!("Could not import {}: {e}", path.display()))
+                .map_err(|e| format!("{}: {e}", path.display()))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let parsed = if let ([path], [text]) = (paths, texts.as_slice()) {
+        import::parse(text, &file_name(path), kind)
+    } else {
+        let names: Vec<String> = paths.iter().map(|p| file_name(p)).collect();
+        let files: Vec<(&str, &str)> = texts
+            .iter()
+            .zip(&names)
+            .map(|(t, n)| (t.as_str(), n.as_str()))
+            .collect();
+        let dir = paths
+            .first()
+            .and_then(|p| p.parent())
+            .unwrap_or(Path::new(""));
+        http_file::parse_files(&files, &http_file::folder_project_name(dir))
+    };
+    parsed.map_err(|e| tortuga_core::error::message(&e))
 }
 
-fn file_names(paths: &[PathBuf]) -> Vec<String> {
-    paths
-        .iter()
-        .map(|p| {
-            p.file_name().map_or_else(
-                || p.display().to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            )
-        })
-        .collect()
+/// A Bruno collection's folder for its picked `bruno.json` (R-COL-31), else `path`.
+fn collection_folder(path: &Path) -> PathBuf {
+    match path.parent() {
+        Some(dir) if file_name(path) == bruno::COLLECTION_FILE => dir.to_path_buf(),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// The HTTP Client environment files next to `files` that `picked` doesn't have yet.
+fn environment_files_next_to(
+    storage: &dyn Storage,
+    files: &[PathBuf],
+    picked: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in files.iter().filter_map(|f| f.parent()) {
+        for name in HTTP_ENVIRONMENT_FILES {
+            let path = dir.join(name);
+            if !picked.contains(&path) && !out.contains(&path) && storage.exists(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 /// `import`, unless it was recognised as a kind whose importer is off (R-COL-18).
@@ -94,40 +193,90 @@ fn allowed(importers: &ImporterSettings, import: Import) -> Result<Import, Strin
 }
 
 impl TortugaUi {
-    /// Picks a file to import, reads it and shows what the import will make. A file of
-    /// the other kind is imported as what it is.
+    /// Picks a file to import (several for `.http` files, R-COL-29), reads it and shows
+    /// what the import will make. A file of the other kind is imported as what it is.
     pub(super) fn import_file(&mut self, kind: ImportKind) {
-        let title = match kind {
-            ImportKind::OpenApi => "Choose an OpenAPI description (JSON or YAML)",
-            ImportKind::Postman => "Choose a Postman collection (exported as JSON)",
-            ImportKind::Http => "Choose a .http file (REST Client or JetBrains HTTP Client)",
-        };
-        let Some(path) = self.state.host.pick_any_file(title) else {
-            return;
-        };
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let read = self
-            .state
-            .storage()
-            .read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|text| {
-                import::parse(&text, &file_name, kind).map_err(|e| tortuga_core::error::message(&e))
-            })
-            .and_then(|import| allowed(&self.state.settings.importers, import));
-        match read {
-            Ok(import) => {
-                let mut open = OpenImport::new(import, path);
-                self.check_import_folder(&mut open);
-                self.modal = Some(Modal::Import(Box::new(open)));
-            }
-            Err(e) => self
+        let paths: Vec<PathBuf> = match kind {
+            ImportKind::OpenApi => self
                 .state
-                .notify(format!("Could not import {}: {e}", path.display())),
+                .host
+                .pick_any_file("Choose an OpenAPI description (JSON or YAML)")
+                .into_iter()
+                .collect(),
+            ImportKind::Postman => self
+                .state
+                .host
+                .pick_any_file("Choose a Postman collection (exported as JSON)")
+                .into_iter()
+                .collect(),
+            ImportKind::Http => self.state.host.pick_any_files(
+                "Choose .http files (REST Client or JetBrains HTTP Client), and their \
+                 environment files",
+                &["http", "rest", "json", "code-workspace"],
+            ),
+            ImportKind::Insomnia => self
+                .state
+                .host
+                .pick_any_file("Choose an Insomnia export (v4 JSON or v5 YAML)")
+                .into_iter()
+                .collect(),
+            ImportKind::Bruno => self
+                .state
+                .host
+                .pick_folder("Choose a Bruno collection (the folder with bruno.json)")
+                .into_iter()
+                .collect(),
+        };
+        if !paths.is_empty() {
+            self.import_paths(kind, &paths);
         }
+    }
+
+    /// Reads the picked files and shows the import dialog. With several, environment
+    /// files among them, and those next to the `.http` files, become the project's
+    /// environments (R-COL-29).
+    fn import_paths(&mut self, kind: ImportKind, paths: &[PathBuf]) {
+        let (mut environments, files): (Vec<PathBuf>, Vec<PathBuf>) = if paths.len() > 1 {
+            paths.iter().cloned().partition(|p| is_environment_path(p))
+        } else {
+            (
+                Vec::new(),
+                paths.iter().map(|p| collection_folder(p)).collect(),
+            )
+        };
+        if files.is_empty() {
+            self.state.notify(
+                "Could not import: choose the .http files together with their environment \
+                 files, or import environments into a project from its menu.",
+            );
+            return;
+        }
+        let read = read_import(self.state.storage(), &files, kind)
+            .and_then(|import| allowed(&self.state.settings.importers, import));
+        let import = match read {
+            Ok(import) => import,
+            Err(e) => {
+                let what = match files.as_slice() {
+                    [one] => one.display().to_string(),
+                    _ => file_names(&files).join(", "),
+                };
+                self.state.notify(format!("Could not import {what}: {e}"));
+                return;
+            }
+        };
+        let is_http = import.kind == ImportKind::Http;
+        let mut open = OpenImport::new(import, files);
+        self.check_import_folder(&mut open);
+        if is_http {
+            let found = environment_files_next_to(
+                self.state.storage(),
+                &open.dialog.sources,
+                &environments,
+            );
+            environments.extend(found);
+            self.add_environment_files(&mut open, &environments);
+        }
+        self.modal = Some(Modal::Import(Box::new(open)));
     }
 
     fn check_import_folder(&self, open: &mut OpenImport) {
@@ -165,7 +314,8 @@ impl TortugaUi {
                 }
             }
             Some(ImportAction::AddEnvironments) => {
-                let paths = self.state.host.pick_any_files(PICK_ENVIRONMENTS);
+                let (title, extensions) = pick_environments(open.read.kind);
+                let paths = self.state.host.pick_any_files(title, extensions);
                 self.add_environment_files(open, &paths);
             }
             None => {}
@@ -245,32 +395,34 @@ impl TortugaUi {
         }
     }
 
-    /// Adds Postman environment files to a collection import (R-COL-20): they
-    /// replace its "Default" environment.
+    /// Adds environment files to a Postman collection (R-COL-20) or `.http` import
+    /// (R-COL-29): they replace its "Default" environment.
     fn add_environment_files(&mut self, open: &mut OpenImport, paths: &[PathBuf]) {
         if paths.is_empty() {
             return;
         }
-        match read_environments(self.state.storage(), paths) {
+        match read_environments(self.state.storage(), open.read.kind, paths) {
             Ok(files) => {
                 open.environments.extend(files);
+                open.dialog.environment_files.extend(file_names(paths));
                 open.dialog.import = open.read.with_environments(&open.environments);
             }
             Err(e) => self.state.notify(e),
         }
     }
 
-    /// Picks Postman environment files and shows what importing them into the project
-    /// at `root` changes (R-COL-20).
-    pub(super) fn import_environments(&mut self, root: PathBuf) {
-        let paths = self.state.host.pick_any_files(PICK_ENVIRONMENTS);
+    /// Picks environment files of `kind` and shows what importing them into the project
+    /// at `root` changes (R-COL-20, R-COL-29).
+    pub(super) fn import_environments(&mut self, root: PathBuf, kind: ImportKind) {
+        let (title, extensions) = pick_environments(kind);
+        let paths = self.state.host.pick_any_files(title, extensions);
         if !paths.is_empty() {
-            self.review_environments(root, &paths);
+            self.review_environments(root, kind, &paths);
         }
     }
 
-    fn review_environments(&mut self, root: PathBuf, paths: &[PathBuf]) {
-        let files = match read_environments(self.state.storage(), paths) {
+    fn review_environments(&mut self, root: PathBuf, kind: ImportKind, paths: &[PathBuf]) {
+        let files = match read_environments(self.state.storage(), kind, paths) {
             Ok(files) => files,
             Err(e) => {
                 self.state.notify(e);
@@ -280,8 +432,9 @@ impl TortugaUi {
         let Some(c) = self.state.collection(&root) else {
             return;
         };
-        let preview = postman::import_environments(&c.manifest, &c.environments, &files);
+        let preview = import::import_environments(&c.manifest, &c.environments, &files);
         let dialog = EnvironmentImportDialog {
+            kind,
             project: c.name().to_owned(),
             root,
             sources: file_names(paths),
@@ -317,7 +470,7 @@ impl TortugaUi {
             return;
         };
         // What is on disk now, which may have changed while the dialog was open.
-        let result = postman::import_environments(&c.manifest, &c.environments, &open.files);
+        let result = import::import_environments(&c.manifest, &c.environments, &open.files);
         let saved = self.state.run(root, |c, s| {
             c.save_config(s, &result.manifest, &result.environments)
         });
@@ -378,7 +531,7 @@ mod tests {
         let mut ui = TortugaUi::new(Box::new(TestHost::default()));
         let mut open = OpenImport::new(
             import::parse(spec, "openapi.json", ImportKind::OpenApi).expect("parse"),
-            dir.join("openapi.json"),
+            vec![dir.join("openapi.json")],
         );
         ui.check_import_folder(&mut open);
         assert!(!open.taken);
@@ -411,7 +564,7 @@ mod tests {
             "item": [{{"name": "Ping", "request": "https://shop.test/ping"}}]}}"#
         );
         let import = import::parse(&collection, "shop.json", ImportKind::Postman).expect("parse");
-        OpenImport::new(import, dir.join("shop.postman_collection.json"))
+        OpenImport::new(import, vec![dir.join("shop.postman_collection.json")])
     }
 
     /// R-COL-16, D35: credentials found in a Postman collection are kept in this
@@ -453,7 +606,7 @@ mod tests {
         let collection = r#"{"info": {"name": "Shop"},
             "item": [{"name": "List", "request": {"method": "GET", "url": "{{baseUrl}}/orders"}}]}"#;
         let import = import::parse(collection, "shop.json", ImportKind::Postman).expect("parse");
-        OpenImport::new(import, dir.join("shop.postman_collection.json"))
+        OpenImport::new(import, vec![dir.join("shop.postman_collection.json")])
     }
 
     /// R-COL-20: environment files added to a collection import replace "Default";
@@ -527,7 +680,7 @@ mod tests {
 
         let default = environment_file(&dir, "Default", "https://dev.test", "dev-token");
         let staging = environment_file(&dir, "Staging", "https://staging.test", "");
-        ui.review_environments(root.clone(), &[default, staging]);
+        ui.review_environments(root.clone(), ImportKind::Postman, &[default, staging]);
         let Some(Modal::EnvironmentImport(open)) = ui.modal.take() else {
             panic!("the dialog opens");
         };
@@ -558,5 +711,227 @@ mod tests {
             "Staging's token is empty"
         );
         std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-COL-31: a Bruno collection's folder (or its picked `bruno.json`) is imported
+    /// next to it, never into it; its environments come along, and Bruno's secrets
+    /// are asked for afterwards. A folder that isn't one is refused by name.
+    #[test]
+    fn bruno_collections_import_from_their_folder() {
+        let base = tempfile::tempdir().expect("dir");
+        let dir = base.path().join("shop-api");
+        std::fs::create_dir_all(dir.join("environments")).expect("dir");
+        let config = write(&dir, "bruno.json", r#"{"name": "Shop API"}"#);
+        write(
+            &dir,
+            "list.bru",
+            "meta {\n  name: List ü😀\n}\n\nget {\n  url: {{baseUrl}}/users\n  auth: bearer\n}\n\nauth:bearer {\n  token: {{token}}\n}\n",
+        );
+        write(
+            &dir.join("environments"),
+            "Local.bru",
+            "vars {\n  baseUrl: http://localhost:3000\n}\nvars:secret [\n  token\n]\n",
+        );
+
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        ui.import_paths(ImportKind::Http, &[config]);
+        let Some(Modal::Import(open)) = ui.modal.take() else {
+            panic!("the dialog opens: {:?}", ui.state.notice);
+        };
+        assert_eq!(open.dialog.import.kind, ImportKind::Bruno);
+        assert_eq!(open.dialog.sources, std::slice::from_ref(&dir));
+        // The slug is the collection's own folder name, so the project goes beside it.
+        assert_eq!(open.dialog.dir, base.path().join("shop-api-tortuga"));
+
+        ui.import_paths(ImportKind::Bruno, std::slice::from_ref(&dir));
+        let Some(Modal::Import(open)) = ui.modal.take() else {
+            panic!("the dialog opens: {:?}", ui.state.notice);
+        };
+        ui.finish_import(&open.dialog);
+        let root = base.path().join("shop-api-tortuga");
+        let project = ui.state.collection(&root).expect("added");
+        assert_eq!(project.environments[0].name, "Local");
+        assert_eq!(project.manifest.secrets, ["token"]);
+        assert!(
+            matches!(ui.modal, Some(Modal::Environments(_))),
+            "Bruno keeps token's value"
+        );
+        assert!(
+            !dir.join(MANIFEST_FILE).exists(),
+            "the collection is not changed"
+        );
+
+        let empty = base.path().join("empty");
+        std::fs::create_dir_all(&empty).expect("dir");
+        ui.modal = None;
+        ui.import_paths(ImportKind::Bruno, &[empty]);
+        assert!(ui.modal.is_none());
+        let notice = format!("{:?}", ui.state.notice);
+        assert!(notice.contains("has no bruno.json"), "{notice}");
+    }
+
+    /// R-COL-32: an Insomnia export becomes a project beside it, with its
+    /// sub-environments and their values; a private environment's go to the secret store.
+    #[test]
+    fn insomnia_exports_import_with_their_environments() {
+        let base = tempfile::tempdir().expect("dir");
+        let file = write(
+            base.path(),
+            "Insomnia_2026-10-21.yaml",
+            "type: collection.insomnia.rest/5.0\nname: Shop ü😀\ncollection:\n  - url: \"{{ _.base_url }}/users\"\n    name: List users\n    method: GET\n    authentication:\n      type: bearer\n      token: \"{{ _.token }}\"\nenvironments:\n  name: Base Environment\n  data:\n    base_url: https://shop.test\n  subEnvironments:\n    - name: Prod\n      isPrivate: true\n      data:\n        token: t-prod\n",
+        );
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        ui.import_paths(ImportKind::Insomnia, &[file]);
+        let Some(Modal::Import(open)) = ui.modal.take() else {
+            panic!("the dialog opens: {:?}", ui.state.notice);
+        };
+        assert_eq!(open.dialog.import.kind, ImportKind::Insomnia);
+        ui.finish_import(&open.dialog);
+        let root = open.dialog.dir.clone();
+        assert_eq!(root.parent(), Some(base.path()));
+        let project = ui.state.collection(&root).expect("added");
+        assert_eq!(project.environments[0].name, "Prod");
+        assert_eq!(project.manifest.secrets, ["token"]);
+        let stored = &ui.state.secrets[&root].values;
+        assert_eq!(
+            stored[&(Some(project.environments[0].id.clone()), "token".to_owned())],
+            "t-prod"
+        );
+    }
+
+    fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, text).expect("write");
+        path
+    }
+
+    /// R-COL-29: several `.http` files are one project named after their folder, a
+    /// folder per file; the HTTP Client environment files next to them become its
+    /// environments, the private file's values going to the secret store.
+    #[test]
+    fn several_http_files_import_with_the_environment_files_next_to_them() {
+        let base = tempfile::tempdir().expect("dir");
+        let dir = base.path().join("shop-api");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let orders = write(
+            &dir,
+            "orders.http",
+            "### Orders\nGET {{host}}/orders\nAuthorization: Bearer {{token}}\n",
+        );
+        let users = write(&dir, "users.http", "### Users\nGET {{host}}/users\n");
+        write(
+            &dir,
+            "http-client.env.json",
+            r#"{"dev": {"host": "http://localhost:3000"}, "prod": {"host": "https://shop.test"}}"#,
+        );
+        write(
+            &dir,
+            "http-client.private.env.json",
+            r#"{"dev": {"token": "t-dev-ü😀"}}"#,
+        );
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        ui.import_paths(ImportKind::Http, &[orders, users]);
+        let Some(Modal::Import(open)) = ui.modal.take() else {
+            panic!("the dialog opens: {:?}", ui.state.notice);
+        };
+        assert_eq!(
+            open.dialog.environment_files,
+            ["http-client.env.json", "http-client.private.env.json"]
+        );
+        let import = &open.dialog.import;
+        assert_eq!(import.manifest.name, "Shop api");
+        let names: Vec<_> = import
+            .environments
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, ["dev", "prod"]);
+
+        ui.finish_import(&open.dialog);
+        let root = dir.join("shop-api");
+        let project = ui.state.collection(&root).expect("added");
+        assert_eq!(project.items.len(), 2, "a folder per file");
+        assert_eq!(
+            project.environment("dev").expect("dev").servers["host"],
+            "http://localhost:3000"
+        );
+        let stored = &ui.state.secrets[&root].values;
+        assert_eq!(
+            stored[&(Some("dev".to_owned()), "token".to_owned())],
+            "t-dev-ü😀"
+        );
+        assert!(
+            matches!(ui.modal, Some(Modal::Environments(_))),
+            "prod has no token"
+        );
+        let env = std::fs::read_to_string(root.join("environments").join("dev.toml")).expect("dev");
+        assert!(!env.contains("t-dev"), "{env}");
+    }
+
+    /// R-COL-29: environment files picked without `.http` files are refused with a hint.
+    #[test]
+    fn environment_files_alone_are_not_an_import() {
+        let dir = tempfile::tempdir().expect("dir");
+        let env = write(dir.path(), "http-client.env.json", r#"{"dev": {}}"#);
+        let private = write(dir.path(), "http-client.private.env.json", r#"{"dev": {}}"#);
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        ui.import_paths(ImportKind::Http, &[env.clone(), private]);
+        assert!(ui.modal.is_none());
+        assert!(
+            ui.state
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("together with their environment files"))
+        );
+        ui.state.notice = None;
+        ui.import_paths(ImportKind::Http, &[env]);
+        assert!(
+            ui.state
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("environment file of the HTTP clients"))
+        );
+    }
+
+    /// R-COL-29, D49: REST Client environments from a VS Code settings file go into an
+    /// existing project: the one with the same name is updated, the others added.
+    #[test]
+    fn http_environments_import_into_an_existing_project() {
+        let dir = tempfile::tempdir().expect("dir");
+        let http = write(dir.path(), "shop.http", "### Ping\nGET {{baseUrl}}/ping\n");
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        ui.import_paths(ImportKind::Http, &[http]);
+        let Some(Modal::Import(open)) = ui.modal.take() else {
+            panic!("the dialog opens");
+        };
+        ui.finish_import(&open.dialog);
+        let root = dir.path().join("shop");
+        let settings = write(
+            dir.path(),
+            "settings.json",
+            r#"{
+              // REST Client
+              "rest-client.environmentVariables": {
+                "Default": {"baseUrl": "http://localhost:8080"},
+                "staging": {"baseUrl": "https://staging.test", "home": "{{$processEnv HOME}}"},
+              }
+            }"#,
+        );
+        ui.review_environments(root.clone(), ImportKind::Http, &[settings]);
+        let Some(Modal::EnvironmentImport(open)) = ui.modal.take() else {
+            panic!("the dialog opens: {:?}", ui.state.notice);
+        };
+        assert_eq!(open.dialog.kind, ImportKind::Http);
+        assert_eq!(open.dialog.preview.updated, ["Default"]);
+        assert_eq!(open.dialog.preview.added, ["staging"]);
+        assert_eq!(open.dialog.preview.warnings.len(), 1);
+        ui.finish_environment_import(&open);
+        let project = ui.state.collection(&root).expect("project");
+        let urls: Vec<_> = project
+            .environments
+            .iter()
+            .map(|e| e.servers["baseurl"].as_str())
+            .collect();
+        assert_eq!(urls, ["http://localhost:8080", "https://staging.test"]);
     }
 }

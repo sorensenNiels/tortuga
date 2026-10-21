@@ -371,9 +371,10 @@ pub trait Host {
         None
     }
 
-    /// Asks for one or more files (e.g. Postman environments to import, R-COL-20).
-    /// Empty if cancelled or not possible here.
-    fn pick_any_files(&self, _title: &str) -> Vec<PathBuf> {
+    /// Asks for one or more files with one of `extensions`, or any file when it is
+    /// empty (e.g. Postman environments to import, R-COL-20). Empty if cancelled or not
+    /// possible here.
+    fn pick_any_files(&self, _title: &str, _extensions: &[&str]) -> Vec<PathBuf> {
         Vec::new()
     }
 

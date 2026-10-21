@@ -19,7 +19,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
-use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::collection::{Collection, NewItem};
 use crate::format::{Environment, FolderDefaults, Manifest, Server};
@@ -61,48 +60,7 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 fn read_document(text: &str) -> Result<Value> {
-    let text = text.trim_start_matches('\u{feff}').trim_start();
-    if text.starts_with('{') {
-        return serde_json::from_str(text)
-            .map_err(|e| invalid(format!("it is not valid JSON: {e}")));
-    }
-    let docs = YamlLoader::load_from_str(text)
-        .map_err(|e| invalid(format!("it is not valid YAML: {e}")))?;
-    let first = docs
-        .into_iter()
-        .next()
-        .ok_or_else(|| invalid("the file is empty"))?;
-    Ok(yaml_to_json(&first))
-}
-
-fn yaml_to_json(yaml: &Yaml) -> Value {
-    match yaml {
-        Yaml::Real(text) => text
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map_or_else(|| Value::String(text.clone()), Value::Number),
-        Yaml::Integer(i) => Value::from(*i),
-        Yaml::String(s) => Value::String(s.clone()),
-        Yaml::Boolean(b) => Value::Bool(*b),
-        Yaml::Array(items) => Value::Array(items.iter().map(yaml_to_json).collect()),
-        Yaml::Hash(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| (yaml_key(k), yaml_to_json(v)))
-                .collect(),
-        ),
-        Yaml::Alias(_) | Yaml::Null | Yaml::BadValue => Value::Null,
-    }
-}
-
-/// Map keys as text: YAML reads `200:` (a response code) as a number.
-fn yaml_key(key: &Yaml) -> String {
-    match key {
-        Yaml::String(s) | Yaml::Real(s) => s.clone(),
-        Yaml::Integer(i) => i.to_string(),
-        Yaml::Boolean(b) => b.to_string(),
-        _ => String::new(),
-    }
+    crate::import::json_or_yaml(text).map_err(invalid)
 }
 
 fn check_version(doc: &Value) -> Result<()> {

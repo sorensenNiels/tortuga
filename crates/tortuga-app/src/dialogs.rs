@@ -30,13 +30,14 @@ pub fn pick_any_file(title: &str) -> Option<PathBuf> {
     rfd::FileDialog::new().set_title(title).pick_file()
 }
 
-/// Asks for one or more files. Empty if the user cancelled.
-pub fn pick_any_files(title: &str) -> Vec<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title(title)
-        .add_filter("JSON", &["json"])
-        .pick_files()
-        .unwrap_or_default()
+/// Asks for one or more files with one of `extensions` (any file when empty). Empty if
+/// the user cancelled.
+pub fn pick_any_files(title: &str, extensions: &[&str]) -> Vec<PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    if !extensions.is_empty() {
+        dialog = dialog.add_filter(extensions.join(", "), extensions);
+    }
+    dialog.pick_files().unwrap_or_default()
 }
 
 /// Asks for a folder. `None` if the user cancelled.

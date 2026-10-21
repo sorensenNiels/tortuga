@@ -466,7 +466,12 @@ mod tests {
         assert_eq!(back, settings);
         assert_eq!(
             back.importers.enabled_kinds().collect::<Vec<_>>(),
-            [ImportKind::OpenApi, ImportKind::Http]
+            [
+                ImportKind::OpenApi,
+                ImportKind::Insomnia,
+                ImportKind::Http,
+                ImportKind::Bruno
+            ]
         );
         settings.importers.set_enabled(ImportKind::Postman, true);
         assert!(settings.importers.is_default());

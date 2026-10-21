@@ -13,31 +13,35 @@
 //!   never into the project;
 //! - scripts translated to Tortuga's script API (R-COL-19, [`script`]); one that uses
 //!   more of Postman's `pm` API than the translation knows is kept as comments to port
-//!   by hand (D28, D36).
+//!   by hand (D28, D36);
+//! - saved responses as the request's examples for the mock server (R-COL-30), and
+//!   `disableCookies` as its cookies switch.
 //!
 //! What can't be imported as written is reported in [`Import::warnings`].
 //! [`crate::import::create_project`] writes the result.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::collection::NewItem;
-use crate::error::sentence;
 use crate::format::{FolderDefaults, Manifest};
-use crate::import::{Collected, Import, ImportKind, short_name, variable_name};
+use crate::import::auth::{AuthSpec, Credentials, Inherited};
+use crate::import::{
+    Collected, Import, ImportKind, graphql_body, short_name, translated_note, unique_name,
+};
+use crate::mock::Example;
 use crate::model::{
-    Auth, FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts, is_json_content_type,
+    FormPart, HttpMethod, KeyValue, Request, RequestBody, Response, Scripts, is_json_content_type,
 };
 use crate::{Error, Result};
 
 mod environment;
-mod script;
+pub(crate) mod script;
 
 pub(crate) use environment::looks_like_environment;
-pub use environment::{
-    EnvironmentImport, PostmanEnvironment, import_environments, parse_environment,
-};
+pub use environment::parse_environment;
 
 /// Reads a Postman collection (v2.0 or v2.1 JSON) into a project (R-COL-16).
 pub fn parse(text: &str) -> Result<Import> {
@@ -101,29 +105,6 @@ fn check_version(doc: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Auth and an API key that one level (collection, folder or request) sets.
-#[derive(Debug, Clone, Default)]
-struct Credentials {
-    /// `None` = inherit.
-    auth: Option<Auth>,
-    header: Option<KeyValue>,
-    query: Option<KeyValue>,
-}
-
-/// What a request gets from the levels above it that Tortuga's inheritance doesn't
-/// carry by itself.
-#[derive(Debug, Clone, Default)]
-struct Inherited {
-    /// API keys the collection or a folder sends as query parameters.
-    query: Vec<KeyValue>,
-    /// API key headers of the nearest level with auth, which own auth turns off.
-    headers: Vec<KeyValue>,
-    /// The project or a folder has auth that Tortuga passes down.
-    auth: bool,
-    /// A folder turned that auth off, which Tortuga's folders can't (R-COL-11).
-    no_auth: bool,
-}
-
 struct Importer<'a> {
     doc: &'a Value,
     c: Collected,
@@ -151,15 +132,7 @@ impl<'a> Importer<'a> {
         self.c.variables = self.variables_of(self.doc.get("variable"));
         self.level_scripts(self.doc.get("event"), "the collection");
         let creds = self.credentials(self.doc.get("auth"), "the collection");
-        let auth = creds.auth.unwrap_or_default();
-        manifest.headers.extend(creds.header.clone());
-        let top = Inherited {
-            query: creds.query.into_iter().collect(),
-            headers: creds.header.into_iter().collect(),
-            auth: !auth.is_none(),
-            no_auth: false,
-        };
-        manifest.auth = Some(auth).filter(|a| !a.is_none());
+        let top = Inherited::top(creds, &mut manifest);
         let items = self.items(self.doc.get("item"), &top);
         self.c.finish(ImportKind::Postman, manifest, items)
     }
@@ -227,22 +200,7 @@ impl<'a> Importer<'a> {
             variables: self.variables_of(item.get("variable")),
             ..FolderDefaults::default()
         };
-        let below = match creds.auth {
-            None => inherited.clone(),
-            Some(auth) => {
-                defaults.headers = turned_off(&inherited.headers, creds.header.as_ref());
-                defaults.headers.extend(creds.header.clone());
-                let below = Inherited {
-                    query: creds.query.into_iter().collect(),
-                    headers: creds.header.into_iter().collect(),
-                    auth: inherited.auth || !auth.is_none(),
-                    no_auth: auth.is_none(),
-                };
-                // "No auth" reaches the requests through `no_auth`.
-                defaults.auth = Some(auth).filter(|a| !a.is_none());
-                below
-            }
-        };
+        let below = inherited.folder(creds, &mut defaults);
         let items = self.items(Some(children), &below);
         NewItem::Folder {
             name,
@@ -319,30 +277,38 @@ impl<'a> Importer<'a> {
         {
             request.headers.push(content_type);
         }
-        self.apply_auth(&mut request, req.get("auth"), inherited);
+        let own = self.credentials(req.get("auth"), &format!("“{}”", request.name));
+        inherited.apply(own, &mut request);
         request.scripts = self.request_scripts(item.get("event"));
+        request.examples = examples(item.get("response"));
+        self.apply_settings(&mut request, item.get("protocolProfileBehavior"));
         Some(request)
     }
 
-    // ------------------------------------------------------------------- auth
-
-    /// A request's own auth, or what it gets from above when it inherits.
-    fn apply_auth(&mut self, request: &mut Request, auth: Option<&Value>, inherited: &Inherited) {
-        let own = self.credentials(auth, &format!("“{}”", request.name));
-        let Some(auth) = own.auth else {
-            if inherited.no_auth && inherited.auth {
-                request.auth = Some(Auth::None);
-            }
-            request.params.extend(inherited.query.iter().cloned());
-            return;
-        };
-        request.auth = Some(auth);
-        request
-            .headers
-            .extend(turned_off(&inherited.headers, own.header.as_ref()));
-        request.headers.extend(own.header);
-        request.params.extend(own.query);
+    /// A request's own settings (`protocolProfileBehavior`, R-COL-30). Cookies are a
+    /// request's own switch in Tortuga too; redirects and certificate checks are not.
+    fn apply_settings(&mut self, request: &mut Request, behavior: Option<&Value>) {
+        let flag = |name: &str| behavior.and_then(|b| b.get(name)).and_then(Value::as_bool);
+        if flag("disableCookies") == Some(true) {
+            request.cookies = false;
+        }
+        if flag("followRedirects") == Some(false) {
+            self.c.warn(format!(
+                "“{}” doesn't follow redirects in Postman: in Tortuga that is set for the \
+                 whole project (Defaults).",
+                request.name
+            ));
+        }
+        if flag("strictSSL") == Some(false) {
+            self.c.warn(format!(
+                "“{}” doesn't verify certificates in Postman: in Tortuga that is set per \
+                 host on this computer (Settings → Requests).",
+                request.name
+            ));
+        }
     }
+
+    // ------------------------------------------------------------------- auth
 
     /// The credentials of an `auth` object; `None` (or `null`) means inherit.
     fn credentials(&mut self, auth: Option<&Value>, place: &str) -> Credentials {
@@ -352,53 +318,27 @@ impl<'a> Importer<'a> {
         let kind = auth.get("type").and_then(Value::as_str).unwrap_or("noauth");
         let params = auth_params(auth, kind);
         let param = |key: &str| params.get(key).cloned().unwrap_or_default();
-        let mut out = Credentials::default();
-        match kind {
-            "inherit" => {}
-            "noauth" => out.auth = Some(Auth::None),
-            "bearer" => {
-                out.auth = Some(Auth::Bearer {
-                    token: self.c.credential(&param("token"), "token"),
-                });
-            }
-            "basic" => {
-                out.auth = Some(Auth::Basic {
-                    username: self.c.credential(&param("username"), "username"),
-                    password: self.c.credential(&param("password"), "password"),
-                });
-            }
-            "apikey" => {
-                let key = Some(param("key"))
-                    .filter(|k| !k.trim().is_empty())
-                    .unwrap_or_else(|| "X-API-Key".into());
-                let value = self.c.credential(&param("value"), &variable_name(&key));
-                let key_value = KeyValue::new(key.trim(), value);
-                if param("in") == "query" {
-                    out.query = Some(key_value);
-                } else {
-                    out.header = Some(key_value);
-                }
-                out.auth = Some(Auth::None);
-            }
-            "oauth2" => {
-                out.auth = Some(Auth::Bearer {
-                    token: self.c.credential(&param("accessToken"), "access_token"),
-                });
-                self.c.warn(format!(
-                    "{} uses OAuth 2, which became Bearer {{{{access_token}}}}: get a token and \
-                     put it in access_token under Environments….",
-                    sentence(place)
-                ));
-            }
-            other => {
-                out.auth = Some(Auth::None);
-                self.c.warn(format!(
-                    "{} uses {other} auth, which Tortuga does not support, so it was left out.",
-                    sentence(place)
-                ));
-            }
-        }
-        out
+        let spec = match kind {
+            "inherit" => AuthSpec::Inherit,
+            "noauth" => AuthSpec::NoAuth,
+            "bearer" => AuthSpec::Bearer {
+                token: param("token"),
+            },
+            "basic" => AuthSpec::Basic {
+                username: param("username"),
+                password: param("password"),
+            },
+            "apikey" => AuthSpec::ApiKey {
+                key: param("key"),
+                value: param("value"),
+                in_query: param("in") == "query",
+            },
+            "oauth2" => AuthSpec::OAuth2 {
+                access_token: param("accessToken"),
+            },
+            other => AuthSpec::Other(other.to_owned()),
+        };
+        self.c.credentials(spec, place)
     }
 
     // ------------------------------------------------------------------- body
@@ -443,20 +383,10 @@ impl<'a> Importer<'a> {
             "graphql" => {
                 let graphql = body.get("graphql").unwrap_or(&Value::Null);
                 let variables = match graphql.get("variables") {
-                    Some(Value::String(s)) if !s.trim().is_empty() => {
-                        serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.clone()))
-                    }
-                    Some(v @ Value::Object(_)) => v.clone(),
-                    _ => Value::Object(serde_json::Map::new()),
+                    Some(v @ Value::Object(_)) => v.to_string(),
+                    v => text(v),
                 };
-                let json = serde_json::json!({
-                    "query": text(graphql.get("query")),
-                    "variables": variables,
-                });
-                (
-                    RequestBody::Json(serde_json::to_string_pretty(&json).unwrap_or_default()),
-                    None,
-                )
+                (graphql_body(&text(graphql.get("query")), &variables), None)
             }
             "file" => {
                 self.c.warn(format!(
@@ -531,7 +461,11 @@ impl<'a> Importer<'a> {
             *slot = match script::translate(&code) {
                 script::Translation::Complete(code) => {
                     self.c.translated += 1;
-                    format!("{}{}\n", script::NOTE, code.trim_end())
+                    format!(
+                        "{}{}\n",
+                        translated_note(ImportKind::Postman),
+                        code.trim_end()
+                    )
                 }
                 script::Translation::Partial(code) => {
                     self.c.commented_script(&code, ImportKind::Postman)
@@ -540,19 +474,6 @@ impl<'a> Importer<'a> {
         }
         scripts
     }
-}
-
-/// Disabled copies of `headers`, which turn the inherited ones off (R-COL-11), except
-/// one with the name of `own`, which replaces it anyway.
-fn turned_off(headers: &[KeyValue], own: Option<&KeyValue>) -> Vec<KeyValue> {
-    headers
-        .iter()
-        .filter(|h| own.is_none_or(|o| !o.is_named(&h.name)))
-        .map(|h| KeyValue {
-            enabled: false,
-            ..h.clone()
-        })
-        .collect()
 }
 
 /// The parameters of one auth type: a list of `{key, value}` in v2.1, an object in v2.0.
@@ -603,6 +524,32 @@ fn raw_url(url: &Value) -> String {
     if !path.is_empty() {
         out.push('/');
         out.push_str(path.trim_start_matches('/'));
+    }
+    out
+}
+
+/// A request's saved responses as its examples (R-COL-30, R-MOCK-1), named as in
+/// Postman (made unique, since the mock picks one by name) and filtered as a response
+/// saved in Tortuga is.
+fn examples(responses: Option<&Value>) -> Vec<Example> {
+    let mut out: Vec<Example> = Vec::new();
+    for saved in responses.and_then(Value::as_array).into_iter().flatten() {
+        let base = short_name(item_name(saved).unwrap_or("Example"));
+        let name = unique_name(&base, |n| out.iter().any(|e| e.name == n));
+        let status = saved
+            .get("code")
+            .and_then(Value::as_u64)
+            .and_then(|code| u16::try_from(code).ok())
+            .filter(|code| (100..=999).contains(code))
+            .unwrap_or(200);
+        let response = Response {
+            status,
+            status_text: String::new(),
+            headers: headers(saved.get("header")),
+            body: text(saved.get("body")).into_bytes(),
+            elapsed: Duration::ZERO,
+        };
+        out.push(Example::from_response(name, &response));
     }
     out
 }
@@ -685,6 +632,7 @@ mod tests {
     use super::*;
     use crate::format;
     use crate::import::requests;
+    use crate::model::Auth;
 
     /// A v2.1 export with what teams typically have in a collection.
     const COLLECTION: &str = r#"{
@@ -728,7 +676,22 @@ mod tests {
             "listen": "test",
             "script": { "exec": ["pm.test(\"ok\", () => {", "  pm.response.to.have.status(200);", "});"] }
           }],
-          "response": []
+          "response": [
+            {
+              "name": "Two users",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                { "key": "Content-Type", "value": "application/json" },
+                { "key": "Content-Encoding", "value": "gzip" },
+                { "key": "Set-Cookie", "value": "session=abc" }
+              ],
+              "body": "[{\"id\": 1}, {\"id\": 2}]"
+            },
+            { "name": "Two users", "code": 200, "header": null, "body": null },
+            { "name": "Kaputt ü😀", "code": 503, "header": "Retry-After: 30", "body": "down" },
+            { "code": 70000 }
+          ]
         },
         {
           "name": "Get user",
@@ -742,7 +705,12 @@ mod tests {
           "event": [{
             "listen": "prerequest",
             "script": { "exec": ["pm.variables.set(\"n\", 1);", "pm.sendRequest(\"https://shop.test\");"] }
-          }]
+          }],
+          "protocolProfileBehavior": {
+            "disableCookies": true,
+            "followRedirects": false,
+            "strictSSL": false
+          }
         },
         {
           "name": "Create user",
@@ -1026,7 +994,7 @@ mod tests {
             *tests,
             format!(
                 "{}test(\"ok\", () => {{\n  expect(res.status).toBe(200);\n}});\n",
-                script::NOTE
+                translated_note(ImportKind::Postman)
             )
         );
         assert_eq!(find(&import, "List users").scripts.pre_request, "");
@@ -1049,6 +1017,8 @@ mod tests {
             "“Upload avatar” uploads files",
             "1 script was kept as a comment",
             "1 script was translated from Postman's pm API to Tortuga's",
+            "“Get user” doesn't follow redirects in Postman",
+            "“Get user” doesn't verify certificates in Postman",
         ];
         for text in expect {
             assert!(
@@ -1057,6 +1027,41 @@ mod tests {
             );
         }
         assert_eq!(warnings.len(), expect.len(), "{warnings:#?}");
+    }
+
+    /// R-COL-30: saved responses become examples, named uniquely and filtered as a
+    /// response saved in Tortuga; `disableCookies` turns the request's cookies off.
+    #[test]
+    fn saved_responses_and_settings() {
+        let import = import();
+        let list = find(&import, "List users");
+        let names: Vec<_> = list.examples.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Two users", "Two users 2", "Kaputt ü😀", "Example"]);
+        let first = &list.examples[0];
+        assert_eq!(first.status, 200);
+        assert_eq!(first.body, "[{\"id\": 1}, {\"id\": 2}]");
+        assert_eq!(
+            first.headers,
+            [KeyValue::new("Content-Type", "application/json")]
+        );
+        assert!(first.conditions.is_empty());
+        let empty = &list.examples[1];
+        assert!(empty.body.is_empty() && empty.headers.is_empty());
+        let failing = &list.examples[2];
+        assert_eq!(failing.status, 503);
+        assert_eq!(failing.headers, [KeyValue::new("Retry-After", "30")]);
+        // A code that is no HTTP status falls back to 200.
+        assert_eq!(list.examples[3].status, 200);
+        assert!(list.cookies);
+
+        let get = find(&import, "Get user");
+        assert_eq!(get.examples, []);
+        assert!(!get.cookies);
+
+        // The examples are written into the request file and read back.
+        let text = format::write_request(list, None);
+        let (read, _) = format::parse_request(&text, "list-users").expect("read");
+        assert_eq!(read.examples, list.examples);
     }
 
     /// R-COL-22: the collection's, folders' and requests' descriptions, as text or as

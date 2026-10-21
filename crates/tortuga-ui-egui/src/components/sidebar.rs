@@ -13,6 +13,7 @@ use tortuga_core::import::ImportKind;
 use tortuga_core::settings::Feature;
 use tortuga_core::{Collection, Item};
 
+use crate::components::ENVIRONMENT_KINDS;
 use crate::state::{AppState, ItemKey, WorkflowKey};
 use crate::theme;
 use drag::{drag_and_drop, drag_label, drop_on_project};
@@ -90,8 +91,8 @@ pub enum SidebarAction {
     /// Create a project from an OpenAPI description (R-COL-15), a Postman collection
     /// (R-COL-16) or a `.http` file (R-COL-17).
     Import(ImportKind),
-    /// Import Postman environments into a project (R-COL-20).
-    ImportEnvironments(PathBuf),
+    /// Import Postman (R-COL-20) or HTTP Client (R-COL-29) environments into a project.
+    ImportEnvironments(PathBuf, ImportKind),
     /// Start the project's mock server, or show it when it runs (R-MOCK-2).
     StartMock(PathBuf),
     StopMock(PathBuf),
@@ -146,11 +147,21 @@ impl Rename {
 struct MenuOffers {
     /// "Open in file manager" and "Open in terminal" (R-GIT-13).
     open_folders: bool,
-    /// The Postman importer is on (R-COL-18) and files can be picked, so projects offer
-    /// to import its environments (R-COL-20).
-    postman_environments: bool,
+    /// For each of [`ENVIRONMENT_KINDS`]: its importer is on (R-COL-18) and files can be
+    /// picked, so projects offer to import its environments (R-COL-20, R-COL-29, R-COL-31).
+    environment_imports: [bool; ENVIRONMENT_KINDS.len()],
     /// Which features are on (R-SET-13).
     features: ShownFeatures,
+}
+
+impl MenuOffers {
+    /// Whether projects offer to import environments of `kind`.
+    fn environments(self, kind: ImportKind) -> bool {
+        ENVIRONMENT_KINDS
+            .iter()
+            .position(|k| *k == kind)
+            .is_some_and(|i| self.environment_imports[i])
+    }
 }
 
 /// The features a project's menu and rows show (R-SET-13).
@@ -217,8 +228,9 @@ pub fn sidebar(
         mock_port: None,
         offers: MenuOffers {
             open_folders: state.host.can_open_folders(),
-            postman_environments: state.settings.importers.enabled(ImportKind::Postman)
-                && state.host.can_pick_folders(),
+            environment_imports: ENVIRONMENT_KINDS.map(|kind| {
+                state.settings.importers.enabled(kind) && state.host.can_pick_folders()
+            }),
             features: ShownFeatures {
                 workflows: state.settings.features.enabled(Feature::Workflows),
                 mock: state.settings.features.enabled(Feature::Examples),
@@ -948,37 +960,44 @@ mod tests {
         assert!(h.query_by_label("Import Postman collection…").is_none());
     }
 
-    /// R-COL-20: a project's menu offers its Postman environments only while the
-    /// Postman importer is on.
+    /// R-COL-20, R-COL-29, R-COL-31: a project's menu offers Postman, HTTP Client and
+    /// Bruno environments only while their importer is on.
     #[test]
-    fn project_menu_imports_postman_environments() {
+    fn project_menu_imports_environments() {
         use egui_kittest::kittest::Queryable;
 
         let dir = tempfile::tempdir().expect("dir");
         let storage = tortuga_core::storage::FsStorage;
         let c = Collection::create(&storage, dir.path(), "Shop").expect("project");
-        for on in [true, false] {
-            let mut choices = Vec::new();
-            {
-                let mut h = crate::test_host::harness(|ui| {
-                    let offers = MenuOffers {
-                        postman_environments: on,
-                        ..MenuOffers::default()
-                    };
-                    choices.push(collection_menu(ui, &c, 0, offers, None, None));
-                });
-                h.run();
-                let entry = h.query_by_label("Import Postman environments…");
-                assert_eq!(entry.is_some(), on);
-                if let Some(entry) = entry {
-                    entry.click();
+        for (kind, entry) in [
+            (ImportKind::Postman, "Import Postman environments…"),
+            (ImportKind::Http, "Import HTTP environments…"),
+            (ImportKind::Bruno, "Import Bruno environments…"),
+        ] {
+            for on in [true, false] {
+                let mut choices = Vec::new();
+                {
+                    let mut h = crate::test_host::harness(|ui| {
+                        let offers = MenuOffers {
+                            environment_imports: ENVIRONMENT_KINDS.map(|k| on && k == kind),
+                            ..MenuOffers::default()
+                        };
+                        choices.push(collection_menu(ui, &c, 0, offers, None, None));
+                    });
                     h.run();
+                    let found = h.query_by_label(entry);
+                    assert_eq!(found.is_some(), on, "{entry}");
+                    if let Some(found) = found {
+                        found.click();
+                        h.run();
+                    }
                 }
+                let picked = choices.iter().flatten().any(|c| {
+                    matches!(c, MenuChoice::Action(SidebarAction::ImportEnvironments(r, k))
+                        if *r == dir.path() && *k == kind)
+                });
+                assert_eq!(picked, on);
             }
-            let picked = choices.iter().flatten().any(|c| {
-                matches!(c, MenuChoice::Action(SidebarAction::ImportEnvironments(r)) if *r == dir.path())
-            });
-            assert_eq!(picked, on);
         }
     }
 

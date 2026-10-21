@@ -10,6 +10,7 @@ use tortuga_core::import::ImportKind;
 use tortuga_core::settings::ImporterSettings;
 
 use super::{MenuOffers, Rename, SidebarAction, Tree};
+use crate::components::{ENVIRONMENT_KINDS, environments_entry};
 use crate::state::ItemKey;
 use crate::theme;
 
@@ -38,9 +39,19 @@ pub(super) fn add_menu(ui: &mut Ui, importers: &ImporterSettings) -> Option<Side
             SidebarAction::Import(ImportKind::Postman),
         ),
         (
+            "Import Insomnia export…",
+            "Create a project from an Insomnia export (v4 JSON or v5 YAML)",
+            SidebarAction::Import(ImportKind::Insomnia),
+        ),
+        (
             "Import .http file…",
             "Create a project from a .http file (VS Code REST Client, JetBrains HTTP Client)",
             SidebarAction::Import(ImportKind::Http),
+        ),
+        (
+            "Import Bruno collection…",
+            "Create a project from a Bruno collection (the folder with bruno.json)",
+            SidebarAction::Import(ImportKind::Bruno),
         ),
     ];
     let mut action = None;
@@ -119,10 +130,12 @@ pub(super) fn collection_menu(
     item(ui, environments, &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
     });
-    if offers.postman_environments && !c.read_only {
-        item(ui, "Import Postman environments…".into(), &|| {
-            MenuChoice::Action(SidebarAction::ImportEnvironments(root.clone()))
-        });
+    for kind in ENVIRONMENT_KINDS {
+        if offers.environments(kind) && !c.read_only {
+            item(ui, environments_entry(kind).into(), &|| {
+                MenuChoice::Action(SidebarAction::ImportEnvironments(root.clone(), kind))
+            });
+        }
     }
     item(ui, "Defaults (headers, auth, requests)…".into(), &|| {
         MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))

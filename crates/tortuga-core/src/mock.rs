@@ -70,14 +70,16 @@ impl Example {
     }
 
     /// An example of `response`, without the headers that carry credentials (P6) or
-    /// describe the transfer rather than the response.
+    /// describe the transfer rather than the response. The body is kept decoded, so
+    /// its `Content-Encoding` goes too.
     pub fn from_response(name: impl Into<String>, response: &Response) -> Self {
-        const LEFT_OUT: [&str; 7] = [
+        const LEFT_OUT: [&str; 8] = [
             "authorization",
             "cookie",
             "set-cookie",
             "content-length",
             "transfer-encoding",
+            "content-encoding",
             "connection",
             "date",
         ];

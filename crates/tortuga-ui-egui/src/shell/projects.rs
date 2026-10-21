@@ -100,7 +100,7 @@ impl TortugaUi {
             SidebarAction::NewProject => self.new_project(),
             SidebarAction::AddProjects => self.add_projects(),
             SidebarAction::Import(kind) => self.import_file(kind),
-            SidebarAction::ImportEnvironments(root) => self.import_environments(root),
+            SidebarAction::ImportEnvironments(root, kind) => self.import_environments(root, kind),
             SidebarAction::LocateMissing(path) => self.locate_missing(&path),
             SidebarAction::RemoveMissing(path) => self.state.remove_missing(&path),
         }

@@ -14,17 +14,13 @@ use crate::script;
 
 /// A Postman script in Tortuga's script API.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Translation {
+pub(crate) enum Translation {
     /// Everything was translated: the script can run as it is.
     Complete(String),
     /// Parts still use Postman's API, or the script doesn't parse: what could be
     /// translated, to finish by hand.
     Partial(String),
 }
-
-/// The note above a translated script.
-pub(super) const NOTE: &str =
-    "// Translated from Postman's `pm` API by the import: check that it tests what it did.\n";
 
 /// Names a script may only use in Postman. A script that still uses one is not run.
 const POSTMAN_GLOBALS: [&str; 14] = [
@@ -65,6 +61,43 @@ const RENAMES: [(&str, &str); 18] = [
     ("pm.info.iterationCount", "info.iterationCount"),
     ("pm.iterationData.get", "vars.get"),
 ];
+
+/// An Insomnia script (R-COL-32): Insomnia's `insomnia` API is Postman's `pm` API by
+/// another name, so it is translated as one. What can't be translated keeps Insomnia's
+/// names, for porting by hand.
+pub(crate) fn translate_insomnia(code: &str) -> Translation {
+    match translate(&renamed(code, "insomnia", "pm")) {
+        Translation::Complete(code) => Translation::Complete(code),
+        Translation::Partial(code) => Translation::Partial(renamed(&code, "pm", "insomnia")),
+    }
+}
+
+/// `code` with the name `from` (not a property, string or comment) renamed to `to`.
+fn renamed(code: &str, from: &str, to: &str) -> String {
+    let bytes = code.as_bytes();
+    let mut out = String::with_capacity(code.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while let Some(&byte) = bytes.get(i) {
+        if let Some(end) = literal_end(code, i) {
+            i = end;
+            continue;
+        }
+        if is_word_byte(byte) && starts_name(code, i) {
+            let len = bytes[i..].iter().take_while(|&&b| is_word_byte(b)).count();
+            if &code[i..i + len] == from {
+                out.push_str(&code[copied..i]);
+                out.push_str(to);
+                copied = i + len;
+            }
+            i += len;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&code[copied..]);
+    out
+}
 
 pub(super) fn translate(code: &str) -> Translation {
     let translated = rewrite(code);
@@ -176,9 +209,9 @@ fn variables_call(s: &str) -> Option<(usize, String)> {
         .find(|op| word(rest, op).is_some())?;
     let at = "pm.".len() + scope.len() + 1 + op.len();
     match (scope, op) {
-        ("environment" | "variables" | "collectionVariables", _) | ("globals", "get" | "has") => {
-            Some((at, format!("vars.{op}")))
-        }
+        // Insomnia's base environment (R-COL-32) is the project's variables.
+        ("environment" | "variables" | "collectionVariables" | "baseEnvironment", _)
+        | ("globals", "get" | "has") => Some((at, format!("vars.{op}"))),
         ("globals", _) => {
             let (end, args) = call_args(s, at)?;
             let (name, rest) = args.split_first()?;
@@ -837,5 +870,23 @@ pm.environment.set("userId", pm.response.json().id);
         );
         // `pm.info.requestId` has no counterpart: kept for the user.
         assert!(partial("console.log(pm.info.requestId);").contains("pm.info.requestId"));
+    }
+
+    /// R-COL-32: Insomnia's API is renamed only where code uses it, and what can't be
+    /// translated keeps Insomnia's names.
+    #[test]
+    fn insomnia_scripts_translate_as_postman_ones() {
+        let code = "// insomnia.test is like pm.test\nconst s = \"insomnia.x ü😀\";\nfoo.insomnia.y;\ninsomnia.baseEnvironment.set(\"a\", 1);";
+        let Translation::Complete(done) = translate_insomnia(code) else {
+            panic!("complete");
+        };
+        assert_eq!(
+            done,
+            "// insomnia.test is like pm.test\nconst s = \"insomnia.x ü😀\";\nfoo.insomnia.y;\nvars.set(\"a\", 1);"
+        );
+        assert_eq!(
+            translate_insomnia("insomnia.sendRequest(\"x\");"),
+            Translation::Partial("insomnia.sendRequest(\"x\");".into())
+        );
     }
 }

@@ -9,7 +9,8 @@ use tortuga_core::{Item, Request};
 
 use super::{Modal, Selection, TortugaUi, WorkspaceAction};
 use crate::components::{
-    DefaultsDialog, DialogResult, EnvironmentsDialog, Palette, PaletteItem, SettingsDialog,
+    DefaultsDialog, DialogResult, ENVIRONMENT_KINDS, EnvironmentsDialog, Palette, PaletteItem,
+    SettingsDialog, environments_entry,
 };
 use crate::state::ItemKey;
 
@@ -56,8 +57,8 @@ pub(super) enum Command {
     AddProjects,
     NewProject,
     Import(ImportKind),
-    /// Postman environments into a project (R-COL-20).
-    ImportEnvironments(PathBuf),
+    /// Postman (R-COL-20) or HTTP Client (R-COL-29) environments into a project.
+    ImportEnvironments(PathBuf, ImportKind),
     /// A project's mock server (R-MOCK-2, R-MOCK-4).
     StartMock(PathBuf),
     StopMock(PathBuf),
@@ -66,7 +67,8 @@ pub(super) enum Command {
     MockEnvironment,
 }
 
-/// Adding, creating and importing projects (R-WS-3, R-COL-15, R-COL-16, R-COL-17), with
+/// Adding, creating and importing projects (R-WS-3, R-COL-15, R-COL-16, R-COL-17,
+/// R-COL-31, R-COL-32), with
 /// only the importers that are on (R-COL-18).
 fn project_commands(importers: &ImporterSettings) -> Vec<PaletteItem<PaletteChoice>> {
     let run = |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
@@ -80,8 +82,18 @@ fn project_commands(importers: &ImporterSettings) -> Vec<PaletteItem<PaletteChoi
             Command::Import(ImportKind::Postman),
         )
         .keywords("postman collection json"),
+        run(
+            "Import Insomnia export…",
+            Command::Import(ImportKind::Insomnia),
+        )
+        .keywords("insomnia kong export yaml json"),
         run("Import .http file…", Command::Import(ImportKind::Http))
             .keywords("http rest client jetbrains requests"),
+        run(
+            "Import Bruno collection…",
+            Command::Import(ImportKind::Bruno),
+        )
+        .keywords("bruno bru collection folder"),
     ]
     .into_iter()
     .filter(|item| match &item.value {
@@ -225,18 +237,25 @@ impl TortugaUi {
             )
             .detail(c.name()),
         );
-        if !c.read_only
-            && self.state.settings.importers.enabled(ImportKind::Postman)
-            && self.state.host.can_pick_folders()
-        {
-            items.push(
-                run(
-                    "Import Postman environments…",
-                    Command::ImportEnvironments(c.root.clone()),
-                )
-                .detail(c.name())
-                .keywords("postman environment json"),
-            );
+        for kind in ENVIRONMENT_KINDS {
+            if !c.read_only
+                && self.state.settings.importers.enabled(kind)
+                && self.state.host.can_pick_folders()
+            {
+                items.push(
+                    run(
+                        environments_entry(kind),
+                        Command::ImportEnvironments(c.root.clone(), kind),
+                    )
+                    .detail(c.name())
+                    .keywords(match kind {
+                        ImportKind::Postman => "postman environment json",
+                        ImportKind::Http => "http client rest env json",
+                        ImportKind::Bruno => "bruno environment bru",
+                        ImportKind::OpenApi | ImportKind::Insomnia => "",
+                    }),
+                );
+            }
         }
         items.push(
             run(
@@ -414,7 +433,7 @@ impl TortugaUi {
             Command::AddProjects => self.add_projects(),
             Command::NewProject => self.new_project(),
             Command::Import(kind) => self.import_file(kind),
-            Command::ImportEnvironments(root) => self.import_environments(root),
+            Command::ImportEnvironments(root, kind) => self.import_environments(root, kind),
         }
     }
 }
@@ -485,7 +504,9 @@ mod tests {
                 "Add existing projects…",
                 "New project…",
                 "Import OpenAPI…",
-                "Import Postman collection…"
+                "Import Postman collection…",
+                "Import Insomnia export…",
+                "Import Bruno collection…"
             ]
         );
     }

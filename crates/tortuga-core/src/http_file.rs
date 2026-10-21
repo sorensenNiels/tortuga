@@ -16,32 +16,88 @@
 //! - response handler and pre-request scripts (`> {% … %}`, `< {% … %}`) as comments
 //!   to port by hand (D28).
 //!
+//! Several files become one project with a folder per file ([`parse_files`],
+//! R-COL-29), and the HTTP clients' environment files its environments
+//! ([`parse_environments`]).
+//!
 //! What can't be imported as written is reported in [`Import::warnings`].
 //! [`crate::import::create_project`] writes the result.
 
 use std::collections::BTreeMap;
 
 use crate::collection::NewItem;
-use crate::format::{self, Manifest};
-use crate::import::{Collected, Import, ImportKind, short_name, variable_name, variables_in};
+use crate::format::{self, FolderDefaults, Manifest};
+use crate::import::{
+    Collected, Import, ImportKind, short_name, unique_name, variable_name, variables_in,
+};
 use crate::model::{
     Auth, HttpMethod, KeyValue, Request, RequestBody, Scripts, is_json_content_type,
     is_xml_content_type,
 };
 use crate::{Error, Result, curl};
 
+mod environments;
+
+pub(crate) use environments::looks_like_environments;
+pub use environments::{is_environment_file_name, parse_environments};
+
 /// Reads a `.http` file into a project named after `file_name` (R-COL-17).
 pub fn parse(text: &str, file_name: &str) -> Result<Import> {
-    let text = text.trim_start_matches('\u{feff}').replace("\r\n", "\n");
-    let blocks = blocks(&text);
+    let text = normalize(text);
+    let blocks = requests_of(&text, None)?;
+    Ok(Importer::default().run(&[(blocks, file_name)], &project_name(file_name), false))
+}
+
+/// Reads several `.http` files, as (text, file name), into one project named `name`,
+/// with a folder per file named after it (R-COL-29).
+pub fn parse_files(files: &[(&str, &str)], name: &str) -> Result<Import> {
+    let texts: Vec<String> = files.iter().map(|(text, _)| normalize(text)).collect();
+    let parsed = texts
+        .iter()
+        .zip(files)
+        .map(|(text, (_, file_name))| Ok((requests_of(text, Some(file_name))?, *file_name)))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Importer::default().run(&parsed, name, true))
+}
+
+/// The project name for files imported from the folder `dir`: the folder's name, made
+/// readable as a file's is.
+pub fn folder_project_name(dir: &std::path::Path) -> String {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // `project_name` drops an extension, which a folder doesn't have.
+    project_name(&format!("{name}.http"))
+}
+
+fn normalize(text: &str) -> String {
+    text.trim_start_matches('\u{feff}').replace("\r\n", "\n")
+}
+
+/// The blocks of `text`, refused when none of them is a request. `file_name` is named
+/// in the error when several files are read.
+fn requests_of<'a>(text: &'a str, file_name: Option<&str>) -> Result<Vec<Block<'a>>> {
+    let blocks = blocks(text);
     if !blocks.iter().any(|b| b.request_line.is_some()) {
-        return Err(Error::InvalidHttpFile(
-            "it has no requests: a request is a line such as `GET https://example.com/users`, \
-             with `###` between requests"
-                .into(),
-        ));
+        return Err(Error::InvalidHttpFile(format!(
+            "{} no requests: a request is a line such as `GET https://example.com/users`, \
+             with `###` between requests",
+            file_name.map_or_else(|| "it has".to_owned(), |f| format!("{f} has"))
+        )));
     }
-    Ok(Importer::default().run(&blocks, file_name))
+    Ok(blocks)
+}
+
+/// The error for an environment file of the HTTP clients given where a `.http` file
+/// was expected (R-COL-29).
+pub(crate) fn environment_file_error() -> Error {
+    Error::InvalidHttpFile(
+        "this is an environment file of the HTTP clients, not a .http file. Choose it \
+         together with its .http files, or add it with “Import HTTP environments…” in a \
+         project's menu"
+            .into(),
+    )
 }
 
 /// Whether `text` reads as a `.http` file: its first line that is not blank, a comment,
@@ -214,16 +270,44 @@ struct Importer {
     c: Collected,
 }
 
+/// The requests of one file, with its name and the variables it defines.
+struct FileRequests<'a> {
+    file_name: &'a str,
+    variables: BTreeMap<String, String>,
+    requests: Vec<Request>,
+}
+
 impl Importer {
-    fn run(mut self, blocks: &[Block<'_>], file_name: &str) -> Import {
-        // Variables apply to the whole file, wherever they are defined.
+    /// One project of `files`: their requests at the top when `folders` is false (one
+    /// file), else a folder per file (R-COL-29).
+    fn run(mut self, files: &[(Vec<Block<'_>>, &str)], name: &str, folders: bool) -> Import {
+        let mut read = Vec::new();
+        for (blocks, file_name) in files {
+            read.push(self.file(blocks, file_name));
+        }
+        let mut manifest = Manifest::new(name);
+        manifest.auth = shared_auth(read.iter_mut().flat_map(|f| f.requests.iter_mut()));
+        let items = if folders {
+            self.folders(read)
+        } else {
+            read.into_iter()
+                .flat_map(|f| f.requests)
+                .map(|r| NewItem::Request(Box::new(r)))
+                .collect()
+        };
+        self.c.finish(ImportKind::Http, manifest, items)
+    }
+
+    /// The requests of one file. Its variables apply to the whole file, wherever they
+    /// are defined; they replace those of files read before.
+    fn file<'a>(&mut self, blocks: &[Block<'_>], file_name: &'a str) -> FileRequests<'a> {
+        let mut variables = BTreeMap::new();
         for block in blocks {
             for (name, value) in &block.variables {
-                self.c
-                    .variables
-                    .insert((*name).to_owned(), (*value).to_owned());
+                variables.insert((*name).to_owned(), (*value).to_owned());
             }
         }
+        self.c.variables.extend(variables.clone());
         let mut requests: Vec<(Option<&str>, Request)> = Vec::new();
         for block in blocks {
             if let Some(request) = self.request(block) {
@@ -231,23 +315,69 @@ impl Importer {
             }
         }
         self.request_variables(&mut requests);
-
-        let mut manifest = Manifest::new(project_name(file_name));
-        // The same auth on every request is the project's.
-        let first = requests.first().and_then(|(_, r)| r.auth.clone());
-        if let Some(auth) = first.filter(|a| !a.is_none())
-            && requests.iter().all(|(_, r)| r.auth.as_ref() == Some(&auth))
-        {
-            for (_, request) in &mut requests {
-                request.auth = None;
-            }
-            manifest.auth = Some(auth);
+        FileRequests {
+            file_name,
+            variables,
+            requests: requests.into_iter().map(|(_, r)| r).collect(),
         }
-        let items = requests
-            .into_iter()
-            .map(|(_, r)| NewItem::Request(Box::new(r)))
-            .collect();
-        self.c.finish(ImportKind::Http, manifest, items)
+    }
+
+    /// A folder per file. A variable the files give different values is a folder
+    /// variable in each of them; one that became a server keeps the first value.
+    fn folders(&mut self, mut read: Vec<FileRequests<'_>>) -> Vec<NewItem> {
+        let mut first: BTreeMap<String, (&str, String)> = BTreeMap::new();
+        let mut differing = Vec::new();
+        for file in &read {
+            for (name, value) in &file.variables {
+                match first.get(name) {
+                    None => {
+                        first.insert(name.clone(), (file.file_name, value.clone()));
+                    }
+                    Some((_, v)) if v == value => {}
+                    Some((other, v)) => {
+                        if self.c.is_server_variable(name) {
+                            self.c.warn(format!(
+                                "{{{{{name}}}}} is {v} in {other} and {value} in {}: server \
+                                 “{name}” uses {v}; add an environment for the other under \
+                                 Environments….",
+                                file.file_name
+                            ));
+                        } else if !differing.contains(name) {
+                            differing.push(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        for name in &differing {
+            self.c.variables.remove(name);
+        }
+        let mut names: Vec<String> = Vec::new();
+        read.iter_mut()
+            .map(|file| {
+                let name = unique_name(&project_name(file.file_name), |n| {
+                    names.iter().any(|t| t == n)
+                });
+                names.push(name.clone());
+                let mut defaults = FolderDefaults {
+                    auth: shared_auth(file.requests.iter_mut()),
+                    ..FolderDefaults::default()
+                };
+                for variable in &differing {
+                    if let Some(value) = file.variables.get(variable) {
+                        defaults.variables.insert(variable.clone(), value.clone());
+                    }
+                }
+                NewItem::Folder {
+                    name,
+                    defaults,
+                    items: std::mem::take(&mut file.requests)
+                        .into_iter()
+                        .map(|r| NewItem::Request(Box::new(r)))
+                        .collect(),
+                }
+            })
+            .collect()
     }
 
     fn request(&mut self, block: &Block<'_>) -> Option<Request> {
@@ -501,6 +631,20 @@ impl Importer {
             }
         }
     }
+}
+
+/// The auth every one of `requests` has, taken off them; `None` (and the requests
+/// unchanged) when they differ or have none.
+fn shared_auth<'r>(requests: impl Iterator<Item = &'r mut Request>) -> Option<Auth> {
+    let mut requests: Vec<&mut Request> = requests.collect();
+    let first = requests.first().and_then(|r| r.auth.clone())?;
+    if first.is_none() || requests.iter().any(|r| r.auth.as_ref() != Some(&first)) {
+        return None;
+    }
+    for request in &mut requests {
+        request.auth = None;
+    }
+    Some(first)
 }
 
 /// `code` without blank lines around it and without the indentation all lines share.
@@ -926,5 +1070,160 @@ X-Id: {{$uuid}}
         assert_eq!(variable("@ not a var"), None);
         assert_eq!(project_name("pokemon-api.http"), "Pokemon api");
         assert_eq!(project_name(""), "Imported requests");
+    }
+
+    const ORDERS: &str = "@baseUrl = http://localhost:3000\n@limit = 5\n\n### List orders\nGET {{baseUrl}}/orders?limit={{limit}}\nAuthorization: Bearer {{token}}\n\n### One order\nGET {{baseUrl}}/orders/1\nAuthorization: Bearer {{token}}\n";
+    const USERS: &str = "@baseUrl = http://localhost:3000\n@limit = 10\n@page = 1\n\n### List users\nGET {{baseUrl}}/users?limit={{limit}}&page={{page}}\n";
+
+    fn folder<'a>(import: &'a Import, name: &str) -> (&'a FolderDefaults, Vec<&'a Request>) {
+        import
+            .items
+            .iter()
+            .find_map(|item| match item {
+                NewItem::Folder {
+                    name: n,
+                    defaults,
+                    items,
+                } if n == name => Some((defaults, requests(items))),
+                _ => None,
+            })
+            .expect(name)
+    }
+
+    /// R-COL-29: several files are one project with a folder per file, in the order
+    /// given. One base URL is one server; a variable the files disagree on is a folder
+    /// variable; auth all requests of a file share is the folder's.
+    #[test]
+    fn several_files_become_a_folder_each() {
+        let import = parse_files(
+            &[(ORDERS, "orders.http"), (USERS, "users-ü😀.rest")],
+            &folder_project_name(std::path::Path::new("/repo/shop-api")),
+        )
+        .expect("parse");
+        assert_eq!(import.manifest.name, "Shop api");
+        assert_eq!(import.requests, 3);
+        let names: Vec<_> = import
+            .items
+            .iter()
+            .map(|i| match i {
+                NewItem::Folder { name, .. } => name.as_str(),
+                NewItem::Request(r) => r.name.as_str(),
+            })
+            .collect();
+        assert_eq!(names, ["Orders", "Users ü😀"]);
+        assert_eq!(import.manifest.servers.len(), 1);
+        assert_eq!(
+            import.environments[0].servers["baseurl"],
+            "http://localhost:3000"
+        );
+        assert_eq!(
+            import.manifest.variables.get("page").map(String::as_str),
+            Some("1")
+        );
+        assert!(!import.manifest.variables.contains_key("limit"));
+        assert_eq!(import.manifest.auth, None, "only the orders have auth");
+
+        let (orders, requests) = folder(&import, "Orders");
+        assert_eq!(orders.variables["limit"], "5");
+        assert!(matches!(&orders.auth, Some(Auth::Bearer { token }) if token == "{{token}}"));
+        assert!(requests.iter().all(|r| r.auth.is_none()));
+        let (users, _) = folder(&import, "Users ü😀");
+        assert_eq!(users.variables["limit"], "10");
+        assert_eq!(users.auth, None);
+        assert_eq!(import.manifest.secrets, ["token"]);
+    }
+
+    /// R-COL-29: auth on every request of every file is the project's; folders of the
+    /// same name get a number; a base URL the files disagree on is a warning.
+    #[test]
+    fn several_files_share_auth_and_warn_about_base_urls() {
+        let other = ORDERS.replace("localhost:3000", "localhost:4000");
+        let import = parse_files(&[(ORDERS, "orders.http"), (&other, "orders.rest")], "Shop")
+            .expect("parse");
+        assert!(matches!(&import.manifest.auth, Some(Auth::Bearer { .. })));
+        folder(&import, "Orders");
+        folder(&import, "Orders 2");
+        assert_eq!(
+            import.environments[0].servers["baseurl"],
+            "http://localhost:3000"
+        );
+        assert!(
+            import.warnings.iter().any(|w| w.contains(
+                "{{baseUrl}} is http://localhost:3000 in orders.http and http://localhost:4000 \
+                 in orders.rest"
+            )),
+            "{:?}",
+            import.warnings
+        );
+
+        let empty = parse_files(
+            &[(ORDERS, "orders.http"), ("# none\n", "notes.http")],
+            "Shop",
+        )
+        .expect_err("refused");
+        assert!(crate::error::message(&empty).contains("notes.http has no requests"));
+    }
+
+    /// R-COL-29, D35: environment files replace "Default"; a base URL the file left to
+    /// them goes to the server, values of the private file to the secret store per
+    /// environment, and the warning about the missing base URL goes.
+    #[test]
+    fn environment_files_join_an_http_import() {
+        let text = "### Orders\nGET {{host}}/orders\nAuthorization: Bearer {{token}}\n";
+        let import = parse(text, "shop.http").expect("parse");
+        assert!(
+            import
+                .warnings
+                .contains(&crate::import::no_base_url("host"))
+        );
+        let public = parse_environments(
+            r#"{"dev": {"host": "localhost:3000/", "limit": 1}, "prod": {"host": "https://shop.test"}}"#,
+            "http-client.env.json",
+        )
+        .expect("public");
+        let private = parse_environments(
+            r#"{"dev": {"token": "t-dev-ü😀"}, "prod": {"token": "t-prod"}}"#,
+            "http-client.private.env.json",
+        )
+        .expect("private");
+        let files: Vec<_> = public.into_iter().chain(private).collect();
+        let with = import.with_environments(&files);
+        let names: Vec<_> = with.environments.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["dev", "prod"]);
+        assert_eq!(
+            with.environments[0].servers["host"],
+            "http://localhost:3000"
+        );
+        assert_eq!(with.environments[0].variables["limit"], "1");
+        assert!(!with.warnings.contains(&crate::import::no_base_url("host")));
+        let key = |env: &str| (env.to_owned(), "token".to_owned());
+        assert_eq!(with.environment_secret_values[&key("dev")], "t-dev-ü😀");
+        assert_eq!(with.environment_secret_values[&key("prod")], "t-prod");
+        assert!(with.has_secret_value("token"));
+        for env in &with.environments {
+            let written = format::write_environment(env);
+            assert!(
+                !written.contains("t-dev") && !written.contains("t-prod"),
+                "{written}"
+            );
+        }
+    }
+
+    /// R-COL-29: an environment file given to an import entry says where it goes.
+    #[test]
+    fn environment_files_are_not_imported_as_projects() {
+        for (text, name) in [
+            (r#"{"dev": {"a": "1"}}"#, "http-client.env.json"),
+            (
+                r#"{"rest-client.environmentVariables": {"dev": {}}}"#,
+                "settings.json",
+            ),
+        ] {
+            let err = crate::import::parse(text, name, ImportKind::Http).expect_err(name);
+            assert!(
+                crate::error::message(&err).contains("environment file of the HTTP clients"),
+                "{name}"
+            );
+        }
     }
 }

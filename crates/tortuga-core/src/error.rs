@@ -115,6 +115,22 @@ pub enum Error {
     #[error("could not import the HTTP file: {0}")]
     InvalidHttpFile(String),
 
+    /// R-COL-29
+    #[error("could not import the HTTP environment file: {0}")]
+    InvalidHttpEnvironment(String),
+
+    /// R-COL-31
+    #[error("could not import the Bruno collection: {0}")]
+    InvalidBruno(String),
+
+    /// R-COL-31
+    #[error("could not import the Bruno environment: {0}")]
+    InvalidBrunoEnvironment(String),
+
+    /// R-COL-32
+    #[error("could not import the Insomnia export: {0}")]
+    InvalidInsomnia(String),
+
     /// R-VAR-3, R-LOC-2
     #[error("could not access secret values: {0}")]
     SecretStore(String),

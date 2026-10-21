@@ -1,17 +1,26 @@
 //! What an import becomes, and writing it as a new project (D34): from an OpenAPI
 //! description (R-COL-15, [`crate::openapi`]), a Postman collection (R-COL-16,
-//! [`crate::postman`]) or a `.http` file (R-COL-17, [`crate::http_file`]).
+//! [`crate::postman`]), a `.http` file (R-COL-17, [`crate::http_file`]), a Bruno
+//! collection (R-COL-31, [`crate::bruno`]) or an Insomnia export (R-COL-32,
+//! [`crate::insomnia`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde_json::Value;
+use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::collection::{Collection, NewItem};
 use crate::format::{self, Environment, Manifest, Server};
-use crate::model::Request;
+use crate::model::{Request, RequestBody};
 use crate::storage::Storage;
-use crate::{Result, http_file, openapi, postman};
+use crate::{Result, bruno, http_file, insomnia, openapi, postman};
+
+pub(crate) mod auth;
+mod environments;
+
+pub(crate) use environments::EnvValue;
+pub use environments::{EnvironmentImport, ImportedEnvironment, import_environments};
 
 /// What a file was read as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,11 +29,21 @@ pub enum ImportKind {
     Postman,
     /// A `.http` file of the VS Code REST Client or the JetBrains HTTP Client.
     Http,
+    /// A Bruno collection: a folder of `.bru` files (R-COL-31).
+    Bruno,
+    /// An Insomnia export, v4 JSON or v5 YAML (R-COL-32).
+    Insomnia,
 }
 
 impl ImportKind {
     /// Every importer, in the order menus list them.
-    pub const ALL: [Self; 3] = [Self::OpenApi, Self::Postman, Self::Http];
+    pub const ALL: [Self; 5] = [
+        Self::OpenApi,
+        Self::Postman,
+        Self::Insomnia,
+        Self::Http,
+        Self::Bruno,
+    ];
 
     /// Stable id, used in the settings file (R-COL-18).
     pub fn id(self) -> &'static str {
@@ -32,6 +51,8 @@ impl ImportKind {
             Self::OpenApi => "openapi",
             Self::Postman => "postman",
             Self::Http => "http",
+            Self::Bruno => "bruno",
+            Self::Insomnia => "insomnia",
         }
     }
 
@@ -41,15 +62,19 @@ impl ImportKind {
             Self::OpenApi => "OpenAPI descriptions",
             Self::Postman => "Postman collections",
             Self::Http => ".http files",
+            Self::Bruno => "Bruno collections",
+            Self::Insomnia => "Insomnia exports",
         }
     }
 
-    /// "OpenAPI description", "Postman collection" or "HTTP file".
+    /// What a file of this kind is called, e.g. "Postman collection".
     pub fn label(self) -> &'static str {
         match self {
             Self::OpenApi => "OpenAPI description",
             Self::Postman => "Postman collection",
             Self::Http => "HTTP file",
+            Self::Bruno => "Bruno collection",
+            Self::Insomnia => "Insomnia export",
         }
     }
 
@@ -60,6 +85,8 @@ impl ImportKind {
             Self::OpenApi => "",
             Self::Postman => "Postman's `pm` API",
             Self::Http => "the HTTP Client's `client` API",
+            Self::Bruno => "Bruno's `bru` API",
+            Self::Insomnia => "Insomnia's `insomnia` API",
         }
     }
 }
@@ -128,11 +155,21 @@ pub fn parse(text: &str, file_name: &str, expected: ImportKind) -> Result<Import
         .starts_with('{')
         .then(|| serde_json::from_str::<Value>(trimmed).ok())
         .flatten();
+    if insomnia::looks_like_export(trimmed, doc.as_ref()) {
+        return insomnia::parse(text);
+    }
     if doc.as_ref().is_some_and(postman::looks_like_collection) {
         return postman::parse(text);
     }
     if doc.as_ref().is_some_and(postman::looks_like_environment) {
         return Err(postman::environment_file_error());
+    }
+    if http_file::is_environment_file_name(file_name)
+        || doc
+            .as_ref()
+            .is_some_and(|d| http_file::looks_like_environments(file_name, d))
+    {
+        return Err(http_file::environment_file_error());
     }
     let extension = Path::new(file_name)
         .extension()
@@ -144,6 +181,8 @@ pub fn parse(text: &str, file_name: &str, expected: ImportKind) -> Result<Import
         ImportKind::OpenApi => openapi::parse(text),
         ImportKind::Postman => openapi::parse(text).or_else(|_| postman::parse(text)),
         ImportKind::Http => openapi::parse(text).or_else(|_| http_file::parse(text, file_name)),
+        ImportKind::Bruno => Err(bruno::not_a_folder_error()),
+        ImportKind::Insomnia => openapi::parse(text).or_else(|_| insomnia::parse(text)),
     }
 }
 
@@ -227,6 +266,11 @@ impl Collected {
             url,
         });
         Some((id, rest))
+    }
+
+    /// Whether the variable `name` became a server's base URL (D36).
+    pub fn is_server_variable(&self, name: &str) -> bool {
+        self.servers.iter().any(|b| b.variable == name)
     }
 
     /// A credential as written to the project: `{{name}}` of a secret variable (D35).
@@ -378,6 +422,62 @@ pub(crate) fn no_base_url(variable: &str) -> String {
     )
 }
 
+/// A JSON or YAML document as JSON; the error says which it isn't.
+pub(crate) fn json_or_yaml(text: &str) -> std::result::Result<Value, String> {
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    if text.starts_with('{') {
+        return serde_json::from_str(text).map_err(|e| format!("it is not valid JSON: {e}"));
+    }
+    let docs = YamlLoader::load_from_str(text).map_err(|e| format!("it is not valid YAML: {e}"))?;
+    let first = docs
+        .into_iter()
+        .next()
+        .ok_or_else(|| "the file is empty".to_owned())?;
+    Ok(yaml_to_json(&first))
+}
+
+fn yaml_to_json(yaml: &Yaml) -> Value {
+    match yaml {
+        Yaml::Real(text) => text
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map_or_else(|| Value::String(text.clone()), Value::Number),
+        Yaml::Integer(i) => Value::from(*i),
+        Yaml::String(s) => Value::String(s.clone()),
+        Yaml::Boolean(b) => Value::Bool(*b),
+        Yaml::Array(items) => Value::Array(items.iter().map(yaml_to_json).collect()),
+        Yaml::Hash(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (yaml_key(k), yaml_to_json(v)))
+                .collect(),
+        ),
+        Yaml::Alias(_) | Yaml::Null | Yaml::BadValue => Value::Null,
+    }
+}
+
+/// Map keys as text: YAML reads `200:` (a response code) as a number.
+fn yaml_key(key: &Yaml) -> String {
+    match key {
+        Yaml::String(s) | Yaml::Real(s) => s.clone(),
+        Yaml::Integer(i) => i.to_string(),
+        Yaml::Boolean(b) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// A GraphQL query and its variables (JSON text) as the JSON body that sends them.
+/// Variables that are not JSON are sent as the text they are.
+pub(crate) fn graphql_body(query: &str, variables: &str) -> RequestBody {
+    let variables = if variables.trim().is_empty() {
+        Value::Object(serde_json::Map::new())
+    } else {
+        serde_json::from_str(variables).unwrap_or_else(|_| Value::String(variables.to_owned()))
+    };
+    let json = serde_json::json!({ "query": query, "variables": variables });
+    RequestBody::Json(serde_json::to_string_pretty(&json).unwrap_or_default())
+}
+
 /// Every request in `items`, depth first.
 pub(crate) fn requests(items: &[NewItem]) -> Vec<&Request> {
     let mut out = Vec::new();
@@ -419,6 +519,14 @@ pub(crate) fn script_note(kind: ImportKind) -> String {
         "// Imported from the {} and not run: {} is not Tortuga's.\n// Port it to `vars`, \
          `req`, `res`, `test` and `expect`, then remove the `//`.\n",
         kind.label(),
+        kind.script_api()
+    )
+}
+
+/// The note above a script the import translated to Tortuga's API (R-COL-19).
+pub(crate) fn translated_note(kind: ImportKind) -> String {
+    format!(
+        "// Translated from {} by the import: check that it tests what it did.\n",
         kind.script_api()
     )
 }

@@ -3,6 +3,7 @@
 //! This crate must stay free of any UI framework so the desktop app, the web build
 //! and `tortuga-cli` all behave the same (P7).
 
+pub mod bruno;
 pub mod changes;
 pub mod collection;
 pub mod cookies;
@@ -15,6 +16,7 @@ pub mod history;
 pub mod http;
 pub mod http_file;
 pub mod import;
+pub mod insomnia;
 pub mod js_format;
 pub mod json;
 pub mod jsonpath;

@@ -118,7 +118,8 @@ fn examples_default_to_none_and_status_200() {
     assert_eq!(r.examples, [Example::new("ok")]);
 }
 
-/// R-MOCK-1: saving a response as an example leaves out credentials and transfer headers.
+/// R-MOCK-1: saving a response as an example leaves out credentials and transfer headers;
+/// the body is kept decoded, so its `Content-Encoding` goes too (R-COL-30).
 #[test]
 fn example_from_a_response_leaves_out_credentials() {
     let response = Response {
@@ -128,6 +129,7 @@ fn example_from_a_response_leaves_out_credentials() {
             KeyValue::new("Content-Type", "application/json"),
             KeyValue::new("Set-Cookie", "session=secret"),
             KeyValue::new("content-length", "2"),
+            KeyValue::new("Content-Encoding", "gzip"),
             KeyValue::new("Location", "/users/7"),
         ],
         body: b"{}".to_vec(),
