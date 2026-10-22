@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::runner::StepSummary;
 use crate::workflow::{FlowEnd, Iteration, RunResult, Workflow};
+use crate::xml::escape;
 
 /// The name of iteration `n` (from 0), with its data row if there is one.
 fn iteration_name(workflow: &Workflow, n: usize, iteration: &Iteration, total: usize) -> String {
@@ -173,23 +174,6 @@ pub fn json(workflow: &Workflow, result: &RunResult) -> String {
             .collect(),
     };
     serde_json::to_string_pretty(&report).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
-}
-
-fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            '\n' => out.push_str("&#10;"),
-            c if c.is_control() => {}
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

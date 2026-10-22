@@ -145,6 +145,66 @@ pub fn encode_form(fields: &[KeyValue]) -> String {
     ser.finish()
 }
 
+/// The active params as a pretty-printed JSON object, for a request that moves them
+/// into its body (R-HTTP-21). A value written as a JSON number or `true`/`false` keeps
+/// that type (`01` and `1e3` stay text); a name used more than once becomes an array.
+pub fn params_as_json(params: &[KeyValue]) -> String {
+    let mut object = serde_json::Map::new();
+    for p in params.iter().filter(|p| p.is_active()) {
+        let value = json_value(&p.value);
+        match object.get_mut(p.name.trim()) {
+            Some(serde_json::Value::Array(items)) => items.push(value),
+            Some(first) => *first = serde_json::Value::Array(vec![first.take(), value]),
+            None => {
+                object.insert(p.name.trim().to_owned(), value);
+            }
+        }
+    }
+    // Serializing a map of strings, numbers and arrays cannot fail.
+    serde_json::to_string_pretty(&object).unwrap_or_default()
+}
+
+fn json_value(text: &str) -> serde_json::Value {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v @ (serde_json::Value::Number(_) | serde_json::Value::Bool(_)))
+            if serde_json::to_string(&v).is_ok_and(|written| written == text) =>
+        {
+            v
+        }
+        _ => serde_json::Value::String(text.to_owned()),
+    }
+}
+
+/// The active params as an XML document: a `<request>` element with an element per
+/// param, in order (R-HTTP-21). Characters a tag name can't hold become `_`.
+pub fn params_as_xml(params: &[KeyValue]) -> String {
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<request>\n");
+    for p in params.iter().filter(|p| p.is_active()) {
+        let tag = xml_name(p.name.trim());
+        let value = crate::xml::escape(&p.value);
+        out.push_str(&["  <", &tag, ">", &value, "</", &tag, ">\n"].concat());
+    }
+    out.push_str("</request>");
+    out
+}
+
+fn xml_name(name: &str) -> String {
+    let mut tag: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if !tag.starts_with(|c: char| c.is_alphabetic() || c == '_') {
+        tag.insert(0, '_');
+    }
+    tag
+}
+
 fn encode(s: &str) -> String {
     utf8_percent_encode(s, QUERY_COMPONENT).to_string()
 }
@@ -233,5 +293,59 @@ mod tests {
             KeyValue::new("x", "a&b"),
         ];
         assert_eq!(encode_form(&fields), "name=Ada+Lovelace&x=a%26b");
+    }
+
+    #[test]
+    fn params_become_a_json_object_r_http_21() {
+        let params = [
+            KeyValue::new("page", "2"),
+            KeyValue::new("zip", "01234"),
+            KeyValue::new("big", "1e3"),
+            KeyValue::new("active", "true"),
+            KeyValue::new("tag", "a"),
+            KeyValue::new(" tag ", "ü😀"),
+            KeyValue::new("tag", "{{t}}"),
+            KeyValue::new("empty", ""),
+            KeyValue::new("", "no name"),
+            KeyValue {
+                enabled: false,
+                ..KeyValue::new("off", "x")
+            },
+        ];
+        assert_eq!(
+            params_as_json(&params),
+            r#"{
+  "page": 2,
+  "zip": "01234",
+  "big": "1e3",
+  "active": true,
+  "tag": [
+    "a",
+    "ü😀",
+    "{{t}}"
+  ],
+  "empty": ""
+}"#
+        );
+        assert_eq!(params_as_json(&[]), "{}");
+    }
+
+    #[test]
+    fn params_become_xml_elements_r_http_21() {
+        let params = [
+            KeyValue::new("name", "Ada & <co> ü😀"),
+            KeyValue::new("user[id]", "7"),
+            KeyValue::new("1st", ""),
+            KeyValue::new("tag", "a"),
+            KeyValue::new("tag", "b"),
+        ];
+        let xml = params_as_xml(&params);
+        assert_eq!(
+            xml,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<request>\n  \
+             <name>Ada &amp; &lt;co&gt; ü😀</name>\n  <user_id_>7</user_id_>\n  \
+             <_1st></_1st>\n  <tag>a</tag>\n  <tag>b</tag>\n</request>"
+        );
+        assert_eq!(crate::xml::check(&xml), None);
     }
 }

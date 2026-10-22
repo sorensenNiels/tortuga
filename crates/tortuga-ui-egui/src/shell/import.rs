@@ -31,8 +31,9 @@ fn pick_environments(kind: ImportKind) -> (&'static str, &'static [&'static str]
         ),
         ImportKind::Postman => ("Choose Postman environments (exported as JSON)", &["json"]),
         ImportKind::Bruno => (
-            "Choose Bruno environments (the .bru files in a collection's environments folder)",
-            &["bru"],
+            "Choose Bruno environments (the .bru or .yml files in a collection's environments \
+             folder)",
+            &["bru", "yml", "yaml"],
         ),
     }
 }
@@ -88,8 +89,7 @@ fn read_environments(
                         http_file::parse_environments(&text, &file_name(path))
                     }
                     ImportKind::Bruno => {
-                        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-                        bruno::parse_environment(&text, &stem).map(|e| vec![e])
+                        bruno::parse_environment_file(&text, &file_name(path)).map(|e| vec![e])
                     }
                 };
                 parsed.map_err(|e| tortuga_core::error::message(&e))
@@ -153,10 +153,11 @@ fn read_import(
     parsed.map_err(|e| tortuga_core::error::message(&e))
 }
 
-/// A Bruno collection's folder for its picked `bruno.json` (R-COL-31), else `path`.
+/// A Bruno collection's folder for its picked `bruno.json` or `opencollection.yml`
+/// (R-COL-31, R-COL-34), else `path`.
 fn collection_folder(path: &Path) -> PathBuf {
     match path.parent() {
-        Some(dir) if file_name(path) == bruno::COLLECTION_FILE => dir.to_path_buf(),
+        Some(dir) if bruno::is_collection_file(&file_name(path)) => dir.to_path_buf(),
         _ => path.to_path_buf(),
     }
 }
@@ -223,7 +224,9 @@ impl TortugaUi {
             ImportKind::Bruno => self
                 .state
                 .host
-                .pick_folder("Choose a Bruno collection (the folder with bruno.json)")
+                .pick_folder(
+                    "Choose a Bruno collection (the folder with bruno.json or opencollection.yml)",
+                )
                 .into_iter()
                 .collect(),
         };
@@ -768,6 +771,41 @@ mod tests {
         assert!(ui.modal.is_none());
         let notice = format!("{:?}", ui.state.notice);
         assert!(notice.contains("has no bruno.json"), "{notice}");
+    }
+
+    /// R-COL-34: a Bruno collection in YAML, picked as its `opencollection.yml`, is
+    /// imported from its folder with its environments and examples.
+    #[test]
+    fn yaml_bruno_collections_import_from_their_folder() {
+        let base = tempfile::tempdir().expect("dir");
+        let dir = base.path().join("shop");
+        std::fs::create_dir_all(dir.join("environments")).expect("dir");
+        let config = write(
+            &dir,
+            "opencollection.yml",
+            "opencollection: \"1.0.0\"\ninfo:\n  name: Shop ü😀\n",
+        );
+        write(
+            &dir,
+            "list.yml",
+            "info:\n  name: List\n  type: http\nhttp:\n  method: GET\n  url: \"{{baseUrl}}/users\"\nexamples:\n  - name: Two\n    response:\n      status: 200\n      body:\n        type: json\n        data: \"[1, 2]\"\n",
+        );
+        write(
+            &dir.join("environments"),
+            "Local.yml",
+            "name: Local\nvariables:\n  - name: baseUrl\n    value: http://localhost:3000\n",
+        );
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        ui.import_paths(ImportKind::Postman, &[config]);
+        let Some(Modal::Import(open)) = ui.modal.take() else {
+            panic!("the dialog opens: {:?}", ui.state.notice);
+        };
+        assert_eq!(open.dialog.import.kind, ImportKind::Bruno);
+        assert_eq!(open.dialog.sources, std::slice::from_ref(&dir));
+        ui.finish_import(&open.dialog);
+        let project = ui.state.collection(&open.dialog.dir).expect("added");
+        assert_eq!(project.name(), "Shop ü😀");
+        assert_eq!(project.environments[0].name, "Local");
     }
 
     /// R-COL-32: an Insomnia export becomes a project beside it, with its

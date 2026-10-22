@@ -1,5 +1,7 @@
 //! Importing a Bruno collection, a folder of `.bru` files, as a new project (R-COL-31,
-//! D34, D59).
+//! D34, D59). A collection in Bruno's YAML format (`OpenCollection`, Bruno 3 and later)
+//! is read into the same blocks first ([`yaml`], R-COL-34), and its saved examples
+//! become the requests' examples (R-MOCK-1).
 //!
 //! The collection becomes:
 //! - its folders and requests, in the order of their `seq`;
@@ -15,7 +17,9 @@
 //! - a request's `assert` lines as tests, and the `vars:post-response` values it reads
 //!   from the response as captures (R-TEST-4) ([`assert`]); its own variables
 //!   (`vars:pre-request`) as `vars.set(…)` in its pre-request script;
-//! - scripts kept as comments to port by hand: Bruno's `bru` API is not Tortuga's (D28).
+//! - scripts translated to Tortuga's script API ([`script`], R-COL-33), or kept as
+//!   comments to port when they use more of Bruno's API than the translation knows
+//!   (D28).
 //!
 //! What can't be imported as written is reported in [`Import::warnings`].
 
@@ -29,7 +33,8 @@ use crate::collection::NewItem;
 use crate::format::{FolderDefaults, Manifest};
 use crate::import::auth::{AuthSpec, Credentials, Inherited};
 use crate::import::{
-    Collected, EnvValue, Import, ImportKind, ImportedEnvironment, graphql_body, short_name,
+    Collected, EnvValue, Import, ImportKind, ImportedEnvironment, graphql_body, json_or_yaml,
+    short_name,
 };
 use crate::model::{FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts};
 use crate::storage::Storage;
@@ -37,20 +42,93 @@ use crate::{Error, Result};
 
 mod assert;
 mod lang;
+mod script;
+mod yaml;
 
 use lang::{BruFile, Pair};
 
-/// The file that makes a folder a Bruno collection.
+/// The file that makes a folder a Bruno collection of `.bru` files.
 pub const COLLECTION_FILE: &str = "bruno.json";
+/// The file that makes a folder a Bruno collection of YAML files (R-COL-34).
+pub const YAML_COLLECTION_FILE: &str = "opencollection.yml";
+
+/// The files of a collection's own settings and its folders', in either format; they
+/// are not requests.
+const SETTINGS_FILES: [&str; 4] = [
+    "collection.bru",
+    "folder.bru",
+    YAML_COLLECTION_FILE,
+    "folder.yml",
+];
+
+/// How a collection's files are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Bru,
+    /// `OpenCollection` YAML (R-COL-34).
+    Yaml,
+}
+
+impl Layout {
+    fn of(storage: &dyn Storage, dir: &Path) -> Option<Self> {
+        if storage.exists(&dir.join(COLLECTION_FILE)) {
+            Some(Self::Bru)
+        } else if storage.exists(&dir.join(YAML_COLLECTION_FILE)) {
+            Some(Self::Yaml)
+        } else {
+            None
+        }
+    }
+
+    /// The format a request or environment file named `name` is in, if either.
+    fn of_file(name: &str) -> Option<Self> {
+        let extension = Path::new(name)
+            .extension()?
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        match extension.as_str() {
+            "bru" => Some(Self::Bru),
+            "yml" | "yaml" => Some(Self::Yaml),
+            _ => None,
+        }
+    }
+
+    fn collection_file(self) -> &'static str {
+        match self {
+            Self::Bru => "collection.bru",
+            Self::Yaml => YAML_COLLECTION_FILE,
+        }
+    }
+
+    fn folder_file(self) -> &'static str {
+        match self {
+            Self::Bru => "folder.bru",
+            Self::Yaml => "folder.yml",
+        }
+    }
+
+    /// A file's blocks, or why it can't be read.
+    fn parse(self, text: &str) -> std::result::Result<BruFile, String> {
+        match self {
+            Self::Bru => lang::parse(text),
+            Self::Yaml => json_or_yaml(text).map(|doc| yaml::to_bru(&doc)),
+        }
+    }
+}
 
 /// The block names of the methods a request can have.
 const METHODS: [&str; 9] = [
     "get", "post", "put", "delete", "patch", "options", "head", "connect", "trace",
 ];
 
-/// Whether `dir` is a Bruno collection.
+/// Whether `dir` is a Bruno collection, in either format.
 pub fn is_collection(storage: &dyn Storage, dir: &Path) -> bool {
-    storage.exists(&dir.join(COLLECTION_FILE))
+    Layout::of(storage, dir).is_some()
+}
+
+/// Whether a file named `name` marks a Bruno collection's folder.
+pub fn is_collection_file(name: &str) -> bool {
+    name == COLLECTION_FILE || name == YAML_COLLECTION_FILE
 }
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -59,23 +137,36 @@ fn invalid(message: impl Into<String>) -> Error {
 
 /// The error for a file given where a Bruno collection's folder was expected.
 pub(crate) fn not_a_folder_error() -> Error {
-    invalid("a Bruno collection is a folder: choose the folder that has its bruno.json")
+    invalid(
+        "a Bruno collection is a folder: choose the folder that has its bruno.json or \
+         opencollection.yml",
+    )
 }
 
-/// Reads the Bruno collection in `dir` into a project (R-COL-31).
+/// Reads the Bruno collection in `dir` into a project (R-COL-31, R-COL-34).
 pub fn read(storage: &dyn Storage, dir: &Path) -> Result<Import> {
-    let config_path = dir.join(COLLECTION_FILE);
-    if !storage.exists(&config_path) {
-        return Err(invalid(format!(
-            "{} has no {COLLECTION_FILE}: choose the folder of a Bruno collection",
+    let layout = Layout::of(storage, dir).ok_or_else(|| {
+        invalid(format!(
+            "{} has no {COLLECTION_FILE} or {YAML_COLLECTION_FILE}: choose the folder of a \
+             Bruno collection",
             dir.display()
-        )));
-    }
+        ))
+    })?;
+    let config_file = match layout {
+        Layout::Bru => COLLECTION_FILE,
+        Layout::Yaml => YAML_COLLECTION_FILE,
+    };
+    let config_path = dir.join(config_file);
     let text = storage
         .read_to_string(&config_path)
         .map_err(|e| invalid(format!("{}: {e}", config_path.display())))?;
-    let config: Value = serde_json::from_str(&text)
-        .map_err(|e| invalid(format!("{COLLECTION_FILE} is not valid JSON: {e}")))?;
+    let config: Value = match layout {
+        Layout::Bru => serde_json::from_str(&text)
+            .map_err(|e| invalid(format!("{config_file} is not valid JSON: {e}")))?,
+        Layout::Yaml => {
+            yaml::config(&json_or_yaml(&text).map_err(|e| invalid(format!("{config_file}: {e}")))?)
+        }
+    };
     let ignore = config.get("ignore").and_then(Value::as_array).map_or_else(
         || vec!["node_modules".to_owned()],
         |list| {
@@ -88,6 +179,7 @@ pub fn read(storage: &dyn Storage, dir: &Path) -> Result<Import> {
     let importer = Importer {
         storage,
         root: dir,
+        layout,
         ignore,
         c: Collected::default(),
         process_env: BTreeSet::new(),
@@ -95,13 +187,43 @@ pub fn read(storage: &dyn Storage, dir: &Path) -> Result<Import> {
     Ok(importer.run(&config))
 }
 
-/// Reads a Bruno environment file (`environments/<name>.bru`) as the environment
-/// `name` (R-COL-31): its enabled `vars`, and its `vars:secret` names as secret
-/// variables without a value, since Bruno keeps those on its user's computer.
-pub fn parse_environment(text: &str, name: &str) -> Result<ImportedEnvironment> {
+/// Reads a Bruno environment file (`<name>.bru` or `<name>.yml` in `environments/`)
+/// (R-COL-31, R-COL-34): its enabled variables, and its secret ones without a value,
+/// since Bruno keeps those on its user's computer.
+pub fn parse_environment_file(text: &str, file_name: &str) -> Result<ImportedEnvironment> {
+    let stem = Path::new(file_name)
+        .file_stem()
+        .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
     let mut process_env = BTreeSet::new();
     let text = without_process_env(text, &mut process_env);
-    let file = lang::parse(&text)
+    let mut env = match Layout::of_file(file_name) {
+        Some(Layout::Yaml) => json_or_yaml(&text)
+            .ok()
+            .and_then(|doc| yaml::environment(&doc, &stem))
+            .ok_or_else(|| {
+                Error::InvalidBrunoEnvironment(format!(
+                    "{file_name} has no variables: is it a Bruno environment?"
+                ))
+            })?,
+        Some(Layout::Bru) | None => parse_environment(&text, &stem)?,
+    };
+    // `{{process.env.X}}` became the secret variable `X` (R-COL-31).
+    for key in process_env {
+        if !env.values.iter().any(|v| v.key == key) {
+            env.values.push(EnvValue {
+                key,
+                value: String::new(),
+                secret: true,
+            });
+        }
+    }
+    Ok(env)
+}
+
+/// A `.bru` environment file's enabled `vars`, and its `vars:secret` names as secret
+/// variables without a value.
+fn parse_environment(text: &str, name: &str) -> Result<ImportedEnvironment> {
+    let file = lang::parse(text)
         .map_err(|e| Error::InvalidBrunoEnvironment(format!("{name}.bru, {e}")))?;
     if file.block("vars").is_none() && file.block("vars:secret").is_none() {
         return Err(Error::InvalidBrunoEnvironment(format!(
@@ -124,12 +246,7 @@ pub fn parse_environment(text: &str, name: &str) -> Result<ImportedEnvironment> 
             secret: secrets.contains(&p.key.as_str()),
         })
         .collect();
-    let names = secrets
-        .iter()
-        .map(|s| (*s).to_owned())
-        .chain(process_env)
-        .collect::<Vec<_>>();
-    for key in names {
+    for key in secrets.iter().map(|s| (*s).to_owned()) {
         if !values.iter().any(|v| v.key == key) {
             values.push(EnvValue {
                 key,
@@ -203,6 +320,7 @@ struct Found {
 struct Importer<'a> {
     storage: &'a dyn Storage,
     root: &'a Path,
+    layout: Layout,
     /// Folder names `bruno.json` says to skip.
     ignore: Vec<String>,
     c: Collected,
@@ -220,7 +338,7 @@ impl Importer<'_> {
             .map_or_else(|| folder_name(self.root), str::to_owned);
         let mut manifest = Manifest::new(name);
         self.config_warnings(config);
-        let collection = self.optional_file(&self.root.join("collection.bru"));
+        let collection = self.optional_file(&self.root.join(self.layout.collection_file()));
         manifest.description = docs(&collection);
         manifest.headers = key_values(collection.dict("headers"));
         self.c.variables = variables(collection.dict("vars:pre-request"));
@@ -269,14 +387,14 @@ impl Importer<'_> {
         }
     }
 
-    /// A `.bru` file with `{{process.env.…}}` rewritten, or why it can't be read.
+    /// A file's blocks with `{{process.env.…}}` rewritten, or why it can't be read.
     fn file(&mut self, path: &Path) -> std::result::Result<BruFile, String> {
         let text = self
             .storage
             .read_to_string(path)
             .map_err(|e| e.to_string())?;
         let text = without_process_env(&text, &mut self.process_env);
-        lang::parse(&text)
+        self.layout.parse(&text)
     }
 
     /// `collection.bru` or `folder.bru`: empty when there is none, and left out with a
@@ -364,10 +482,8 @@ impl Importer<'_> {
                 if !skip {
                     found.push(self.folder(&path, &entry.name, inherited));
                 }
-            } else if Path::new(&entry.name)
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("bru"))
-                && !matches!(entry.name.as_str(), "folder.bru" | "collection.bru")
+            } else if Layout::of_file(&entry.name) == Some(self.layout)
+                && !SETTINGS_FILES.contains(&entry.name.as_str())
             {
                 found.extend(self.request(&path, inherited));
             }
@@ -384,7 +500,7 @@ impl Importer<'_> {
     }
 
     fn folder(&mut self, dir: &Path, dir_name: &str, inherited: &Inherited) -> Found {
-        let file = self.optional_file(&dir.join("folder.bru"));
+        let file = self.optional_file(&dir.join(self.layout.folder_file()));
         let name = file
             .get("meta", "name")
             .filter(|n| !n.is_empty())
@@ -493,6 +609,7 @@ impl Importer<'_> {
         inherited.apply(own, &mut request);
         self.apply_settings(&file, &mut request);
         self.checks_and_scripts(&file, &mut request);
+        request.examples.clone_from(&file.examples);
         Some(Found {
             seq: seq(&file),
             is_folder: false,
@@ -621,9 +738,10 @@ impl Importer<'_> {
             let _ = writeln!(scripts.pre_request, "vars.set({name}, {value});");
         }
         if let Some(code) = file.text("script:pre-request") {
-            scripts
-                .pre_request
-                .push_str(&self.c.commented_script(code, ImportKind::Bruno));
+            let translated = self
+                .c
+                .translated_script(script::translate(code), ImportKind::Bruno);
+            scripts.pre_request.push_str(&translated);
         }
 
         for pair in file.dict("vars:post-response").iter().filter(|p| p.enabled) {
@@ -657,9 +775,10 @@ impl Importer<'_> {
         }
         for block in ["script:post-response", "tests"] {
             if let Some(code) = file.text(block) {
-                scripts
-                    .tests
-                    .push_str(&self.c.commented_script(code, ImportKind::Bruno));
+                let translated = self
+                    .c
+                    .translated_script(script::translate(code), ImportKind::Bruno);
+                scripts.tests.push_str(&translated);
             }
         }
         request.scripts = scripts;
@@ -677,10 +796,13 @@ impl Importer<'_> {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         let mut out = Vec::new();
         for entry in entries.iter().filter(|e| !e.is_dir) {
-            let Some(name) = entry.name.strip_suffix(".bru") else {
+            if Layout::of_file(&entry.name) != Some(self.layout) {
                 continue;
-            };
+            }
             let path = dir.join(&entry.name);
+            let name = path
+                .file_stem()
+                .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
             // `{{process.env.…}}` names become the project's secrets, with `.env` values.
             let read = self
                 .storage
@@ -688,7 +810,7 @@ impl Importer<'_> {
                 .map_err(|e| invalid(e.to_string()))
                 .and_then(|text| {
                     let text = without_process_env(&text, &mut self.process_env);
-                    parse_environment(&text, name)
+                    parse_environment_file(&text, &entry.name)
                 });
             match read {
                 Ok(env) => out.push(env),

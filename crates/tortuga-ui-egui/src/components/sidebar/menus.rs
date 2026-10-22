@@ -50,7 +50,7 @@ pub(super) fn add_menu(ui: &mut Ui, importers: &ImporterSettings) -> Option<Side
         ),
         (
             "Import Bruno collection…",
-            "Create a project from a Bruno collection (the folder with bruno.json)",
+            "Create a project from a Bruno collection (the folder with bruno.json or opencollection.yml)",
             SidebarAction::Import(ImportKind::Bruno),
         ),
     ];

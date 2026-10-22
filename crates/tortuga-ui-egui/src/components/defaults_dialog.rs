@@ -210,6 +210,7 @@ impl DefaultsDialog {
                         &mut self.editing_description,
                         read_only,
                         380.0,
+                        None,
                     );
                 }
                 Tab::Requests => {

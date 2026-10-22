@@ -164,6 +164,13 @@ impl RequestBody {
     }
 }
 
+/// The body type query params move into (R-HTTP-21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamsBody {
+    Json,
+    Xml,
+}
+
 /// One part of a `multipart/form-data` body (R-HTTP-15): a text value, or a file.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct FormPart {
@@ -378,6 +385,24 @@ impl Request {
         self.sync_path_variables();
     }
 
+    /// Whether the query params could move into the body (R-HTTP-21): the method sends
+    /// a body, there is none yet, and a param takes part in the request.
+    pub fn can_move_params_to_body(&self) -> bool {
+        !self.method.is_safe()
+            && self.body == RequestBody::None
+            && self.params.iter().any(KeyValue::is_active)
+    }
+
+    /// Moves the active query params into a new body of type `to` (R-HTTP-21).
+    /// Switched-off params stay in the query table.
+    pub fn move_params_to_body(&mut self, to: ParamsBody) {
+        self.body = match to {
+            ParamsBody::Json => RequestBody::Json(query::params_as_json(&self.params)),
+            ParamsBody::Xml => RequestBody::Xml(query::params_as_xml(&self.params)),
+        };
+        self.params.retain(|p| !p.is_active());
+    }
+
     /// Makes `path_vars` match the `:name` segments of `url`: values of names still
     /// in the URL are kept, new names start empty, names no longer in it are dropped.
     pub fn sync_path_variables(&mut self) {
@@ -512,6 +537,32 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn params_move_into_the_body_only_when_it_is_empty_r_http_21() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/users?q=ada&n=2");
+        request.params.push(KeyValue {
+            enabled: false,
+            ..KeyValue::new("debug", "1")
+        });
+        assert!(!request.can_move_params_to_body(), "GET sends no body");
+        request.method = HttpMethod::Post;
+        assert!(request.can_move_params_to_body());
+
+        request.move_params_to_body(ParamsBody::Json);
+        assert_eq!(
+            request.body,
+            RequestBody::Json("{\n  \"q\": \"ada\",\n  \"n\": 2\n}".into())
+        );
+        assert_eq!(request.params.len(), 1, "switched-off params stay");
+        assert_eq!(request.display_url(), "https://a.test/users");
+        assert!(!request.can_move_params_to_body(), "the body is taken now");
+
+        let mut request = Request::new(HttpMethod::Put, "https://a.test/?x=1");
+        request.move_params_to_body(ParamsBody::Xml);
+        assert!(matches!(&request.body, RequestBody::Xml(x) if x.contains("<x>1</x>")));
+        assert_eq!(request.params, []);
+    }
 
     fn response(content_type: Option<&str>, body: &[u8]) -> Response {
         Response {

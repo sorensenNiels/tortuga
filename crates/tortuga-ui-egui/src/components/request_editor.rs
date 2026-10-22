@@ -1,7 +1,7 @@
 use egui::{Color32, ComboBox, Key, RichText, Stroke, TextEdit, Ui};
 use tortuga_core::script::{Breakpoints, ScriptKind};
 use tortuga_core::settings::{Feature, FeatureSettings, ResolvedSettings};
-use tortuga_core::{Auth, HttpMethod, KeyValue, Request, RequestBody};
+use tortuga_core::{Auth, HttpMethod, KeyValue, ParamsBody, Request, RequestBody};
 
 use super::TestsView;
 use super::auth_editor::EditDefaults;
@@ -29,6 +29,14 @@ enum Tab {
     Docs,
 }
 
+/// The line offering to move the query params into the body (R-HTTP-21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParamsOffer {
+    Hidden,
+    /// The method just changed from GET.
+    Shown,
+}
+
 /// Editor state that is not part of the request. Recreated (with [`EditorState::new`])
 /// whenever the edited request is replaced from outside the editor.
 #[derive(Debug, Clone)]
@@ -49,6 +57,8 @@ pub struct EditorState {
     editing_docs: bool,
     /// The request as it will be sent shows under the URL (R-HTTP-14, R-COL-24).
     preview_open: bool,
+    /// Whether to offer moving the query params into the body (R-HTTP-21).
+    params_offer: ParamsOffer,
 }
 
 impl EditorState {
@@ -118,6 +128,7 @@ impl EditorState {
             examples: ExamplesState::default(),
             editing_docs: false,
             preview_open: false,
+            params_offer: ParamsOffer::Hidden,
         }
     }
 }
@@ -218,6 +229,9 @@ pub fn request_editor(
         _ => String::new(),
     };
     let action = request_bar(ui, request, st, cx, &base_hint);
+    if st.params_offer == ParamsOffer::Shown && request.can_move_params_to_body() {
+        params_offer(ui, request, st);
+    }
 
     let server = match (&request.server, cx.server_base) {
         (None, _) => ServerLine::None,
@@ -374,14 +388,18 @@ fn tab_content(
             request_examples(ui, &mut request.examples, &mut st.examples, cx.vars);
         }
         Tab::Docs => {
+            // Taken out while shown, so the draft can read the rest of the request.
+            let mut description = std::mem::take(&mut request.description);
             description_editor(
                 ui,
                 "request",
-                &mut request.description,
+                &mut description,
                 &mut st.editing_docs,
                 false,
                 f32::INFINITY,
+                Some(&|| tortuga_core::request_docs::draft(request)),
             );
+            request.description = description;
         }
     }
     action
@@ -424,7 +442,13 @@ fn request_bar(
             v.selection.stroke = Stroke::NONE;
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.horizontal(|ui| {
-                method_picker(ui, request);
+                if let Some(old) = method_picker(ui, request) {
+                    st.params_offer = if old == HttpMethod::Get {
+                        ParamsOffer::Shown
+                    } else {
+                        ParamsOffer::Hidden
+                    };
+                }
                 ui.separator();
                 if !cx.servers.is_empty() || request.server.is_some() {
                     server_picker(ui, request, cx, base_hint);
@@ -526,7 +550,8 @@ fn inherited_headers(ui: &mut Ui, headers: &[(KeyValue, String)]) {
     );
 }
 
-fn method_picker(ui: &mut Ui, request: &mut Request) {
+/// Returns the method it had before the user picked another one.
+fn method_picker(ui: &mut Ui, request: &mut Request) -> Option<HttpMethod> {
     let method = request.method;
     ComboBox::from_id_salt("method")
         .selected_text(theme::method_text(ui, method))
@@ -538,6 +563,43 @@ fn method_picker(ui: &mut Ui, request: &mut Request) {
         })
         .response
         .on_hover_text("HTTP method");
+    (request.method != method).then_some(method)
+}
+
+/// "Move the query parameters into the body?" after GET became POST, PUT, … (R-HTTP-21).
+fn params_offer(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
+    let count = request.params.iter().filter(|p| p.is_active()).count();
+    let what = if count == 1 {
+        "the query parameter".to_owned()
+    } else {
+        format!("the {count} query parameters")
+    };
+    let mut chosen = None;
+    ui.horizontal_wrapped(|ui| {
+        theme::hint(
+            ui,
+            format!(
+                "{} usually sends data in its body. Move {what} into it as",
+                request.method
+            ),
+        );
+        if ui.small_button("JSON").clicked() {
+            chosen = Some(ParamsBody::Json);
+        }
+        if ui.small_button("XML").clicked() {
+            chosen = Some(ParamsBody::Xml);
+        }
+        if ui.add(theme::ghost_button("Keep in URL")).clicked() {
+            st.params_offer = ParamsOffer::Hidden;
+        }
+    });
+    if let Some(to) = chosen {
+        request.move_params_to_body(to);
+        st.url_text = request.display_url();
+        st.body = BodyDrafts::new(&request.body);
+        st.tab = Tab::Body;
+        st.params_offer = ParamsOffer::Hidden;
+    }
 }
 
 fn server_picker(ui: &mut Ui, request: &mut Request, cx: EditorContext<'_>, base_hint: &str) {
@@ -801,6 +863,96 @@ mod tests {
                 h.get_by_label("Edit");
             }
         }
+    }
+
+    fn editor_harness<'a>(
+        request: &'a mut Request,
+        st: &'a mut EditorState,
+    ) -> egui_kittest::Harness<'a> {
+        crate::test_host::harness(move |ui| {
+            request_editor(
+                ui,
+                request,
+                st,
+                EditorContext {
+                    servers: &[],
+                    server_base: None,
+                    vars: &VarHelp::default(),
+                    sending: false,
+                    settings: test_settings(),
+                    unverified_host: None,
+                    collection_auth: None,
+                    inherited_headers: &[],
+                    auth_origin: "the project",
+                    cookie_count: 0,
+                    in_collection: false,
+                    preview: None,
+                    can_pick_files: false,
+                    breakpoints: &Breakpoints::default(),
+                    last_run: None,
+                    rerun: Rerun::Unavailable,
+                    view: EditorView::Full,
+                    features: &FeatureSettings::default(),
+                },
+            );
+        })
+    }
+
+    /// R-HTTP-21: GET → POST offers to move the query params into the body.
+    #[test]
+    fn changing_get_to_post_offers_to_move_params_into_the_body() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/users?name=ü😀&n=2");
+        let mut st = EditorState::new(&request);
+        st.focus_url = false;
+        let mut h = editor_harness(&mut request, &mut st);
+        h.run();
+        assert!(h.query_by_label("JSON").is_none(), "no offer while GET");
+        h.get_all_by_role(egui::accesskit::Role::ComboBox)
+            .next()
+            .expect("method picker")
+            .click();
+        h.run();
+        h.get_by_label("POST").click();
+        h.run();
+        h.get_by_label_contains("Move the 2 query parameters");
+        h.get_by_label("JSON").click();
+        h.run();
+        assert!(
+            h.query_by_label("Keep in URL").is_none(),
+            "the offer is gone"
+        );
+        drop(h);
+        assert_eq!(request.method, HttpMethod::Post);
+        assert_eq!(
+            request.body,
+            RequestBody::Json("{\n  \"name\": \"ü😀\",\n  \"n\": 2\n}".into())
+        );
+        assert_eq!(request.params, []);
+        assert_eq!(st.url_text, "https://a.test/users");
+        assert_eq!(st.tab, Tab::Body);
+    }
+
+    /// R-HTTP-21: "Keep in URL" leaves the request as it is.
+    #[test]
+    fn keeping_params_in_the_url_dismisses_the_offer() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/?x=1");
+        let mut st = EditorState::new(&request);
+        st.focus_url = false;
+        let mut h = editor_harness(&mut request, &mut st);
+        h.run();
+        h.get_all_by_role(egui::accesskit::Role::ComboBox)
+            .next()
+            .expect("method picker")
+            .click();
+        h.run();
+        h.get_by_label("PUT").click();
+        h.run();
+        h.get_by_label("Keep in URL").click();
+        h.run();
+        assert!(h.query_by_label("JSON").is_none());
+        drop(h);
+        assert_eq!(request.body, RequestBody::None);
+        assert_eq!(request.display_url(), "https://a.test/?x=1");
     }
 
     /// R-HTTP-14, R-COL-24: the line under the URL opens the resolved request, with Basic

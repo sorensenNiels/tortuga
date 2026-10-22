@@ -29,7 +29,7 @@ use crate::collection::NewItem;
 use crate::format::{FolderDefaults, Manifest};
 use crate::import::auth::{AuthSpec, Credentials, Inherited};
 use crate::import::{
-    Collected, Import, ImportKind, graphql_body, short_name, translated_note, unique_name,
+    Collected, Import, ImportKind, graphql_body, json_text as text, short_name, unique_name,
 };
 use crate::mock::Example;
 use crate::model::{
@@ -458,19 +458,9 @@ impl<'a> Importer<'a> {
                 Some("test") => &mut scripts.tests,
                 _ => continue,
             };
-            *slot = match script::translate(&code) {
-                script::Translation::Complete(code) => {
-                    self.c.translated += 1;
-                    format!(
-                        "{}{}\n",
-                        translated_note(ImportKind::Postman),
-                        code.trim_end()
-                    )
-                }
-                script::Translation::Partial(code) => {
-                    self.c.commented_script(&code, ImportKind::Postman)
-                }
-            };
+            *slot = self
+                .c
+                .translated_script(script::translate(&code), ImportKind::Postman);
         }
         scripts
     }
@@ -606,15 +596,6 @@ fn is_disabled(value: &Value) -> bool {
     value.get("disabled").and_then(Value::as_bool) == Some(true)
 }
 
-/// A JSON value as text; `null` and missing are empty.
-fn text(value: Option<&Value>) -> String {
-    match value {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
-    }
-}
-
 /// A script's `exec`: a list of lines or one text.
 fn script_code(script: Option<&Value>) -> String {
     match script.and_then(|s| s.get("exec")) {
@@ -631,7 +612,7 @@ fn script_code(script: Option<&Value>) -> String {
 mod tests {
     use super::*;
     use crate::format;
-    use crate::import::requests;
+    use crate::import::{requests, translated_note};
     use crate::model::Auth;
 
     /// A v2.1 export with what teams typically have in a collection.

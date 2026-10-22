@@ -851,14 +851,13 @@ fn tree_row<'a, T>(
     trailing: impl FnOnce(&mut Ui) -> T,
 ) -> (egui::Response, T) {
     let atoms: egui::Atoms<'a> = atoms.into_iter().collect();
-    // Row actions only show on the hovered or selected row (or while a menu is open),
-    // but stay clickable, so the tree stays calm.
+    // Row actions only show on the hovered or selected row (or while its own menu is
+    // open), but stay clickable, so the tree stays calm.
     let row_rect = egui::Rect::from_min_size(
         ui.cursor().min,
         egui::vec2(ui.available_width(), ROW_HEIGHT),
     );
-    let show_trailing =
-        selected || ui.rect_contains_pointer(row_rect) || egui::Popup::is_any_open(ui.ctx());
+    let show_trailing = selected || ui.rect_contains_pointer(row_rect);
     Sides::new().shrink_left().truncate().show(
         ui,
         |ui| {
@@ -873,12 +872,18 @@ fn tree_row<'a, T>(
             )
         },
         |ui| {
-            if !show_trailing {
+            if !show_trailing && !own_menu_open(ui) {
                 ui.visuals_mut().override_text_color = Some(egui::Color32::TRANSPARENT);
             }
             trailing(ui)
         },
     )
+}
+
+/// Whether the menu of the button `ui` adds next is open. A menu button's popup is
+/// named after the button, whose id is `ui`'s next automatic id.
+fn own_menu_open(ui: &Ui) -> bool {
+    egui::Popup::is_id_open(ui.ctx(), ui.next_auto_id().with("popup"))
 }
 
 /// A row scrolled out of view only takes up its space, so a project with thousands of
@@ -937,9 +942,10 @@ fn rename_row(ui: &mut Ui, depth: usize, tree: &mut Tree<'_>, key: &ItemKey) -> 
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
+    use egui_kittest::kittest::Queryable;
     use tortuga_core::settings::ImporterSettings;
 
     use super::*;
@@ -1033,5 +1039,36 @@ mod tests {
             (drawn.get() - skipped.get()).abs() < 0.01,
             "{drawn:?} vs {skipped:?}"
         );
+    }
+
+    /// Opening one row's "…" menu shows that row's actions only, not every row's.
+    #[test]
+    fn an_open_menu_shows_only_its_own_rows_actions() {
+        let shown = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&shown);
+        let mut harness = crate::test_host::harness(move |ui| {
+            let mut now = Vec::new();
+            for name in ["First", "Second"] {
+                let key = ItemKey::new(Path::new("/p"), format!("{name}.toml"));
+                tree_row(ui, 0, false, [Atom::from(name), Atom::grow()], |ui| {
+                    let menu = menu_button(ui, |ui: &mut Ui| item_menu(ui, &key, false, true));
+                    now.push(ui.visuals().override_text_color.is_none());
+                    menu
+                });
+            }
+            *seen.borrow_mut() = now;
+        });
+        harness.run();
+        assert_eq!(*shown.borrow(), [false, false], "the pointer is on no row");
+        harness
+            .query_all_by_label("…")
+            .next()
+            .expect("first menu")
+            .click();
+        harness.run();
+        // Move the pointer off the rows so only the open menu keeps actions visible.
+        harness.hover_at(egui::pos2(1000.0, 1000.0));
+        harness.run();
+        assert_eq!(*shown.borrow(), [true, false]);
     }
 }

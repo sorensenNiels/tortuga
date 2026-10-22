@@ -13,8 +13,9 @@ const MARKDOWN_HINT: &str =
     "Markdown: # heading, **bold**, *italic*, - list, `code`, ```code block```, [link](https://…)";
 
 /// Shows `text` rendered, or a text editor for it while `editing`, at most
-/// `max_height` high. Read-only projects get no Edit button. Returns whether the text
-/// changed.
+/// `max_height` high. Read-only projects get no Edit button. With `draft`, an empty
+/// description offers "Draft from request", which fills in what `draft` returns and
+/// starts editing (R-COL-35). Returns whether the text changed.
 pub fn description_editor(
     ui: &mut Ui,
     id_salt: &str,
@@ -22,15 +23,29 @@ pub fn description_editor(
     editing: &mut bool,
     read_only: bool,
     max_height: f32,
+    draft: Option<&dyn Fn() -> String>,
 ) -> bool {
     let mut changed = false;
     // The hint names the text field for screen readers.
     let mut hint = None;
+    let draft = draft.filter(|_| text.trim().is_empty() && !*editing);
     if !read_only {
         ui.horizontal(|ui| {
             let label = if *editing { "Done" } else { "Edit" };
             if ui.add(theme::ghost_button(label)).clicked() {
                 *editing = !*editing;
+            }
+            if let Some(draft) = draft
+                && ui
+                    .add(theme::ghost_button("Draft from request"))
+                    .on_hover_text(
+                        "Start from what the request sends and its examples, then fill in the rest",
+                    )
+                    .clicked()
+            {
+                *text = draft();
+                *editing = true;
+                changed = true;
             }
             if *editing {
                 let muted = theme::palette(ui).muted;
@@ -57,12 +72,16 @@ pub fn description_editor(
                 if let Some(hint) = hint {
                     response = response.labelled_by(hint);
                 }
-                changed = response.changed();
+                changed |= response.changed();
             } else if text.trim().is_empty() {
                 theme::hint(
                     ui,
                     if read_only {
                         "No description."
+                    } else if draft.is_some() {
+                        "No description yet. Click Edit to write one in Markdown, or Draft from \
+                         request to start from what it sends: it is saved in the file and shared \
+                         through git."
                     } else {
                         "No description yet. Click Edit to write one in Markdown: it is saved in \
                          the file and shared through git."
@@ -109,7 +128,7 @@ mod tests {
         let mut changed = false;
         {
             let mut h = crate::test_host::harness(|ui| {
-                changed |= description_editor(ui, "t", &mut text, &mut editing, false, 600.0);
+                changed |= description_editor(ui, "t", &mut text, &mut editing, false, 600.0, None);
             });
             h.run();
             h.get_by_label_contains("Orders ü😀");
@@ -134,11 +153,49 @@ mod tests {
         let mut text = String::new();
         let mut editing = true;
         let mut h = crate::test_host::harness(|ui| {
-            description_editor(ui, "t", &mut text, &mut editing, true, 600.0);
+            description_editor(ui, "t", &mut text, &mut editing, true, 600.0, None);
         });
         h.run();
         assert!(h.query_by_label("Edit").is_none());
         assert!(h.query_by_label("Done").is_none());
         h.get_by_label("No description.");
+    }
+
+    /// R-COL-35: an empty description offers a draft, which fills the text and opens the
+    /// editor; once there is text the offer is gone.
+    #[test]
+    fn an_empty_description_can_start_from_a_draft() {
+        let mut text = String::new();
+        let mut editing = false;
+        let mut changed = false;
+        let draft = || "# Get user ü😀\n".to_owned();
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                changed |= description_editor(
+                    ui,
+                    "t",
+                    &mut text,
+                    &mut editing,
+                    false,
+                    600.0,
+                    Some(&draft),
+                );
+            });
+            h.run();
+            h.get_by_label_contains("Draft from request to start");
+            h.get_by_label("Draft from request").click();
+            h.run();
+            assert!(h.query_by_label("Draft from request").is_none());
+            h.get_by_label("Done").click();
+            h.run();
+            assert!(
+                h.query_by_label("Draft from request").is_none(),
+                "text exists now"
+            );
+            h.get_by_label_contains("Get user ü😀");
+        }
+        assert!(changed);
+        assert!(!editing);
+        assert_eq!(text, "# Get user ü😀\n");
     }
 }

@@ -8,6 +8,25 @@
 use quick_xml::Reader;
 use quick_xml::events::{BytesRef, Event};
 
+/// Escapes `text` for element text or a quoted attribute value. Control characters
+/// other than newlines are dropped: XML 1.0 cannot hold them.
+pub fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            '\n' => out.push_str("&#10;"),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Returns a human-readable parse error, or `None` if `text` is well-formed XML.
 /// Blank text counts as valid (nothing to send yet).
 pub fn check(text: &str) -> Option<String> {

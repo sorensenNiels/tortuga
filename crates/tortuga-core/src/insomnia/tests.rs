@@ -1,5 +1,5 @@
 use super::*;
-use crate::import::{requests, script_note};
+use crate::import::{requests, script_note, translated_note};
 use crate::model::Auth;
 
 /// A v4 export (Insomnia ≤ 10) with what teams typically have in a collection, and a

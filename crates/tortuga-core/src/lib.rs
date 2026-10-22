@@ -26,6 +26,7 @@ pub mod openapi;
 pub mod postman;
 pub mod query;
 pub mod report;
+pub mod request_docs;
 pub mod runner;
 pub mod script;
 pub mod secrets;
@@ -44,6 +45,7 @@ pub use error::{Error, Result};
 pub use format::{Environment, EnvironmentColor, Manifest, Server};
 pub use http::{Client, ClientSettings, FileReader, ProxyMode, check_proxy_url};
 pub use model::{
-    Auth, BodyView, FormPart, HttpMethod, KeyValue, Request, RequestBody, Response, Scripts,
+    Auth, BodyView, FormPart, HttpMethod, KeyValue, ParamsBody, Request, RequestBody, Response,
+    Scripts,
 };
 pub use settings::AppSettings;

@@ -41,6 +41,8 @@ pub(super) struct Block {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct BruFile {
     pub blocks: Vec<Block>,
+    /// Saved examples with their responses; only YAML files have them (R-COL-34).
+    pub examples: Vec<crate::mock::Example>,
 }
 
 /// Blocks whose content is text rather than `key: value` lines.

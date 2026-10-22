@@ -27,13 +27,13 @@ use crate::format::{FolderDefaults, Manifest};
 use crate::import::auth::{AuthSpec, Credentials, Inherited};
 use crate::import::{
     Collected, EnvValue, Import, ImportKind, ImportedEnvironment, graphql_body, json_or_yaml,
-    short_name, translated_note,
+    json_text as string, short_name,
 };
 use crate::model::{
     FormPart, HttpMethod, KeyValue, Request, RequestBody, Scripts, is_json_content_type,
     is_xml_content_type,
 };
-use crate::postman::script::{Translation, translate_insomnia};
+use crate::postman::script::translate_insomnia;
 use crate::{Error, Result};
 
 #[cfg(test)]
@@ -766,17 +766,8 @@ impl Importer {
         if code.trim().is_empty() {
             return String::new();
         }
-        match translate_insomnia(code) {
-            Translation::Complete(code) => {
-                self.c.translated += 1;
-                format!(
-                    "{}{}\n",
-                    translated_note(ImportKind::Insomnia),
-                    code.trim_end()
-                )
-            }
-            Translation::Partial(code) => self.c.commented_script(&code, ImportKind::Insomnia),
-        }
+        self.c
+            .translated_script(translate_insomnia(code), ImportKind::Insomnia)
     }
 }
 
@@ -836,15 +827,6 @@ fn item_name(item: &Value) -> Option<&str> {
 
 fn is_disabled(value: &Value) -> bool {
     value.get("disabled").and_then(Value::as_bool) == Some(true)
-}
-
-/// A JSON value as text; `null` and missing are empty.
-fn string(value: Option<&Value>) -> String {
-    match value {
-        None | Some(Value::Null) => String::new(),
-        Some(Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
-    }
 }
 
 /// “a”, “b” and “c”.

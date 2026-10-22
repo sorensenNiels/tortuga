@@ -10,17 +10,11 @@
 //! The scanner only looks at code outside strings and comments, and only splits the
 //! text at ASCII characters, so any text is safe.
 
+use crate::import::js::{
+    Translation, call_args, empty_call, grouped, is_string_literal, member, renamed,
+    rewrite as rewrite_with, uses_any, word,
+};
 use crate::script;
-
-/// A Postman script in Tortuga's script API.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Translation {
-    /// Everything was translated: the script can run as it is.
-    Complete(String),
-    /// Parts still use Postman's API, or the script doesn't parse: what could be
-    /// translated, to finish by hand.
-    Partial(String),
-}
 
 /// Names a script may only use in Postman. A script that still uses one is not run.
 const POSTMAN_GLOBALS: [&str; 14] = [
@@ -72,67 +66,18 @@ pub(crate) fn translate_insomnia(code: &str) -> Translation {
     }
 }
 
-/// `code` with the name `from` (not a property, string or comment) renamed to `to`.
-fn renamed(code: &str, from: &str, to: &str) -> String {
-    let bytes = code.as_bytes();
-    let mut out = String::with_capacity(code.len());
-    let mut copied = 0;
-    let mut i = 0;
-    while let Some(&byte) = bytes.get(i) {
-        if let Some(end) = literal_end(code, i) {
-            i = end;
-            continue;
-        }
-        if is_word_byte(byte) && starts_name(code, i) {
-            let len = bytes[i..].iter().take_while(|&&b| is_word_byte(b)).count();
-            if &code[i..i + len] == from {
-                out.push_str(&code[copied..i]);
-                out.push_str(to);
-                copied = i + len;
-            }
-            i += len;
-        } else {
-            i += 1;
-        }
-    }
-    out.push_str(&code[copied..]);
-    out
-}
-
 pub(super) fn translate(code: &str) -> Translation {
     let translated = rewrite(code);
-    if uses_postman_api(&translated) || !script::parses(&translated) {
+    if uses_any(&translated, &POSTMAN_GLOBALS) || !script::parses(&translated) {
         Translation::Partial(translated)
     } else {
         Translation::Complete(translated)
     }
 }
 
-/// `code` with every call this module knows translated.
+/// `code` with every Postman call this module knows translated.
 fn rewrite(code: &str) -> String {
-    let bytes = code.as_bytes();
-    let mut out = String::with_capacity(code.len());
-    let mut copied = 0;
-    let mut i = 0;
-    while let Some(&byte) = bytes.get(i) {
-        if let Some(end) = literal_end(code, i) {
-            i = end;
-            continue;
-        }
-        // An ASCII letter is always at a char boundary.
-        let starts_word = byte.is_ascii_alphabetic() && starts_name(code, i);
-        match starts_word.then(|| translate_at(&code[i..])).flatten() {
-            Some((len, replacement)) => {
-                out.push_str(&code[copied..i]);
-                out.push_str(&replacement);
-                i += len;
-                copied = i;
-            }
-            None => i += 1,
-        }
-    }
-    out.push_str(&code[copied..]);
-    out
+    rewrite_with(code, translate_at)
 }
 
 /// The translation of the call that `s` starts with, and how much of `s` it replaces.
@@ -164,7 +109,7 @@ fn translate_at(s: &str) -> Option<(usize, String)> {
 
 /// `pm.expect(actual).to.….matcher(…)` → `expect(actual).matcher(…)`.
 fn expect_call(s: &str) -> Option<(usize, String)> {
-    let (i, args) = call_args(s, word(s, "pm.expect")?)?;
+    let (i, args) = call_args(s, word(s, "pm.expect")?, translate_at)?;
     // A message as the second argument has no place in `expect`.
     let [actual] = args.as_slice() else {
         return None;
@@ -179,7 +124,7 @@ fn response_assertion(s: &str) -> Option<(usize, String)> {
     let chain = chain(s, word(s, "pm.response")?)?;
     let (end, args) = match chain.name {
         "ok" => (chain.end, Vec::new()),
-        _ => call_args(s, chain.end)?,
+        _ => call_args(s, chain.end, translate_at)?,
     };
     let (subject, matcher) = match (chain.name, args.as_slice()) {
         ("ok", []) => ("res.status".to_owned(), "toBe(200)".to_owned()),
@@ -213,7 +158,7 @@ fn variables_call(s: &str) -> Option<(usize, String)> {
         ("environment" | "variables" | "collectionVariables" | "baseEnvironment", _)
         | ("globals", "get" | "has") => Some((at, format!("vars.{op}"))),
         ("globals", _) => {
-            let (end, args) = call_args(s, at)?;
+            let (end, args) = call_args(s, at, translate_at)?;
             let (name, rest) = args.split_first()?;
             let name = match name.strip_prefix(['"', '\'']) {
                 Some(_) if is_string_literal(name) => {
@@ -236,7 +181,7 @@ fn cookies_call(s: &str) -> Option<(usize, String)> {
     if let Some(end) = word(s, "pm.cookies.toObject").and_then(|i| empty_call(s, i)) {
         return Some((end, "res.cookies".to_owned()));
     }
-    let (end, args) = call_args(s, word(s, "pm.cookies.has")?)?;
+    let (end, args) = call_args(s, word(s, "pm.cookies.has")?, translate_at)?;
     let [name] = args.as_slice() else {
         return None;
     };
@@ -248,7 +193,7 @@ fn cookies_call(s: &str) -> Option<(usize, String)> {
 fn next_request(s: &str) -> Option<(usize, String)> {
     let at =
         word(s, "postman.setNextRequest").or_else(|| word(s, "pm.execution.setNextRequest"))?;
-    let (end, args) = call_args(s, at)?;
+    let (end, args) = call_args(s, at, translate_at)?;
     let [name] = args.as_slice() else {
         return None;
     };
@@ -307,7 +252,7 @@ fn assertion(s: &str, chain: &Chain<'_>, actual: &str) -> Option<(usize, String,
         }
         _ => {}
     }
-    let (end, args) = call_args(s, chain.end)?;
+    let (end, args) = call_args(s, chain.end, translate_at)?;
     let matcher = match chain.name {
         "equal" | "equals" | "eq" if chain.deep => "toEqual",
         "equal" | "equals" | "eq" => "toBe",
@@ -374,184 +319,6 @@ fn finish(
     }
     let not = if negate { ".not" } else { "" };
     Some((end, format!("expect({subject}){not}.{matcher}")))
-}
-
-// ------------------------------------------------------------------ scanning
-
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
-}
-
-/// Whether a name that is not a property (`x.pm`) starts at `i`, an ASCII byte.
-fn starts_name(code: &str, i: usize) -> bool {
-    let before = code.get(..i).unwrap_or_default();
-    !before
-        .bytes()
-        .next_back()
-        .is_some_and(|b| is_word_byte(b) || !b.is_ascii())
-        && !before.trim_end().ends_with('.')
-}
-
-/// The length of `name` when `s` starts with it as a whole word.
-fn word(s: &str, name: &str) -> Option<usize> {
-    let rest = s.strip_prefix(name)?;
-    (!rest.bytes().next().is_some_and(is_word_byte)).then_some(name.len())
-}
-
-fn skip_space(s: &str, i: usize) -> usize {
-    s.get(i..)
-        .map_or(i, |rest| i + (rest.len() - rest.trim_start().len()))
-}
-
-/// `.name` at `i`, with optional spaces: where it ends and the name.
-fn member(s: &str, i: usize) -> Option<(usize, &str)> {
-    let i = skip_space(s, i);
-    let rest = s.get(i..)?.strip_prefix('.')?;
-    let start = i + 1 + (rest.len() - rest.trim_start().len());
-    let name = s.get(start..)?;
-    let len = name.bytes().take_while(|&b| is_word_byte(b)).count();
-    (len > 0).then(|| (start + len, &name[..len]))
-}
-
-/// `( … )` at `i`, with optional spaces: where it ends and the arguments, translated.
-fn call_args(s: &str, i: usize) -> Option<(usize, Vec<String>)> {
-    let open = skip_space(s, i);
-    if s.as_bytes().get(open) != Some(&b'(') {
-        return None;
-    }
-    let end = group_end(s, open)?;
-    let args = split_args(&s[open + 1..end - 1])
-        .into_iter()
-        .map(rewrite)
-        .collect();
-    Some((end, args))
-}
-
-/// After `()` at `i`.
-fn empty_call(s: &str, i: usize) -> Option<usize> {
-    let (end, args) = call_args(s, i)?;
-    args.is_empty().then_some(end)
-}
-
-/// After the bracket that closes the one at `open`.
-fn group_end(s: &str, open: usize) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut depth = 0usize;
-    let mut i = open;
-    while let Some(&byte) = bytes.get(i) {
-        if let Some(end) = literal_end(s, i) {
-            i = end;
-            continue;
-        }
-        match byte {
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(i + 1);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-/// The arguments between a call's parentheses, trimmed.
-fn split_args(inner: &str) -> Vec<&str> {
-    let bytes = inner.as_bytes();
-    let mut args = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0;
-    let mut i = 0;
-    while let Some(&byte) = bytes.get(i) {
-        if let Some(end) = literal_end(inner, i) {
-            i = end;
-            continue;
-        }
-        match byte {
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-            b',' if depth == 0 => {
-                args.push(inner[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    let last = inner[start..].trim();
-    if !last.is_empty() {
-        args.push(last);
-    }
-    args
-}
-
-/// When a string or comment starts at `i`: where it ends.
-fn literal_end(s: &str, i: usize) -> Option<usize> {
-    let bytes = s.as_bytes();
-    match (bytes.get(i)?, bytes.get(i + 1)) {
-        (b'/', Some(b'/')) => Some(s[i..].find('\n').map_or(s.len(), |n| i + n)),
-        (b'/', Some(b'*')) => Some(s[i + 2..].find("*/").map_or(s.len(), |n| i + 2 + n + 2)),
-        (&quote @ (b'"' | b'\'' | b'`'), _) => {
-            let mut j = i + 1;
-            while let Some(&b) = bytes.get(j) {
-                match b {
-                    b'\\' => j += 2,
-                    _ if b == quote => return Some(j + 1),
-                    _ => j += 1,
-                }
-            }
-            Some(s.len())
-        }
-        _ => None,
-    }
-}
-
-fn is_string_literal(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    match (bytes.first(), bytes.last()) {
-        (Some(&first @ (b'"' | b'\'')), Some(&last)) => {
-            bytes.len() >= 2 && last == first && literal_end(s, 0) == Some(s.len())
-        }
-        _ => false,
-    }
-}
-
-/// `expr` in parentheses unless it is a plain name or property path.
-fn grouped(expr: &str) -> String {
-    let plain = !expr.is_empty()
-        && expr
-            .bytes()
-            .all(|b| is_word_byte(b) || matches!(b, b'.' | b'[' | b']' | b'(' | b')'));
-    if plain {
-        expr.to_owned()
-    } else {
-        format!("({expr})")
-    }
-}
-
-/// Whether code outside strings and comments uses a name only Postman has.
-fn uses_postman_api(code: &str) -> bool {
-    let bytes = code.as_bytes();
-    let mut i = 0;
-    while let Some(&byte) = bytes.get(i) {
-        if let Some(end) = literal_end(code, i) {
-            i = end;
-            continue;
-        }
-        if is_word_byte(byte) && starts_name(code, i) {
-            let len = bytes[i..].iter().take_while(|&&b| is_word_byte(b)).count();
-            if POSTMAN_GLOBALS.contains(&&code[i..i + len]) {
-                return true;
-            }
-            i += len;
-        } else {
-            i += 1;
-        }
-    }
-    false
 }
 
 #[cfg(test)]

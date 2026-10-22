@@ -18,6 +18,7 @@ use crate::{Result, bruno, http_file, insomnia, openapi, postman};
 
 pub(crate) mod auth;
 mod environments;
+pub(crate) mod js;
 
 pub(crate) use environments::EnvValue;
 pub use environments::{EnvironmentImport, ImportedEnvironment, import_environments};
@@ -303,6 +304,18 @@ impl Collected {
         format!("{{{{{candidate}}}}}")
     }
 
+    /// A translated script under a note to check it, or one that couldn't be translated
+    /// fully as comments to port; counted for the warnings (R-COL-19).
+    pub fn translated_script(&mut self, translation: js::Translation, kind: ImportKind) -> String {
+        match translation {
+            js::Translation::Complete(code) => {
+                self.translated += 1;
+                format!("{}{}\n", translated_note(kind), code.trim_end())
+            }
+            js::Translation::Partial(code) => self.commented_script(&code, kind),
+        }
+    }
+
     /// `code` as comments under a note to port it, counted for the warning.
     pub fn commented_script(&mut self, code: &str, kind: ImportKind) -> String {
         self.scripts += 1;
@@ -463,6 +476,15 @@ fn yaml_key(key: &Yaml) -> String {
         Yaml::Integer(i) => i.to_string(),
         Yaml::Boolean(b) => b.to_string(),
         _ => String::new(),
+    }
+}
+
+/// A JSON value as text; `null` and missing are empty.
+pub(crate) fn json_text(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
     }
 }
 
