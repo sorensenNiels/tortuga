@@ -41,6 +41,8 @@ pub(super) enum Command {
     Environments(PathBuf),
     ProjectDefaults(PathBuf),
     Settings,
+    /// Look for a new version now and show the answer on Settings → About (R-SET-15).
+    CheckForUpdates,
     History,
     /// Hide or show the sidebar (R-COL-26).
     ToggleSidebar,
@@ -329,6 +331,12 @@ impl TortugaUi {
         );
         items.extend(workspace_commands(&self.state.workspace().name));
         items.push(run("Settings…", Command::Settings).keywords("preferences options"));
+        if self.state.host.checks_for_updates() {
+            items.push(
+                run("Check for updates", Command::CheckForUpdates)
+                    .keywords("new version release upgrade about"),
+            );
+        }
         let sidebar = if self.state.sidebar_hidden() {
             "Show the sidebar"
         } else {
@@ -376,7 +384,7 @@ impl TortugaUi {
         }
     }
 
-    fn run_command(&mut self, command: Command, ctx: &egui::Context) {
+    pub(super) fn run_command(&mut self, command: Command, ctx: &egui::Context) {
         match command {
             Command::Send => {
                 if self.sending().is_none() {
@@ -423,6 +431,12 @@ impl TortugaUi {
             }
             Command::Settings => {
                 self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
+            }
+            Command::CheckForUpdates => {
+                self.check_for_updates_now(ctx);
+                self.modal = Some(Modal::Settings(
+                    SettingsDialog::new(&self.state.settings).on_about_tab(),
+                ));
             }
             Command::History => {
                 self.state.set_sidebar_hidden(false);

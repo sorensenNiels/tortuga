@@ -146,6 +146,10 @@ pub enum Error {
     /// R-SRV-4
     #[error("server \"{server}\" has no URL in {environment}")]
     ServerUrlMissing { server: String, environment: String },
+
+    /// R-SET-15
+    #[error("could not look for a new version: {0}")]
+    UpdateCheck(String),
 }
 
 impl Error {

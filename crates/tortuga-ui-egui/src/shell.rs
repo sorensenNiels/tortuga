@@ -23,6 +23,7 @@ mod sending;
 mod shortcuts;
 mod tabs;
 mod toast;
+mod updates;
 mod workflows;
 mod workspace_menu;
 
@@ -217,6 +218,8 @@ pub struct TortugaUi {
     /// Open workflows and their runs (R-FLOW-2, R-FLOW-3).
     workflows: Workflows,
     workflow_events: Inbox<WorkflowEvent>,
+    /// Whether a new version is out (R-SET-15).
+    updates: updates::Updates,
 }
 
 /// Results that background tasks send back to the UI thread, which reads them each frame.
@@ -322,6 +325,7 @@ impl TortugaUi {
             history: HistoryState::default(),
             workflows: Workflows::default(),
             workflow_events: Inbox::new(),
+            updates: updates::Updates::default(),
         };
         ui.restore_drafts();
         // Back where the user left off (R-WS-1, R-COL-13).
@@ -337,11 +341,13 @@ impl TortugaUi {
             theme::install(ui.ctx());
             self.state.set_repaint(ui.ctx());
             self.styled = true;
+            self.check_for_updates_at_start(ui.ctx());
         }
         self.apply_appearance(ui.ctx());
         self.collect_finished();
         self.collect_fanout();
         self.collect_workflow_events();
+        self.collect_update_check();
         self.drop_missing_workflows();
         self.auto_save_now_and_then(ui.ctx());
         self.save_drafts_now_and_then(ui.input(|i| i.time));
@@ -600,6 +606,7 @@ impl TortugaUi {
                 if settings.clicked() {
                     self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
                 }
+                self.update_link(ui);
                 let go_to = (
                     "Go to request…",
                     RichText::new("  Ctrl+P").small().color(p.muted),

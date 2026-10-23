@@ -408,6 +408,11 @@ pub trait Host {
     /// Runs `task` in the background. The UI cancels it by dropping it (it is abortable).
     fn spawn(&self, task: BoxTask);
 
+    /// Whether the app looks for a new version here (R-SET-15): not in the web version.
+    fn checks_for_updates(&self) -> bool {
+        false
+    }
+
     /// Global settings (R-HTTP-8); missing settings give the defaults.
     fn load_settings(&self) -> Result<AppSettings, String>;
     fn save_settings(&self, settings: &AppSettings) -> Result<(), String>;

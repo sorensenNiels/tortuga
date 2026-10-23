@@ -244,6 +244,10 @@ impl Host for DesktopHost {
         drop(self.runtime.spawn(task));
     }
 
+    fn checks_for_updates(&self) -> bool {
+        true
+    }
+
     fn start_mock(
         &self,
         port: u16,

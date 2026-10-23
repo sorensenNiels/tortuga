@@ -1,7 +1,7 @@
 //! Settings of the app itself, kept on this machine (R-LOC-1): the HTTP client's
 //! (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-SET-3), which importers are offered (R-COL-18),
-//! appearance (R-SET-4, R-SET-5, R-SET-7, R-SET-10), history (R-SET-6) and editing
-//! (R-SET-9, R-SET-11); and the request
+//! appearance (R-SET-4, R-SET-5, R-SET-7, R-SET-10), history (R-SET-6), editing
+//! (R-SET-9, R-SET-11) and the new-version check (R-SET-15); and the request
 //! settings a workspace or project can override (R-SET-1, D39).
 //!
 //! Every setting has a default that suits most developers, and only settings that
@@ -32,6 +32,30 @@ pub struct AppSettings {
     pub editing: EditingSettings,
     #[serde(skip_serializing_if = "FeatureSettings::is_default")]
     pub features: FeatureSettings,
+    #[serde(skip_serializing_if = "UpdateSettings::is_default")]
+    pub updates: UpdateSettings,
+}
+
+/// Whether the app looks for a new version by itself (R-SET-15, D63).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Ask GitHub for the latest release when the app starts.
+    pub check_at_start: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self {
+            check_at_start: true,
+        }
+    }
+}
+
+impl UpdateSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// A part of the app that can be turned off where it isn't used (R-SET-13).
@@ -666,6 +690,26 @@ mod tests {
         let newer: AppSettings =
             toml::from_str("[features]\ndisabled = [\"graphql\"]\n").expect("newer");
         assert!(Feature::ALL.iter().all(|f| newer.features.enabled(*f)));
+    }
+
+    /// R-SET-15: the check at start-up is on by default, and only "off" is written.
+    #[test]
+    fn update_check_defaults_on_and_round_trips() {
+        let mut settings = AppSettings::default();
+        assert!(settings.updates.check_at_start);
+        assert!(
+            !toml::to_string(&settings)
+                .expect("toml")
+                .contains("updates")
+        );
+        settings.updates.check_at_start = false;
+        let text = toml::to_string(&settings).expect("toml");
+        assert!(
+            text.contains("[updates]\ncheck_at_start = false\n"),
+            "{text}"
+        );
+        let back: AppSettings = toml::from_str(&text).expect("read");
+        assert_eq!(back, settings);
     }
 
     /// Settings saved before `AppSettings` existed (HTTP settings only) still load,

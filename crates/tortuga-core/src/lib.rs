@@ -33,6 +33,7 @@ pub mod secrets;
 pub mod settings;
 pub mod slug;
 pub mod storage;
+pub mod update;
 pub mod vars;
 pub mod workflow;
 pub mod workspace;

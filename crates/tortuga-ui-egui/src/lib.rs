@@ -92,6 +92,8 @@ pub(crate) mod test_host {
         pub taken_ports: Vec<u16>,
         /// The answers of the last mock started, and how to report a request to it.
         pub mock: std::rc::Rc<std::cell::RefCell<Option<StartedMock>>>,
+        /// Look for a new version at start-up (R-SET-15); off, so other tests spawn nothing.
+        pub checks_for_updates: bool,
     }
 
     /// What [`TestHost::start_mock`] was given.
@@ -124,6 +126,9 @@ pub(crate) mod test_host {
         }
         fn spawn(&self, _task: BoxTask) {
             self.spawned.set(self.spawned.get() + 1);
+        }
+        fn checks_for_updates(&self) -> bool {
+            self.checks_for_updates
         }
         fn start_mock(
             &self,

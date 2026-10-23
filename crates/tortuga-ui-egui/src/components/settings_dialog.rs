@@ -1,6 +1,7 @@
 //! The app's settings dialog: requests (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-HTTP-20,
 //! R-SET-3), appearance (R-SET-4, R-SET-5, R-SET-7, R-SET-10, R-SET-12), editing
-//! (R-SET-9, R-SET-11), features (R-SET-13), history (R-SET-6) and importers (R-COL-18).
+//! (R-SET-9, R-SET-11), features (R-SET-13), history (R-SET-6), importers (R-COL-18)
+//! and about, with the new-version check (R-SET-14, R-SET-15).
 
 use std::path::PathBuf;
 
@@ -8,13 +9,27 @@ use egui::{ComboBox, Context, TextEdit, Ui};
 use tortuga_core::import::ImportKind;
 use tortuga_core::settings::{
     Appearance, Density, EditingSettings, Feature, FeatureSettings, HistorySettings,
-    ImporterSettings, RequestLayout, Theme,
+    ImporterSettings, RequestLayout, Theme, UpdateSettings,
 };
+use tortuga_core::update::Release;
 use tortuga_core::{AppSettings, ClientSettings, ProxyMode, check_proxy_url};
 
 use super::modals::{DialogResult, actions, finish};
 use super::request_editor::parse_timeout;
 use crate::theme;
+
+/// What the last look for a new version found (R-SET-15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateStatus {
+    NotChecked,
+    Checking,
+    UpToDate,
+    Available(Release),
+    /// Why "Check now" failed.
+    Failed(String),
+    /// The app doesn't look for new versions here (the web version).
+    Unsupported,
+}
 
 /// The tabs of the settings dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +60,8 @@ pub struct SettingsDialog {
     pub add_ca_requested: bool,
     /// "Choose…" was clicked for the code font; the shell asks for the file (R-SET-10).
     pub choose_font_requested: bool,
+    /// "Check now" was clicked on the About tab; the shell checks (R-SET-15).
+    pub check_requested: bool,
     /// The height of the shown tab's content last frame (see `fitting_scroll_area`).
     content_height: f32,
 }
@@ -65,8 +82,16 @@ impl SettingsDialog {
             error: None,
             add_ca_requested: false,
             choose_font_requested: false,
+            check_requested: false,
             content_height: 0.0,
         }
+    }
+
+    /// Opens on the About tab, e.g. to show what "Check for updates" finds (R-SET-15).
+    #[must_use]
+    pub fn on_about_tab(mut self) -> Self {
+        self.tab = SettingsTab::About;
+        self
     }
 
     /// Adds a CA certificate file chosen after "Add…" (R-HTTP-16).
@@ -83,8 +108,14 @@ impl SettingsDialog {
     }
 
     /// Done with the settings to apply. `can_pick_files`: offer "Add…" for CA
-    /// certificates and "Choose…" for the code font.
-    pub fn show(&mut self, ctx: &Context, can_pick_files: bool) -> DialogResult<AppSettings> {
+    /// certificates and "Choose…" for the code font. `update`: what the last look for
+    /// a new version found, for the About tab.
+    pub fn show(
+        &mut self,
+        ctx: &Context,
+        can_pick_files: bool,
+        update: &UpdateStatus,
+    ) -> DialogResult<AppSettings> {
         super::dialog(ctx, "settings", "Settings", 560.0, true, |ui| {
             theme::tabs(
                 ui,
@@ -102,7 +133,7 @@ impl SettingsDialog {
             // Long tabs scroll, so Save stays on screen in a small window.
             let mut height = self.content_height;
             super::fitting_scroll_area(ui, "settings-tab", 260.0, &mut height, |ui| {
-                self.tab_content(ui, can_pick_files);
+                self.tab_content(ui, can_pick_files, update);
             });
             self.content_height = height;
             if let Some(err) = &self.error {
@@ -123,7 +154,7 @@ impl SettingsDialog {
         })
     }
 
-    fn tab_content(&mut self, ui: &mut Ui, can_pick_files: bool) {
+    fn tab_content(&mut self, ui: &mut Ui, can_pick_files: bool, update: &UpdateStatus) {
         match self.tab {
             SettingsTab::Requests => {
                 let d = &mut self.draft.client;
@@ -144,7 +175,11 @@ impl SettingsDialog {
                 history_settings(ui, &mut self.draft.history, &mut self.history_text);
             }
             SettingsTab::Importers => importer_settings(ui, &mut self.draft.importers),
-            SettingsTab::About => about(ui),
+            SettingsTab::About => {
+                about(ui);
+                ui.add_space(10.0);
+                self.check_requested |= updates(ui, &mut self.draft.updates, update);
+            }
         }
     }
 }
@@ -566,12 +601,60 @@ fn about(ui: &mut Ui) {
     {
         ui.ctx().copy_text(version_info());
     }
-    ui.add_space(4.0);
+}
+
+/// Looking for a new version (R-SET-15, D63). Returns whether "Check now" was clicked.
+fn updates(ui: &mut Ui, settings: &mut UpdateSettings, status: &UpdateStatus) -> bool {
+    if *status == UpdateStatus::Unsupported {
+        theme::hint(
+            ui,
+            "Tortuga sends nothing on its own: no telemetry, no update checks. It only \
+             contacts the servers your requests go to.",
+        );
+        return false;
+    }
+    theme::section_label(ui, "Updates");
+    ui.checkbox(
+        &mut settings.check_at_start,
+        "Look for a new version when the app starts",
+    );
+    let check = ui
+        .horizontal(|ui| {
+            let check = ui
+                .add_enabled(
+                    *status != UpdateStatus::Checking,
+                    egui::Button::new("Check now"),
+                )
+                .clicked();
+            match status {
+                UpdateStatus::NotChecked | UpdateStatus::Unsupported | UpdateStatus::Failed(_) => {}
+                UpdateStatus::Checking => {
+                    ui.spinner();
+                    ui.label("Checking…");
+                }
+                UpdateStatus::UpToDate => {
+                    ui.label("You have the latest version.");
+                }
+                UpdateStatus::Available(release) => {
+                    ui.hyperlink_to(
+                        format!("Tortuga {} is available", release.version),
+                        &release.page,
+                    );
+                }
+            }
+            check
+        })
+        .inner;
+    if let UpdateStatus::Failed(e) = status {
+        theme::error(ui, e);
+    }
     theme::hint(
         ui,
-        "Tortuga sends nothing on its own: no telemetry, no update checks. It only contacts \
-         the servers your requests go to.",
+        "Asks GitHub for the latest published release; nothing about you or your projects is \
+         sent. Tortuga has no telemetry, and otherwise only contacts the servers your \
+         requests go to.",
     );
+    check
 }
 
 /// Where the source and the issues are.
@@ -621,7 +704,9 @@ mod tests {
         let mut result = None;
         {
             let mut h = harness(|ui| {
-                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
+                if let DialogResult::Done(r) =
+                    dialog.show(ui.ctx(), true, &UpdateStatus::NotChecked)
+                {
                     result = Some(r);
                 }
             });
@@ -642,7 +727,9 @@ mod tests {
         let mut result = None;
         {
             let mut h = harness(|ui| {
-                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
+                if let DialogResult::Done(r) =
+                    dialog.show(ui.ctx(), true, &UpdateStatus::NotChecked)
+                {
                     result = Some(r);
                 }
             });
@@ -676,7 +763,9 @@ mod tests {
         let mut result = None;
         {
             let mut h = harness(|ui| {
-                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
+                if let DialogResult::Done(r) =
+                    dialog.show(ui.ctx(), true, &UpdateStatus::NotChecked)
+                {
                     result = Some(r);
                 }
             });
@@ -715,7 +804,9 @@ mod tests {
         let mut result = None;
         {
             let mut h = harness(|ui| {
-                if let DialogResult::Done(r) = dialog.show(ui.ctx(), true) {
+                if let DialogResult::Done(r) =
+                    dialog.show(ui.ctx(), true, &UpdateStatus::NotChecked)
+                {
                     result = Some(r);
                 }
             });
@@ -797,7 +888,9 @@ mod tests {
         let saved_any = std::cell::Cell::new(false);
         {
             let mut h = harness(|ui| {
-                if let DialogResult::Done(_) = dialog.show(ui.ctx(), true) {
+                if let DialogResult::Done(_) =
+                    dialog.show(ui.ctx(), true, &UpdateStatus::NotChecked)
+                {
                     saved_any.set(true);
                 }
             });
@@ -866,7 +959,7 @@ mod tests {
     fn about_shows_the_version() {
         let mut dialog = SettingsDialog::new(&AppSettings::default());
         let mut h = harness(|ui| {
-            dialog.show(ui.ctx(), true);
+            dialog.show(ui.ctx(), true, &UpdateStatus::NotChecked);
         });
         h.run();
         h.get_by_label("About").click();
@@ -883,5 +976,49 @@ mod tests {
             });
         }
         assert!(copied);
+    }
+
+    /// R-SET-15: the About tab turns the check at start-up off, asks for a check, and
+    /// says what the last one found.
+    #[test]
+    fn about_checks_for_a_new_version() {
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        let saved = saved(&mut dialog, |h| {
+            h.get_by_label("About").click();
+            h.run();
+            h.get_by_label("Look for a new version when the app starts")
+                .click();
+            h.get_by_label("Check now").click();
+            h.run();
+        })
+        .expect("saved");
+        assert!(dialog.check_requested);
+        assert!(!saved.updates.check_at_start);
+
+        let shows = |status: UpdateStatus, text: &str| {
+            let mut dialog = SettingsDialog::new(&AppSettings::default());
+            dialog.tab = SettingsTab::About;
+            let mut h = harness(|ui| {
+                dialog.show(ui.ctx(), true, &status);
+            });
+            h.run();
+            h.get_by_label(text);
+        };
+        shows(UpdateStatus::UpToDate, "You have the latest version.");
+        shows(
+            UpdateStatus::Available(Release {
+                version: "1.0.0".into(),
+                page: "https://github.com/sorensenNiels/tortuga/releases/tag/v1.0.0".into(),
+            }),
+            "Tortuga 1.0.0 is available",
+        );
+        shows(
+            UpdateStatus::Failed("Could not look for a new version: ü😀".into()),
+            "Could not look for a new version: ü😀",
+        );
+        shows(
+            UpdateStatus::Unsupported,
+            "Tortuga sends nothing on its own: no telemetry, no update checks. It only contacts the servers your requests go to.",
+        );
     }
 }

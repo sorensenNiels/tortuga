@@ -182,7 +182,14 @@ impl TortugaUi {
     /// The settings dialog, with "Add…" for CA certificates (R-HTTP-16) and "Choose…"
     /// for the code font (R-SET-10). Returns whether it stays open.
     pub(super) fn show_settings(&mut self, ctx: &egui::Context, d: &mut SettingsDialog) -> bool {
-        let result = d.show(ctx, self.state.host.can_pick_folders());
+        let result = d.show(
+            ctx,
+            self.state.host.can_pick_folders(),
+            &self.updates.status,
+        );
+        if std::mem::take(&mut d.check_requested) {
+            self.check_for_updates_now(ctx);
+        }
         if std::mem::take(&mut d.add_ca_requested)
             && let Some(path) = self
                 .state

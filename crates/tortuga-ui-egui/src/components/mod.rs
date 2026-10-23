@@ -62,7 +62,7 @@ pub use response_panel::{
     tests_details,
 };
 pub use script_editing::insert_block;
-pub use settings_dialog::SettingsDialog;
+pub use settings_dialog::{SettingsDialog, UpdateStatus};
 pub use shortcuts_dialog::{ShortcutRow, ShortcutsDialog};
 pub use sidebar::{Marks, SidebarAction, SidebarState, sidebar};
 pub use tab_strip::{GroupChip, TabAction, TabGroup, TabStripState, TabView, tab_strip};
