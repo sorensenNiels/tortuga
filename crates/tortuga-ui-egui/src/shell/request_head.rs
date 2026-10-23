@@ -63,6 +63,8 @@ impl TortugaUi {
                         .frame(Frame::new())
                         // No margin, so the name sits on the breadcrumb's line.
                         .margin(egui::Margin::ZERO)
+                        // Centred in the line's height, like the breadcrumb beside it.
+                        .align(egui::Align2::LEFT_CENTER)
                         // Grows with the name, so the badge sits right after it.
                         .clip_text(false)
                         .desired_width(24.0),
@@ -161,4 +163,32 @@ fn copy_curl_button(ui: &mut Ui, copied_at: Option<f64>) -> bool {
     ui.add(theme::ghost_button(label))
         .on_hover_text("Copy this request as a curl command, with variables filled in")
         .clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    use super::super::tests::setup;
+
+    /// R-COL-23: the request name sits on the breadcrumb's line, not above it.
+    #[test]
+    fn request_name_is_centred_on_the_breadcrumb_line() {
+        let (mut ui, root, _key) = setup("head-align");
+        let mut h = egui_kittest::Harness::builder().build_ui(|egui_ui| ui.ui(egui_ui));
+        h.run();
+        let text_centre = |value: &str| {
+            h.query_all_by(|n| n.value().as_deref() == Some(value))
+                .find(|n| n.accesskit_node().role() == egui::accesskit::Role::TextRun)
+                .map(|n| n.rect().center().y)
+                .expect("text on screen")
+        };
+        let (crumb, name) = (text_centre("C /"), text_centre("Get user"));
+        assert!(
+            (crumb - name).abs() < 1.0,
+            "breadcrumb at {crumb}, name at {name}"
+        );
+        drop(h);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
 }

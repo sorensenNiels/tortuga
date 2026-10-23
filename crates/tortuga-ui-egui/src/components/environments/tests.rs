@@ -56,6 +56,16 @@ fn on_screen(h: &egui_kittest::Harness<'_>, value: &str) -> bool {
     h.query_all_by_value(value).next().is_some()
 }
 
+/// Clicks the header of a project's values (R-WS-10); the list on the left has its
+/// name too.
+fn toggle(h: &mut egui_kittest::Harness<'_>, project: &str) {
+    h.query_all_by_label(project)
+        .max_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .expect("project header")
+        .click();
+    h.run();
+}
+
 /// R-WS-9: one list for the workspace; each project has a column for every environment
 /// in it, also ones it had no file for, in the list's order.
 #[test]
@@ -95,6 +105,9 @@ fn one_environment_is_shown_with_every_project() {
     let mut dialog = EnvironmentsDialog::for_workspace(&state);
     dialog.projects[0].draft.servers[0].urls = vec!["http://a-dev".into(), "http://a-stg".into()];
     dialog.projects[1].draft.servers[0].urls = vec!["http://b-dev".into(), String::new()];
+    for p in &mut dialog.projects {
+        p.expanded = true;
+    }
     let result = std::cell::RefCell::new(None);
     {
         let mut h = harness(&mut dialog, &state, &result);
@@ -109,7 +122,9 @@ fn one_environment_is_shown_with_every_project() {
     }
 
     let mut focused = EnvironmentsDialog::new(&state, roots[1].clone());
-    focused.projects = dialog.projects.clone();
+    for (p, draft) in focused.projects.iter_mut().zip(&dialog.projects) {
+        p.draft = draft.draft.clone();
+    }
     assert_eq!(focused.focus.as_deref(), Some(roots[1].as_path()));
     let mut h = harness(&mut focused, &state, &result);
     h.run();
@@ -119,7 +134,47 @@ fn one_environment_is_shown_with_every_project() {
     h.get_by_label("Show every project and the shared values")
         .click();
     h.run();
-    assert!(on_screen(&h, "http://a-dev"));
+    assert!(on_screen(&h, "http://b-dev"), "B stays open");
+    assert!(!on_screen(&h, "http://a-dev"), "A starts folded");
+    drop(h);
+    std::fs::remove_dir_all(dir).expect("clean up");
+}
+
+/// R-WS-10: with several projects, each project's values start folded under its name
+/// and unfold on a click, staying so when another environment is chosen; a single
+/// project starts unfolded.
+#[test]
+fn several_projects_start_folded() {
+    let dir = temp("env-dialog-folded");
+    let (_, state) = open(&dir, &[("A ü😀", &["Dev", "Staging"]), ("B", &[])]);
+    let mut dialog = EnvironmentsDialog::for_workspace(&state);
+    dialog.projects[0].draft.servers[0].urls = vec!["http://a-dev".into(), "http://a-stg".into()];
+    dialog.projects[1].draft.servers[0].urls = vec!["http://b-dev".into(), String::new()];
+    dialog.projects[1].read_only = true;
+    let result = std::cell::RefCell::new(None);
+    {
+        let mut h = harness(&mut dialog, &state, &result);
+        h.run();
+        assert!(!on_screen(&h, "http://a-dev"));
+        assert!(!on_screen(&h, "http://b-dev"));
+        h.get_by_label("B (read-only)");
+        toggle(&mut h, "A ü😀");
+        assert!(on_screen(&h, "http://a-dev"));
+        assert!(!on_screen(&h, "http://b-dev"), "B stays folded");
+        h.get_by_label("Staging").click();
+        h.run();
+        assert!(on_screen(&h, "http://a-stg"), "still unfolded");
+        toggle(&mut h, "A ü😀");
+        assert!(!on_screen(&h, "http://a-stg"));
+    }
+    std::fs::remove_dir_all(&dir).expect("clean up");
+
+    let (_, state) = open(&dir, &[("C", &["Dev"])]);
+    let mut single = EnvironmentsDialog::for_workspace(&state);
+    single.projects[0].draft.servers[0].urls = vec!["http://c-dev".into()];
+    let mut h = harness(&mut single, &state, &result);
+    h.run();
+    assert!(on_screen(&h, "http://c-dev"));
     drop(h);
     std::fs::remove_dir_all(dir).expect("clean up");
 }

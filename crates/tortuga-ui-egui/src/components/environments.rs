@@ -1,7 +1,8 @@
 //! The environments dialog (R-WS-9, D62; R-SRV-7): the workspace's one list of
 //! environments on the left. For the chosen one: its name, colour and protection, the
 //! values every project shares, and each project's own values, which win. Opened from a
-//! project, it shows that project's values only. A project's servers and variables
+//! project, it shows that project's values only. With several projects, each project's
+//! values start folded under its name (R-WS-10). A project's servers and variables
 //! themselves (names, secret flags, defaults) are edited under its name in the list.
 
 mod draft;
@@ -9,7 +10,7 @@ mod views;
 
 use std::path::PathBuf;
 
-use egui::{CentralPanel, Context, Frame, Panel, RichText, ScrollArea, TextEdit, Ui};
+use egui::{CentralPanel, CollapsingHeader, Context, Frame, Panel, ScrollArea, TextEdit, Ui};
 use tortuga_core::workspace::WorkspaceEnvironment;
 
 pub use draft::{Draft, EnvDraft, SavedConfig};
@@ -42,6 +43,8 @@ struct ProjectDraft {
     /// What its "Add server" and "Add variable" inputs hold.
     new_server: String,
     new_variable: String,
+    /// Its values are unfolded in an environment's view (R-WS-10).
+    expanded: bool,
 }
 
 /// What the right side shows.
@@ -72,9 +75,13 @@ const LIST_WIDTH: f32 = 210.0;
 impl EnvironmentsDialog {
     /// Opened from the project at `root`: its values only.
     pub fn new(state: &AppState, root: PathBuf) -> Self {
+        let mut dialog = Self::for_workspace(state);
+        for p in &mut dialog.projects {
+            p.expanded = p.root == root;
+        }
         Self {
             focus: Some(root),
-            ..Self::for_workspace(state)
+            ..dialog
         }
     }
 
@@ -87,6 +94,8 @@ impl EnvironmentsDialog {
             .map(|e| EnvDraft::new(e, state.workspace_env_secrets.get(&e.id)))
             .collect();
         let names: Vec<String> = list.iter().map(|e| e.name.clone()).collect();
+        // Folded when there are several, so each is one line (R-WS-10).
+        let expanded = state.collections.len() == 1;
         let projects = state
             .collections
             .iter()
@@ -99,6 +108,7 @@ impl EnvironmentsDialog {
                     draft: Draft::from_collection(c, &secrets).aligned(&names),
                     new_server: String::new(),
                     new_variable: String::new(),
+                    expanded,
                 }
             })
             .collect();
@@ -356,28 +366,8 @@ impl EnvironmentsDialog {
         for p in self.shown_projects() {
             ui.add_space(16.0);
             ui.separator();
-            let project = &mut self.projects[p];
-            ui.horizontal(|ui| {
-                ui.label(theme::semibold(&project.name));
-                if project.read_only {
-                    ui.label(RichText::new("read-only").small().weak());
-                }
-            });
-            theme::hint(
-                ui,
-                "Its own values win; an empty one uses the workspace's (greyed), then the default.",
-            );
             ui.push_id(("project", p), |ui| {
-                ui.add_enabled_ui(!project.read_only, |ui| {
-                    views::project_values(
-                        ui,
-                        &mut project.draft,
-                        i,
-                        &inherited,
-                        &mut project.new_server,
-                        &mut project.new_variable,
-                    );
-                });
+                project_section(ui, &mut self.projects[p], i, &inherited);
             });
         }
         if self.focus.is_some() {
@@ -441,6 +431,37 @@ impl EnvironmentsDialog {
             secrets,
             projects,
         })
+    }
+}
+
+/// A project's values for environment `col`, folded under its name (R-WS-10).
+fn project_section(ui: &mut Ui, project: &mut ProjectDraft, col: usize, inherited: &Inherited) {
+    let title = if project.read_only {
+        format!("{} (read-only)", project.name)
+    } else {
+        project.name.clone()
+    };
+    let header = CollapsingHeader::new(theme::semibold(title))
+        .id_salt("values")
+        .open(Some(project.expanded))
+        .show(ui, |ui| {
+            theme::hint(
+                ui,
+                "Its own values win; an empty one uses the workspace's (greyed), then the default.",
+            );
+            ui.add_enabled_ui(!project.read_only, |ui| {
+                views::project_values(
+                    ui,
+                    &mut project.draft,
+                    col,
+                    inherited,
+                    &mut project.new_server,
+                    &mut project.new_variable,
+                );
+            });
+        });
+    if header.header_response.clicked() {
+        project.expanded = !project.expanded;
     }
 }
 
