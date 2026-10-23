@@ -94,9 +94,6 @@ impl TortugaUi {
                 self.forget(&root, Path::new(""));
                 self.state.close_collection(&root);
             }
-            SidebarAction::SetProjectEnvironment { root, id } => {
-                self.state.set_project_environment(&root, &id);
-            }
             SidebarAction::NewProject => self.new_project(),
             SidebarAction::AddProjects => self.add_projects(),
             SidebarAction::Import(kind) => self.import_file(kind),

@@ -179,8 +179,6 @@ impl TortugaUi {
         }
     }
 
-    /// Saves the environments dialog. Secrets first: if the credential store fails,
-    /// nothing changes on disk and the dialog stays open with the error. Returns success.
     /// The settings dialog, with "Add…" for CA certificates (R-HTTP-16) and "Choose…"
     /// for the code font (R-SET-10). Returns whether it stays open.
     pub(super) fn show_settings(&mut self, ctx: &egui::Context, d: &mut SettingsDialog) -> bool {
@@ -268,6 +266,11 @@ impl TortugaUi {
             (Some(Source::Dynamic), _) => self.state.inform(format!(
                 "{{{{{name}}}}} gets a new value every time it is sent."
             )),
+            (Some(Source::WorkspaceEnvironment(env)), _) => {
+                self.modal = Some(Modal::Environments(
+                    EnvironmentsDialog::for_workspace(&self.state).on_environment(&env),
+                ));
+            }
             (Some(Source::Folder { path, .. }), Some(root)) => {
                 self.modal = Some(Modal::Defaults(
                     crate::components::DefaultsDialog::for_folder(&self.state, root, path)
@@ -360,30 +363,23 @@ impl TortugaUi {
         }
     }
 
+    /// Saves the environments dialog (R-WS-9). Returns success; on failure the dialog
+    /// stays open with the reason.
     pub(super) fn save_environments(
         &mut self,
         d: &mut EnvironmentsDialog,
-        saved: crate::components::SavedConfig,
+        saved: crate::components::SavedEnvironments,
     ) -> bool {
-        if let Err(e) = self.state.save_secrets(&d.root, saved.secrets) {
-            d.error = Some(e);
-            return false;
-        }
-        let old = self
+        match self
             .state
-            .collection(&d.root)
-            .map(|c| c.environments.clone())
-            .unwrap_or_default();
-        let done = self
-            .state
-            .run(&d.root, |c, s| {
-                c.save_config(s, &saved.manifest, &saved.environments)
-            })
-            .is_some();
-        if done {
-            self.state.follow_environment_renames(&d.root, &old);
+            .save_environments(saved.list, &saved.secrets, saved.projects)
+        {
+            Ok(()) => true,
+            Err(e) => {
+                d.error = Some(e);
+                false
+            }
         }
-        done
     }
 }
 

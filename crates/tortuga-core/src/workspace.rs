@@ -1,6 +1,7 @@
 //! Workspaces: named sets of projects (R-WS-1), the shareable workspace file (R-WS-5),
-//! the variables every project of a workspace can use (R-WS-8), and the request
-//! settings, headers and auth its projects inherit (R-SET-1, R-SET-2).
+//! the variables every project of a workspace can use (R-WS-8), its environments
+//! (R-WS-9), and the request settings, headers and auth its projects inherit (R-SET-1,
+//! R-SET-2).
 //!
 //! A workspace itself is local data, kept by the app. "Save as file…" writes it as a
 //! `<name>.tortuga-workspace.toml` that can be committed, e.g. to a "platform" repo:
@@ -20,6 +21,17 @@
 //! [[projects]]
 //! path = "../users-api"
 //! remote = "git@github.com:acme/users-api.git"
+//!
+//! [[environments]]
+//! id = "staging"
+//! name = "Staging"
+//! secrets = ["token"]
+//!
+//! [environments.servers]
+//! Users = "https://users.staging.acme.test"
+//!
+//! [environments.variables]
+//! tenant = "acme-staging"
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,6 +39,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::format::{Environment, EnvironmentColor, Manifest};
 use crate::model::{Auth, KeyValue};
 use crate::secrets::SecretKey;
 use crate::settings::RequestSettings;
@@ -36,9 +49,9 @@ use crate::{Error, Result, slug};
 pub const WORKSPACE_FILE_SUFFIX: &str = ".tortuga-workspace.toml";
 
 /// Newest format version of workspace files this build reads. Files are written as
-/// format 1 unless they hold variables or defaults: older builds would drop those when
-/// they rewrite the file, so they must refuse it instead.
-pub const WORKSPACE_FORMAT: u32 = 2;
+/// format 1 unless they hold variables or defaults (2) or environments (3): older builds
+/// would drop those when they rewrite the file, so they must refuse it instead.
+pub const WORKSPACE_FORMAT: u32 = 3;
 
 /// Variables every project of a workspace can use (R-WS-8). They rank below the
 /// project's own values, so a project can always override them.
@@ -99,6 +112,109 @@ pub fn secret_key(id: &str, name: &str) -> SecretKey {
     SecretKey::new(Path::new(&format!("workspace:{id}")), None, name)
 }
 
+/// An environment every project of the workspace has (R-WS-9, D62): its values, and the
+/// base URLs of servers by name. A project's own environment of the same name wins over
+/// it, value by value.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceEnvironment {
+    /// Stays the same when it is renamed; keys this machine's secret values.
+    pub id: String,
+    pub name: String,
+    /// Its dot's colour (R-SRV-8), unless a project's own environment gives it one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<EnvironmentColor>,
+    /// Ask before writes are sent to it (R-SRV-9), in every project.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub protected: bool,
+    /// Server name → base URL, for the servers of that name in every project.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub servers: BTreeMap<String, String>,
+    /// Name → value, for variables that are not secret.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub variables: BTreeMap<String, String>,
+    /// Names of secret variables; their values stay on each machine (R-VAR-3).
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub secrets: BTreeSet<String>,
+}
+
+impl WorkspaceEnvironment {
+    /// Whether this is the environment called `name` (R-WS-9).
+    pub fn is_named(&self, name: &str) -> bool {
+        crate::format::names_match(&self.name, name)
+    }
+
+    /// A free id for a new environment called `name`.
+    pub fn new_id(name: &str, existing: &[Self]) -> String {
+        slug::unique(&slug::slugify(name), |c| existing.iter().any(|e| e.id == c))
+    }
+}
+
+/// The environment a project's requests use (R-WS-9): the workspace's `shared`, with its
+/// server URLs given to the project's servers of the same name and this machine's
+/// `secret_values` for it, overridden value by value by the project's `own` environment of
+/// the same name. Its id is the project's environment's, or [`WORKSPACE_ENVIRONMENT_ID`].
+/// `None` when there is neither.
+pub fn effective_environment(
+    shared: Option<&WorkspaceEnvironment>,
+    secret_values: &BTreeMap<String, String>,
+    own: Option<&Environment>,
+    manifest: &Manifest,
+) -> Option<Environment> {
+    let Some(shared) = shared else {
+        return own.cloned();
+    };
+    let mut env = Environment {
+        id: WORKSPACE_ENVIRONMENT_ID.to_owned(),
+        name: shared.name.clone(),
+        color: shared.color,
+        protected: shared.protected,
+        ..Environment::default()
+    };
+    for (name, url) in &shared.servers {
+        for server in manifest.servers.iter().filter(|s| s.is_named(name)) {
+            env.servers.insert(server.id.clone(), url.clone());
+        }
+    }
+    env.variables.clone_from(&shared.variables);
+    env.variables.extend(
+        secret_values
+            .iter()
+            .filter(|(name, value)| shared.secrets.contains(*name) && !value.is_empty())
+            .map(|(k, v)| (k.clone(), v.clone())),
+    );
+    if let Some(own) = own {
+        env.id.clone_from(&own.id);
+        env.name.clone_from(&own.name);
+        env.seq = own.seq;
+        env.color = own.color.or(shared.color);
+        env.protected = own.protected || shared.protected;
+        // An empty value in the project means "inherit" (R-VAR-7), as in `vars::Context`.
+        env.servers.extend(
+            own.servers
+                .iter()
+                .filter(|(_, v)| !v.trim().is_empty())
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        env.variables.extend(
+            own.variables
+                .iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+    }
+    Some(env)
+}
+
+/// The id of a project's environment that only the workspace defines (R-WS-9). Never a
+/// file stem, which are slugs.
+pub const WORKSPACE_ENVIRONMENT_ID: &str = "@workspace";
+
+/// Where this machine's secret value `name` of workspace environment `env_id` is kept.
+pub fn environment_secret_key(id: &str, env_id: &str, name: &str) -> SecretKey {
+    SecretKey::new(Path::new(&format!("workspace:{id}")), Some(env_id), name)
+}
+
 /// A project in a workspace: where it is, and where its repository can be cloned from.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -127,6 +243,7 @@ pub struct WorkspaceFile {
     pub projects: Vec<ProjectRef>,
     pub variables: WorkspaceVariables,
     pub defaults: WorkspaceDefaults,
+    pub environments: Vec<WorkspaceEnvironment>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -145,6 +262,8 @@ struct FileText {
     headers: Vec<KeyValue>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     projects: Vec<FileProject>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    environments: Vec<WorkspaceEnvironment>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -160,28 +279,34 @@ pub fn file_name(name: &str) -> String {
     format!("{}{WORKSPACE_FILE_SUFFIX}", slug::slugify(name))
 }
 
-/// Writes the workspace file that will be saved at `file`. Deterministic: the same
-/// workspace always gives the same text, so saving it again never changes the file.
-pub fn write(
-    name: &str,
-    projects: &[ProjectRef],
-    variables: &WorkspaceVariables,
-    defaults: &WorkspaceDefaults,
-    file: &Path,
-) -> String {
+/// Writes `workspace` as the file that will be saved at `file` (its project paths are
+/// absolute). Deterministic: the same workspace always gives the same text, so saving it
+/// again never changes the file.
+pub fn write(workspace: &WorkspaceFile, file: &Path) -> String {
     let dir = file.parent().unwrap_or(Path::new(""));
+    let WorkspaceFile {
+        name,
+        projects,
+        variables,
+        defaults,
+        environments,
+    } = workspace;
+    let format = if !environments.is_empty() {
+        3
+    } else if variables.is_empty() && defaults.is_empty() {
+        1
+    } else {
+        2
+    };
     let text = FileText {
-        format: if variables.is_empty() && defaults.is_empty() {
-            1
-        } else {
-            2
-        },
-        name: name.to_owned(),
+        format,
+        name: name.clone(),
         secrets: variables.secrets.clone(),
         settings: defaults.settings,
         variables: variables.values.clone(),
         auth: defaults.auth.clone(),
         headers: defaults.headers.clone(),
+        environments: environments.clone(),
         projects: projects
             .iter()
             .map(|p| FileProject {
@@ -226,6 +351,7 @@ pub fn read(text: &str, file: &Path) -> Result<WorkspaceFile> {
             headers: parsed.headers,
             auth: parsed.auth,
         },
+        environments: parsed.environments,
     })
 }
 
@@ -317,13 +443,12 @@ mod tests {
             ProjectRef::new("/src/platform/api/orders"),
             ProjectRef::new("/src/platform"),
         ];
-        let text = write(
-            "Acme",
-            &projects,
-            &WorkspaceVariables::default(),
-            &WorkspaceDefaults::default(),
-            file,
-        );
+        let workspace = WorkspaceFile {
+            name: "Acme".into(),
+            projects: projects.to_vec(),
+            ..WorkspaceFile::default()
+        };
+        let text = write(&workspace, file);
         assert_eq!(
             text,
             "format = 1\nname = \"Acme\"\n\n\
@@ -347,23 +472,13 @@ mod tests {
             Some("https://github.com/acme/users-api.git"),
             "no password in a shared file"
         );
-        assert_eq!(
-            write(
-                "Acme",
-                &projects,
-                &WorkspaceVariables::default(),
-                &WorkspaceDefaults::default(),
-                file,
-            ),
-            text,
-            "deterministic"
-        );
+        assert_eq!(write(&workspace, file), text, "deterministic");
     }
 
     #[test]
     fn newer_or_broken_files_are_errors() {
         let file = Path::new("/w/x.tortuga-workspace.toml");
-        assert!(read("format = 3\nname = \"X\"\n", file).is_err());
+        assert!(read("format = 4\nname = \"X\"\n", file).is_err());
         assert!(read("name = ", file).is_err());
         assert_eq!(
             read("format = 1\nname = \"X\"\n", file)
@@ -384,10 +499,12 @@ mod tests {
         };
         let projects = [ProjectRef::new("/src/users-api")];
         let text = write(
-            "Acme",
-            &projects,
-            &variables,
-            &WorkspaceDefaults::default(),
+            &WorkspaceFile {
+                name: "Acme".into(),
+                projects: projects.to_vec(),
+                variables: variables.clone(),
+                ..WorkspaceFile::default()
+            },
             file,
         );
         assert_eq!(
@@ -416,7 +533,14 @@ mod tests {
                 token: "{{token}}".into(),
             },
         };
-        let text = write("Acme", &[], &WorkspaceVariables::default(), &defaults, file);
+        let text = write(
+            &WorkspaceFile {
+                name: "Acme".into(),
+                defaults: defaults.clone(),
+                ..WorkspaceFile::default()
+            },
+            file,
+        );
         assert_eq!(
             text,
             "format = 2\nname = \"Acme\"\n\n[settings]\ntimeout_ms = 5000\n\n\
@@ -495,5 +619,112 @@ mod tests {
             "acme-platform.tortuga-workspace.toml"
         );
         assert_eq!(file_name("!!"), "untitled.tortuga-workspace.toml");
+    }
+
+    fn staging() -> WorkspaceEnvironment {
+        WorkspaceEnvironment {
+            id: "staging".into(),
+            name: "Staging".into(),
+            color: Some(EnvironmentColor::Orange),
+            servers: [("users".to_owned(), "https://users.staging.test".to_owned())].into(),
+            variables: [
+                ("tenant".to_owned(), "acme ü😀".to_owned()),
+                ("region".to_owned(), "eu".to_owned()),
+            ]
+            .into(),
+            secrets: ["token".to_owned()].into(),
+            ..WorkspaceEnvironment::default()
+        }
+    }
+
+    /// R-WS-9: environments go into the file (format 3, secrets by name only) and come back.
+    #[test]
+    fn environments_are_written_and_read() {
+        let file = Path::new("/src/platform/acme.tortuga-workspace.toml");
+        let workspace = WorkspaceFile {
+            name: "Acme".into(),
+            environments: vec![staging()],
+            ..WorkspaceFile::default()
+        };
+        let text = write(&workspace, file);
+        assert!(text.starts_with("format = 3\n"), "{text}");
+        assert!(text.contains("[[environments]]"), "{text}");
+        assert!(text.contains("secrets = [\"token\"]"), "{text}");
+        assert_eq!(read(&text, file).expect("read"), workspace);
+    }
+
+    /// R-WS-9, D62: a project gets the workspace's environment, its servers by name and
+    /// its secret values; its own environment of that name wins value by value.
+    #[test]
+    fn a_project_environment_wins_over_the_workspace_one() {
+        let manifest = Manifest {
+            servers: vec![
+                crate::format::Server {
+                    id: "u".into(),
+                    name: "USERS".into(),
+                },
+                crate::format::Server {
+                    id: "o".into(),
+                    name: "Orders".into(),
+                },
+            ],
+            ..Manifest::new("P")
+        };
+        let secrets: BTreeMap<String, String> = [
+            ("token".to_owned(), "s3cret".to_owned()),
+            ("not-secret".to_owned(), "ignored".to_owned()),
+        ]
+        .into();
+        let shared = staging();
+        let env = effective_environment(Some(&shared), &secrets, None, &manifest).expect("env");
+        assert_eq!(env.id, WORKSPACE_ENVIRONMENT_ID);
+        assert_eq!(env.name, "Staging");
+        assert_eq!(
+            env.servers["u"], "https://users.staging.test",
+            "by name, any case"
+        );
+        assert!(!env.servers.contains_key("o"));
+        assert_eq!(env.variables["token"], "s3cret");
+        assert!(!env.variables.contains_key("not-secret"));
+        assert_eq!(env.color, Some(EnvironmentColor::Orange));
+
+        let own = Environment {
+            id: "stg".into(),
+            name: "staging".into(),
+            protected: true,
+            servers: [
+                ("o".to_owned(), "https://orders.stg".to_owned()),
+                ("u".to_owned(), " ".to_owned()),
+            ]
+            .into(),
+            variables: [
+                ("region".to_owned(), "us".to_owned()),
+                ("tenant".to_owned(), String::new()),
+            ]
+            .into(),
+            ..Environment::default()
+        };
+        let env =
+            effective_environment(Some(&shared), &secrets, Some(&own), &manifest).expect("env");
+        assert_eq!(env.id, "stg");
+        assert_eq!(env.servers["o"], "https://orders.stg");
+        assert_eq!(
+            env.servers["u"], "https://users.staging.test",
+            "empty inherits"
+        );
+        assert_eq!(env.variables["region"], "us", "the project wins");
+        assert_eq!(env.variables["tenant"], "acme ü😀", "empty inherits");
+        assert!(env.protected, "either protects it");
+        assert_eq!(
+            env.color,
+            Some(EnvironmentColor::Orange),
+            "the project gives none"
+        );
+
+        assert_eq!(
+            effective_environment(None, &secrets, Some(&own), &manifest),
+            Some(own.clone())
+        );
+        assert_eq!(effective_environment(None, &secrets, None, &manifest), None);
     }
 }

@@ -151,16 +151,21 @@ you work on together; several projects may live in one repository, and the sideb
 Use an item's **…** menu (or right-click it) to add, rename, duplicate, move, reorder or delete. **Ctrl+S** saves,
 **Ctrl+Enter** sends.
 
-**Environments and servers.** In a project's **…** menu, choose **Environments…**:
+**Environments and servers.** Environments belong to the workspace: one list (e.g. *Development*, *Staging*) that
+every project has. Open **Environments…** from the workspace menu, a project's **…** menu, or ✏ next to the environment
+picker:
 
-- Add environments (e.g. *Development*, *Staging*).
-- Add servers (e.g. *Users API*) and give each one a base URL per environment.
-- Add variables with a default value and, where needed, a different value per environment. Mark credentials as
-  secret: their values stay on your machine.
+- Add, rename, reorder or remove environments, and give each a colour or mark it **Protected**, once for all projects.
+- Under **All projects**, set values every project shares: variables, and base URLs of servers by name (*Users API*
+  goes to every project's server called *Users API*).
+- Under each project, fill in only what differs for it: its servers' base URLs and its own values. Empty fields show
+  what they inherit, greyed.
+- Under **Servers and variables**, define a project's servers and variables, their defaults, and which are secret:
+  their values stay on your machine.
 
-In a request, pick the server in front of the URL field and type only the path (`/users/{{user_id}}`). The environment
-picker in the title bar switches every project in the workspace that has an environment with that name. Variables
-that aren't defined are highlighted, and the request isn't sent until they are.
+In a request, pick the server in front of the URL field and type only the path (`/users/{{user_id}}`). The picker in
+the title bar switches every project at once. Variables that aren't defined are highlighted, and the request isn't
+sent until they are. An environment a project brings along (one you open or pull) joins the list by itself.
 
 **Dynamic variables** get a new value wherever they are used, on every send: `{{$guid}}` (or `{{$uuid}}`),
 `{{$timestamp}}` (seconds), `{{$isoTimestamp}}`, `{{$randomInt}}` (0–1000), and `{{$randomInt 1 10}}` or
@@ -283,8 +288,9 @@ TORTUGA_VAR_token=$TOKEN tortuga-cli run path/to/project users/get-user.toml --v
 
 It prints each step with its tests and exits with 0 when everything passed, 1 when something failed and 2 for
 usage errors. Pass secrets with `--var name=value` or `TORTUGA_VAR_<name>` environment variables. `--data FILE`
-runs once per row; `--report json` writes JSON instead of JUnit XML; `--workspace FILE` also uses the variables of a
-`.tortuga-workspace.toml` (the project's own values win). Download it from a release (`tortuga-cli-<version>-<os>` archive, R-CLI-4) or build it with `make cli`.
+runs once per row; `--report json` writes JSON instead of JUnit XML; `--workspace FILE` also uses the variables and
+environments of a `.tortuga-workspace.toml` (the project's own values win), so `--env Staging` finds the workspace's
+*Staging*. Download it from a release (`tortuga-cli-<version>-<os>` archive, R-CLI-4) or build it with `make cli`.
 
 ## Make targets
 

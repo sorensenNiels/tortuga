@@ -487,6 +487,8 @@ pub enum Source {
     Secret,
     /// The environment of that name (R-VAR-2).
     Environment(String),
+    /// The workspace's environment of that name (R-WS-9).
+    WorkspaceEnvironment(String),
     /// The folder of that name, at `path` in the project (R-COL-11).
     Folder {
         name: String,
@@ -510,6 +512,9 @@ impl Source {
             }
             Self::Secret => "this computer's secret value".to_owned(),
             Self::Environment(name) => format!("the environment “{name}”"),
+            Self::WorkspaceEnvironment(name) => {
+                format!("the workspace's environment “{name}”")
+            }
             Self::Folder { name, .. } => format!("the folder “{name}”"),
             Self::Project => "the project".to_owned(),
             Self::Workspace => "the workspace".to_owned(),

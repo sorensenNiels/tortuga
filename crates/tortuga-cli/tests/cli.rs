@@ -188,6 +188,64 @@ async fn runs_a_workflow_with_secrets_data_and_reports() {
     assert_eq!(code, 1, "--var wins: {stdout}");
 }
 
+/// R-WS-9: `--env` finds the workspace's environment, whatever its case; the project's
+/// own environment of that name wins over its values; it may be protected.
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_environments_are_used_with_env() {
+    let server = server().await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let project_dir = dir.path().join("shop");
+    project(&project_dir, &server.uri());
+    let p = project_dir.to_str().expect("utf-8");
+    let ws = dir.path().join("acme.tortuga-workspace.toml");
+    let ws = ws.to_str().expect("utf-8");
+    std::fs::write(
+        ws,
+        "format = 3\nname = \"Acme\"\n\n[[projects]]\npath = \"shop\"\n\n\
+         [[environments]]\nid = \"staging\"\nname = \"Staging\"\n\n\
+         [environments.variables]\nuser = \"ann\"\n",
+    )
+    .expect("workspace file");
+    let key = [("TORTUGA_VAR_api_key", "k-1")];
+    let (code, stdout, _) = cli(
+        &["run", p, "Lifecycle", "--workspace", ws, "--env", "staging"],
+        &key,
+    );
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("environment Staging"), "{stdout}");
+    let (code, _, stderr) = cli(&["run", p, "Lifecycle", "--env", "staging"], &key);
+    assert_eq!(code, 2, "not without the workspace");
+    assert!(stderr.contains("no environment 'staging'"), "{stderr}");
+
+    let col = Collection::open(&FS, &project_dir).expect("open");
+    let own = tortuga_core::Environment {
+        id: "stg".into(),
+        name: "STAGING".into(),
+        variables: [("user".to_owned(), "bob".to_owned())].into(),
+        ..tortuga_core::Environment::default()
+    };
+    col.save_config(&FS, &col.manifest, &[own])
+        .expect("own staging");
+    let (code, stdout, _) = cli(
+        &["run", p, "Lifecycle", "--workspace", ws, "--env", "Staging"],
+        &key,
+    );
+    assert_eq!(code, 1, "the project's value wins: {stdout}");
+
+    let text = std::fs::read_to_string(ws).expect("read");
+    std::fs::write(
+        ws,
+        text.replace("name = \"Staging\"", "name = \"Staging\"\nprotected = true"),
+    )
+    .expect("protect");
+    let (code, _, stderr) = cli(
+        &["run", p, "Lifecycle", "--workspace", ws, "--env", "Staging"],
+        &key,
+    );
+    assert_eq!(code, 2, "protected by the workspace");
+    assert!(stderr.contains("is protected"), "{stderr}");
+}
+
 /// R-CLI-1: usage and setup errors exit with 2 and say what is wrong.
 #[test]
 fn errors_exit_with_2() {

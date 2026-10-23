@@ -6,14 +6,12 @@ use std::sync::{Arc, RwLock};
 use tortuga_core::Collection;
 use tortuga_core::mock::server::{self, RunningMock};
 use tortuga_core::mock::{self, Hit, MockApi, Outcome};
-use tortuga_core::storage::FsStorage;
 
-use crate::{Args, count, environment_id};
+use crate::{Args, count, open_project};
 
 /// Serves the mock of `args.project` until the process is stopped.
 pub fn serve(args: &Args) -> Result<(), String> {
-    let collection = Collection::open(&FsStorage, &args.project).map_err(|e| e.to_string())?;
-    let environment = environment_id(&collection, args.env.as_deref())?;
+    let (collection, environment, _) = open_project(args)?;
     let api = MockApi::new(&collection, environment.as_deref());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

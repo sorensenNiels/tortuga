@@ -54,6 +54,8 @@ pub(super) enum Command {
     WorkspaceVariables,
     /// The workspace's headers, auth and request settings (R-SET-1, R-SET-2).
     WorkspaceDefaults,
+    /// The environments every project has (R-WS-9).
+    WorkspaceEnvironments,
     AddProjects,
     NewProject,
     Import(ImportKind),
@@ -103,10 +105,13 @@ fn project_commands(importers: &ImporterSettings) -> Vec<PaletteItem<PaletteChoi
     .collect()
 }
 
-/// The workspace's variables (R-WS-8) and defaults (R-SET-1, R-SET-2).
-fn workspace_commands(workspace: &str) -> [PaletteItem<PaletteChoice>; 2] {
+/// The workspace's environments (R-WS-9), variables (R-WS-8) and defaults (R-SET-1, R-SET-2).
+fn workspace_commands(workspace: &str) -> [PaletteItem<PaletteChoice>; 3] {
     let run = |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
     [
+        run("Workspace environments…", Command::WorkspaceEnvironments)
+            .detail(workspace)
+            .keywords("staging production servers urls"),
         run("Workspace variables…", Command::WorkspaceVariables)
             .detail(workspace)
             .keywords("shared captured secret"),
@@ -152,7 +157,7 @@ impl TortugaUi {
         let run =
             |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
         let in_mock = self.state.mocks.in_use();
-        let shown = self.state.workspace().environment.clone();
+        let shown = self.state.chosen_environment_name();
         let mut items: Vec<_> = self
             .state
             .environment_names()
@@ -430,6 +435,7 @@ impl TortugaUi {
             Command::RuntimeVars(root) => self.show_runtime_vars(root),
             Command::WorkspaceVariables => self.on_workspace(WorkspaceAction::Variables),
             Command::WorkspaceDefaults => self.on_workspace(WorkspaceAction::Defaults),
+            Command::WorkspaceEnvironments => self.on_workspace(WorkspaceAction::Environments),
             Command::AddProjects => self.add_projects(),
             Command::NewProject => self.new_project(),
             Command::Import(kind) => self.import_file(kind),

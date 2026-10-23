@@ -102,6 +102,32 @@ pub struct Environment {
     pub variables: BTreeMap<String, String>,
 }
 
+impl Environment {
+    /// Whether this environment is the one called `name` across a workspace (R-WS-9).
+    pub fn is_named(&self, name: &str) -> bool {
+        names_match(&self.name, name)
+    }
+}
+
+impl Server {
+    /// Whether this is the server a workspace environment calls `name` (R-WS-9).
+    pub fn is_named(&self, name: &str) -> bool {
+        names_match(&self.name, name)
+    }
+}
+
+/// The form of an environment or server name that projects and the workspace are matched
+/// by (R-WS-9, D62): case and surrounding spaces don't count, so "staging" in one project
+/// is "Staging" in another.
+pub fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// Whether two environment or server names mean the same one (R-WS-9, D62).
+pub fn names_match(a: &str, b: &str) -> bool {
+    name_key(a) == name_key(b)
+}
+
 /// The colours an environment can be marked with (R-SRV-8), so production can be red.
 /// Named, not RGB, so each theme draws them in shades that read on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -904,6 +930,23 @@ password = "{{token}}"
     }
 
     /// R-SRV-9: `protected = true` is written only when on, and files without it load.
+    /// R-WS-9, D62: environment names match across projects whatever their case and
+    /// surrounding spaces; anything else still counts.
+    #[test]
+    fn environment_names_match_ignoring_case_and_spaces() {
+        assert!(names_match("Staging", " staging "));
+        assert!(names_match("ÜBER 😀", "über 😀"));
+        assert!(!names_match("Staging", "Stage"));
+        assert!(!names_match("Dev 1", "Dev1"));
+        assert!(names_match("", "  "));
+        let env = Environment {
+            name: "Production".into(),
+            ..Environment::default()
+        };
+        assert!(env.is_named("PRODUCTION"));
+        assert!(!env.is_named("Prod"));
+    }
+
     #[test]
     fn protected_environments_round_trip() {
         let env = Environment {

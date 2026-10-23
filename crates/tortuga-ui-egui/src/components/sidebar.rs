@@ -79,11 +79,6 @@ pub enum SidebarAction {
     Reload(PathBuf),
     /// Remove the project from the workspace; its files stay (R-WS-1).
     Close(PathBuf),
-    /// The environment a project uses when it has none named like the workspace's (R-WS-6).
-    SetProjectEnvironment {
-        root: PathBuf,
-        id: String,
-    },
     /// Create a project in a folder (R-WS-7).
     NewProject,
     /// Find projects in a folder or repository and add them (R-WS-3).
@@ -184,8 +179,6 @@ struct Tree<'a> {
     git: Option<&'a GitStatus>,
     /// Show the branch on the project row (not when a repository row above shows it, R-WS-4).
     show_branch: bool,
-    /// Set when the project doesn't have the workspace's environment (R-WS-6).
-    env_note: Option<EnvNote>,
     /// The port of the project's running mock server (R-MOCK-2).
     mock_port: Option<u16>,
     offers: MenuOffers,
@@ -224,7 +217,6 @@ pub fn sidebar(
         dirty_workflows: marks.dirty_workflows,
         git: None,
         show_branch: true,
-        env_note: None,
         mock_port: None,
         offers: MenuOffers {
             open_folders: state.host.can_open_folders(),
@@ -286,7 +278,6 @@ pub fn sidebar(
                     ui.push_id(&c.root, |ui| {
                         tree.git = state.git.get(&c.root);
                         tree.show_branch = shared.is_none();
-                        tree.env_note = environment_note(state, c);
                         tree.mock_port = state.mocks.port(&c.root);
                         collection(ui, c, state.cookie_jar(Some(&c.root)).len(), depth, &mut tree);
                     });
@@ -328,20 +319,12 @@ fn scratch_row(ui: &mut Ui, scratch_selected: bool, tree: &mut Tree<'_>) {
     }
 }
 
-/// What the right end of a project row shows: its running mock server (R-MOCK-2), and
-/// the environment it uses when it lacks the workspace's (R-WS-6).
+/// What the right end of a project row shows: its running mock server (R-MOCK-2).
 fn project_marks(ui: &Ui, tree: &Tree<'_>) -> Vec<Atom<'static>> {
     let p = theme::palette(ui);
-    let mock = tree
-        .mock_port
-        .map(|port| RichText::new(format!("mock :{port}")).small().color(p.ok));
-    let environment = tree.env_note.as_ref().map(|note| {
-        RichText::new(format!("⚠ {}", note.used))
-            .small()
-            .color(p.redirect)
-    });
-    mock.into_iter()
-        .chain(environment)
+    tree.mock_port
+        .map(|port| RichText::new(format!("mock :{port}")).small().color(p.ok))
+        .into_iter()
         .map(Atom::from)
         .collect()
 }
@@ -353,18 +336,8 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
     let read_only = c.read_only;
 
     let offers = tree.offers;
-    let environments = tree.env_note.as_ref().map(|n| n.environments.clone());
     let mock_port = tree.mock_port;
-    let menu = |ui: &mut Ui| {
-        collection_menu(
-            ui,
-            c,
-            cookie_count,
-            offers,
-            environments.as_deref(),
-            mock_port,
-        )
-    };
+    let menu = |ui: &mut Ui| collection_menu(ui, c, cookie_count, offers, mock_port);
     if is_renaming(tree, &key) {
         if let Some(name) = rename_row(ui, depth, tree, &key) {
             tree.actions.push(SidebarAction::RenameCollection {
@@ -406,12 +379,6 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
         }
         if let Some(branch) = branch {
             hover = format!("{hover}\nGit branch: {branch}");
-        }
-        if let Some(note) = &tree.env_note {
-            hover = format!(
-                "{hover}\nNo “{}” environment in this project: it uses “{}”. Change it in the menu.",
-                note.wanted, note.used
-            );
         }
         let row = row.on_hover_text(hover);
         if row.clicked() {
@@ -548,37 +515,6 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
             )));
         }
     }
-}
-
-/// A project without an environment named like the workspace's (R-WS-6).
-struct EnvNote {
-    /// The workspace's environment.
-    wanted: String,
-    /// The one this project uses instead.
-    used: String,
-    /// The project's environments, as (id, name).
-    environments: Vec<(String, String)>,
-}
-
-fn environment_note(state: &AppState, c: &Collection) -> Option<EnvNote> {
-    if state.follows_workspace_environment(&c.root) {
-        return None;
-    }
-    let wanted = state.workspace().environment.clone()?;
-    let used = state
-        .active_environment(&c.root)
-        .and_then(|id| c.environment(&id).map(|e| e.name.clone()))
-        .unwrap_or_default();
-    let envs = c
-        .environments
-        .iter()
-        .map(|e| (e.id.clone(), e.name.clone()))
-        .collect();
-    Some(EnvNote {
-        wanted,
-        used,
-        environments: envs,
-    })
 }
 
 /// The row above projects that share a git repository: its name, branch and state,
@@ -988,7 +924,7 @@ mod tests {
                             environment_imports: ENVIRONMENT_KINDS.map(|k| on && k == kind),
                             ..MenuOffers::default()
                         };
-                        choices.push(collection_menu(ui, &c, 0, offers, None, None));
+                        choices.push(collection_menu(ui, &c, 0, offers, None));
                     });
                     h.run();
                     let found = h.query_by_label(entry);

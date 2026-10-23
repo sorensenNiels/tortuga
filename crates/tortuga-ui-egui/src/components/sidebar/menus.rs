@@ -89,8 +89,6 @@ pub(super) fn collection_menu(
     c: &Collection,
     cookie_count: usize,
     offers: MenuOffers,
-    // Set when the project doesn't follow the workspace's environment (R-WS-6).
-    environments: Option<&[(String, String)]>,
     // The port of its running mock server (R-MOCK-2).
     mock_port: Option<u16>,
 ) -> Option<MenuChoice> {
@@ -116,18 +114,7 @@ pub(super) fn collection_menu(
         });
         item(ui, "Rename".into(), &|| MenuChoice::Rename);
     }
-    let mut picked_environment = None;
-    if let Some(envs) = environments {
-        ui.menu_button("Use environment", |ui| {
-            for (id, name) in envs {
-                if ui.button(name).clicked() {
-                    picked_environment = Some(id.clone());
-                }
-            }
-        });
-    }
-    let environments = format!("Environments ({})…", c.environments.len());
-    item(ui, environments, &|| {
+    item(ui, "Environments…".into(), &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
     });
     for kind in ENVIRONMENT_KINDS {
@@ -186,12 +173,6 @@ pub(super) fn collection_menu(
     item(ui, "Remove from workspace".into(), &|| {
         MenuChoice::Action(SidebarAction::Close(root.clone()))
     });
-    if let Some(id) = picked_environment {
-        return Some(MenuChoice::Action(SidebarAction::SetProjectEnvironment {
-            root: root.clone(),
-            id,
-        }));
-    }
     choice
 }
 

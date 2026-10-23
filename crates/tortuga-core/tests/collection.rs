@@ -692,3 +692,30 @@ fn descriptions_follow_rename_move_and_duplicate() {
         "Lists users.\n"
     );
 }
+
+/// R-WS-9: an environment added to a project gets a free id and goes last, also after
+/// environments saved without a position.
+#[test]
+fn added_environments_get_a_free_id_and_go_last() {
+    let (_dir, col) = new_collection();
+    let mut envs = vec![Environment {
+        id: "zeta".into(),
+        name: "Zeta".into(),
+        ..Environment::default()
+    }];
+    Collection::add_environment(&mut envs, "Staging");
+    Collection::add_environment(&mut envs, "staging");
+    Collection::add_environment(&mut envs, "Prod ü😀").protected = true;
+    let ids: Vec<&str> = envs.iter().map(|e| e.id.as_str()).collect();
+    assert_ne!(ids[1], ids[2], "a free id");
+    assert_eq!(
+        envs.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        [Some(1), Some(2), Some(3), Some(4)]
+    );
+    col.save_config(&FsStorage, &col.manifest, &envs)
+        .expect("saved");
+    let reopened = reopen(&col).environments;
+    let names: Vec<&str> = reopened.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["Zeta", "Staging", "staging", "Prod ü😀"]);
+    assert!(reopened[3].protected);
+}

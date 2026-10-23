@@ -53,17 +53,14 @@ impl TortugaUi {
                 .state
                 .inform("Save the request in a project to send it to its environments.");
         };
-        let Some(c) = self.state.collection(&key.root) else {
-            return;
-        };
-        if c.environments.is_empty() {
+        let environments = self.state.environments_of(&key.root);
+        if environments.is_empty() {
             return self
                 .state
                 .inform("This project has no environments to send to.");
         }
         let method = self.current.method;
-        let protected: Vec<String> = c
-            .environments
+        let protected: Vec<String> = environments
             .iter()
             .filter(|e| e.protected)
             .map(|e| format!("“{}”", e.name))
@@ -87,23 +84,16 @@ impl TortugaUi {
         let Some(key) = self.selection.clone() else {
             return;
         };
-        let Some(c) = self.state.collection(&key.root) else {
-            return;
-        };
-        let environments: Vec<_> = c
-            .environments
-            .iter()
-            .map(|e| (e.id.clone(), e.name.clone(), e.color))
-            .collect();
+        let environments = self.state.environments_of(&key.root);
         self.next_send_id += 1;
         let id = self.next_send_id;
         let jar = self.state.cookie_jar(Some(&key.root));
         let mut rows = Vec::new();
         let mut aborts = Vec::new();
-        for (index, (env_id, name, color)) in environments.into_iter().enumerate() {
+        for (index, env) in environments.into_iter().enumerate() {
             let ctx = self
                 .state
-                .context_in(&key.root, Some(&key.path), Some(&env_id), false);
+                .context_in(&key.root, Some(&key.path), Some(&env), false);
             let result = match vars::prepare(&self.current, &ctx) {
                 Err(e) => FanoutResult::Failed(sentence(&e.to_string())),
                 Ok(prepared) => {
@@ -131,8 +121,8 @@ impl TortugaUi {
                 }
             };
             rows.push(FanoutRow {
-                environment: name,
-                color,
+                environment: env.name,
+                color: env.color,
                 result,
                 shape: Vec::new(),
             });

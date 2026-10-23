@@ -209,7 +209,6 @@ pub fn save_local(state: &LocalState) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
 
     use super::*;
 
@@ -323,7 +322,6 @@ mod tests {
                 Workspace {
                     name: "My workspace".into(),
                     projects: vec![ProjectRef::new("/repo/api")],
-                    project_environments: BTreeMap::from([("/repo/api".into(), "dev".into())]),
                     selection: Some(("/repo/api".into(), "users/list.toml".into())),
                     // R-COL-13, R-COL-14: the scratch tab, a kept tab and the preview tab.
                     tabs: SavedTabs {
@@ -348,6 +346,15 @@ mod tests {
                     name: "Acme".into(),
                     file: Some("/src/acme.tortuga-workspace.toml".into()),
                     environment: Some("Staging".into()),
+                    // R-WS-9: the environments every project has.
+                    environments: vec![tortuga_core::workspace::WorkspaceEnvironment {
+                        id: "staging".into(),
+                        name: "Staging ü😀".into(),
+                        protected: true,
+                        servers: [("Users".to_owned(), "https://users.stg".to_owned())].into(),
+                        secrets: ["token".to_owned()].into(),
+                        ..Default::default()
+                    }],
                     projects: vec![ProjectRef {
                         path: "/src/users".into(),
                         remote: Some("git@example.test:acme/users.git".into()),
@@ -373,7 +380,6 @@ mod tests {
         old.migrate();
         assert_eq!(old.workspaces.len(), 1);
         assert_eq!(old.workspaces[0].projects, [ProjectRef::new("/repo/api")]);
-        assert_eq!(old.workspaces[0].project_environments["/repo/api"], "dev");
         assert_eq!(old.open_collections, Vec::<PathBuf>::new());
     }
 }

@@ -1,4 +1,4 @@
-//! The workspace menu and the environment picker in the top bar (R-WS-1..8, R-VAR-2).
+//! The workspace menu and the environment picker in the top bar (R-WS-1..9, R-VAR-2).
 
 use egui::{ComboBox, RichText, Ui};
 
@@ -36,6 +36,15 @@ impl TortugaUi {
                 }
                 if ui.button("Rename…").clicked() {
                     action = Some(WorkspaceAction::Rename);
+                }
+                if ui
+                    .button("Environments…")
+                    .on_hover_text(
+                        "Environments every project in this workspace has, such as Staging",
+                    )
+                    .clicked()
+                {
+                    action = Some(WorkspaceAction::Environments);
                 }
                 if ui
                     .button("Variables…")
@@ -113,6 +122,11 @@ impl TortugaUi {
                     &name,
                 )));
             }
+            WorkspaceAction::Environments => {
+                self.modal = Some(Modal::Environments(EnvironmentsDialog::for_workspace(
+                    &self.state,
+                )));
+            }
             WorkspaceAction::Variables => {
                 self.modal = Some(Modal::WorkspaceVars(
                     crate::components::WorkspaceVarsDialog::new(&self.state),
@@ -171,19 +185,13 @@ impl TortugaUi {
         self.select_and_remember(remembered, false);
     }
 
-    /// One environment for the whole workspace (R-WS-6, R-SRV-5): every project with an
-    /// environment of that name uses it.
+    /// The workspace's environment, which every project uses (R-WS-6, R-SRV-5, R-WS-9),
+    /// and ✏ to edit the environments.
     pub(super) fn environment_picker(&mut self, ui: &mut Ui) {
-        let names = self.state.environment_names();
-        // The project whose environments ✏ edits: the selected request's, else the first.
-        let root = self
-            .selection
-            .as_ref()
-            .map(|k| k.root.clone())
-            .or_else(|| self.state.collections.first().map(|c| c.root.clone()));
-        let Some(root) = root else {
+        if self.state.collections.is_empty() {
             return;
-        };
+        }
+        let names = self.state.environment_names();
         let p = theme::palette(ui);
         ui.label(RichText::new("Environment").color(p.muted));
         // The mock's environment, while a mock server runs (R-MOCK-4, D45).
@@ -192,16 +200,10 @@ impl TortugaUi {
             ui.button("Add environments…").clicked()
         } else {
             let in_mock = self.state.mocks.in_use();
-            // A name no project has any more (renamed or removed) is not shown.
-            let chosen = self.state.workspace().environment.clone();
             let shown = if in_mock {
                 mock.clone()
             } else {
-                chosen.filter(|n| names.contains(n)).or_else(|| {
-                    let c = self.state.collection(&root)?;
-                    let id = self.state.active_environment(&root)?;
-                    c.environment(&id).map(|e| e.name.clone())
-                })
+                self.state.chosen_environment_name()
             };
             let mut picked = None;
             let mut pick_mock = false;
@@ -209,7 +211,7 @@ impl TortugaUi {
             let color = shown
                 .as_deref()
                 .filter(|_| !in_mock)
-                .and_then(|name| self.state.environment_color(&root, name));
+                .and_then(|name| self.state.environment_color(name));
             ComboBox::from_id_salt("environment")
                 .selected_text((
                     theme::environment_dot(ui, color),
@@ -219,7 +221,7 @@ impl TortugaUi {
                 .show_ui(ui, |ui| {
                     for name in &names {
                         let current = !in_mock && shown.as_ref() == Some(name);
-                        let color = self.state.environment_color(&root, name);
+                        let color = self.state.environment_color(name);
                         if theme::environment_button(ui, current, color, name, 0.0).clicked() {
                             picked = Some(name.clone());
                         }
@@ -228,29 +230,32 @@ impl TortugaUi {
                         ui.separator();
                         pick_mock = ui
                             .selectable_label(in_mock, label)
-                            .on_hover_text("Sends the requests of projects with a running mock server to it")
+                            .on_hover_text(
+                                "Sends the requests of projects with a running mock server to it",
+                            )
                             .clicked();
                     }
                 })
                 .response
-                .on_hover_text("Switches every project in the workspace that has an environment with this name");
+                .on_hover_text(PICKER_HELP);
             if let Some(name) = picked {
                 self.state.set_workspace_environment(&name);
             } else if pick_mock {
                 self.state.use_mock_environment();
             }
             ui.add(theme::ghost_button("✏"))
-                .on_hover_text("Edit environments, servers and variables of this project")
+                .on_hover_text("Edit the environments and each project's values")
                 .clicked()
         };
         if edit {
-            self.modal = Some(Modal::Environments(EnvironmentsDialog::new(
+            self.modal = Some(Modal::Environments(EnvironmentsDialog::for_workspace(
                 &self.state,
-                root,
             )));
         }
     }
 }
+
+const PICKER_HELP: &str = "Switches every project in the workspace to this environment";
 
 /// "Mock (port 4010)", or "Mock (2 servers)"; `None` when no mock server runs.
 fn mock_label(ports: &[u16]) -> Option<String> {

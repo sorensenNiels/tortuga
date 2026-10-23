@@ -113,19 +113,13 @@ pub fn import_environments(
         warnings: Vec::new(),
     };
     for file in files {
-        let index = if let Some(i) = out.environments.iter().position(|e| e.name == file.name) {
+        let index = if let Some(i) = out.environments.iter().position(|e| e.is_named(&file.name)) {
             if !out.updated.contains(&file.name) && !out.added.contains(&file.name) {
                 out.updated.push(file.name.clone());
             }
             i
         } else {
-            let seq = out.environments.iter().filter_map(|e| e.seq).max();
-            out.environments.push(Environment {
-                id: Collection::new_environment_id(&file.name, &out.environments),
-                name: file.name.clone(),
-                seq: Some(seq.unwrap_or(0) + 1),
-                ..Environment::default()
-            });
+            Collection::add_environment(&mut out.environments, &file.name);
             out.added.push(file.name.clone());
             out.environments.len() - 1
         };

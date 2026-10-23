@@ -12,6 +12,7 @@
 //! ```
 
 mod components;
+mod environments;
 mod format;
 mod fuzzy;
 mod host;

@@ -29,7 +29,7 @@ pub struct LocalState {
     /// Before workspaces (M6.5): the open collections. Read once, moved into the first workspace.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub open_collections: Vec<PathBuf>,
-    /// Before workspaces (M6.5): collection root → environment id. Moved like `open_collections`.
+    /// Before workspaces (M6.5): collection root → environment id. Dropped when read (R-WS-9).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub active_environments: BTreeMap<String, String>,
     /// Where the divider between request and response was left (R-SET-12).
@@ -67,12 +67,13 @@ impl LocalState {
             .into_iter()
             .map(ProjectRef::new)
             .collect();
-        let environments = std::mem::take(&mut self.active_environments);
+        // The environment each project had chosen is not kept: every project now uses
+        // the workspace's (R-WS-9).
+        self.active_environments.clear();
         if self.workspaces.is_empty() {
             self.workspaces.push(Workspace {
                 name: Self::DEFAULT_WORKSPACE.into(),
                 projects,
-                project_environments: environments,
                 ..Workspace::default()
             });
         }
@@ -129,9 +130,9 @@ pub struct Workspace {
     /// the workspace file too, if any.
     #[serde(skip_serializing_if = "WorkspaceDefaults::is_empty")]
     pub defaults: WorkspaceDefaults,
-    /// Project root (as text) → environment id, for projects without an environment
-    /// named like the workspace's (R-WS-6).
-    pub project_environments: BTreeMap<String, String>,
+    /// Environments every project has (R-WS-9); kept in the workspace file too, if any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub environments: Vec<tortuga_core::workspace::WorkspaceEnvironment>,
     /// Project root (as text) → the port its mock server last ran on (R-MOCK-2).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub mock_ports: BTreeMap<String, u16>,

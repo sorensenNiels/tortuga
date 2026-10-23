@@ -36,7 +36,7 @@ pub use body_editor::{BodyDrafts, body_editor};
 pub use changes_dialog::ChangesDialog;
 pub use defaults_dialog::{DefaultsDialog, DefaultsTarget, EditedDefaults};
 pub use description::description_editor;
-pub use environments::{EnvironmentsDialog, SavedConfig};
+pub use environments::{EnvironmentsDialog, SavedConfig, SavedEnvironments};
 pub use fanout_dialog::{FanoutResult, FanoutRow, fanout_dialog};
 pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, history_list};
 pub use import_dialog::{

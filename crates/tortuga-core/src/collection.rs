@@ -666,6 +666,40 @@ impl Collection {
         slug::unique(&slug::slugify(name), |c| existing.iter().any(|e| e.id == c))
     }
 
+    /// Adds an environment called `name` after `environments` (R-WS-9, R-COL-20), numbering
+    /// them first if some have no position, since those sort last.
+    pub fn add_environment<'a>(
+        environments: &'a mut Vec<Environment>,
+        name: &str,
+    ) -> &'a mut Environment {
+        if environments.iter().any(|e| e.seq.is_none()) {
+            for (seq, env) in (1..).zip(environments.iter_mut()) {
+                env.seq = Some(seq);
+            }
+        }
+        let seq = environments.iter().filter_map(|e| e.seq).max();
+        let env = Environment {
+            id: Self::new_environment_id(name, environments),
+            name: name.to_owned(),
+            seq: Some(seq.unwrap_or(0) + 1),
+            ..Environment::default()
+        };
+        environments.push(env);
+        let last = environments.len() - 1;
+        &mut environments[last]
+    }
+
+    /// This project with `env` in place of its environment of the same id, or added: a
+    /// workspace's environment (R-WS-9) or the mock's (R-MOCK-4), for a run.
+    #[must_use]
+    pub fn with_environment(mut self, env: Environment) -> Self {
+        match self.environments.iter_mut().find(|e| e.id == env.id) {
+            Some(slot) => *slot = env,
+            None => self.environments.push(env),
+        }
+        self
+    }
+
     /// A stable id for a new server called `name`, unique among `existing`.
     pub fn new_server_id(name: &str, existing: &[format::Server]) -> String {
         slug::unique(&slug::slugify(name), |c| existing.iter().any(|s| s.id == c))

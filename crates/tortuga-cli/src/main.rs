@@ -15,7 +15,8 @@ mod mock;
 
 use tortuga_core::storage::FsStorage;
 use tortuga_core::workflow::{self, Progress, RunOptions, RunResult, Workflow};
-use tortuga_core::{Client, ClientSettings, Collection, data, report};
+use tortuga_core::workspace::WorkspaceFile;
+use tortuga_core::{Client, ClientSettings, Collection, Environment, data, report};
 
 const USAGE: &str = "\
 Usage: tortuga-cli run <project> [<workflow, folder or request>] [options]
@@ -27,11 +28,12 @@ mock: Serves the example responses saved with the project's requests on
       http://127.0.0.1:<port> (default 4010) until stopped with Ctrl+C.
 
 Options:
-  --env NAME            Use this environment (by name or id)
+  --env NAME            Use this environment (by name or id): the project's, or with
+                        --workspace the workspace's, the project's values winning
   --data FILE           Run once per row of a CSV or JSON data file
   --var NAME=VALUE      Set a variable (repeatable); wins over the project's values
-  --workspace FILE      Use the variables, settings, headers and auth of this
-                        .tortuga-workspace.toml; the project's own win over them
+  --workspace FILE      Use the variables, environments, settings, headers and auth
+                        of this .tortuga-workspace.toml; the project's own win
   --mock                Run against the project's mock: start it on a free port and
                         send every request that has a server there
   --port N              The mock's port
@@ -228,7 +230,7 @@ fn env_vars(env: impl Iterator<Item = (String, String)>) -> BTreeMap<String, Str
 /// A workspace file: its shared variables (R-WS-8), settings, headers and auth
 /// (R-SET-1, R-SET-2). Secret variables have no value in the file; pass them with
 /// `--var` or `TORTUGA_VAR_<name>`.
-fn read_workspace(path: &Path) -> Result<tortuga_core::workspace::WorkspaceFile, String> {
+fn read_workspace(path: &Path) -> Result<WorkspaceFile, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     tortuga_core::workspace::read(&text, path).map_err(|e| e.to_string())
 }
@@ -265,32 +267,64 @@ fn check_protected(
     ))
 }
 
-/// The id of the environment called `name` (by name or id), if one is asked for.
-fn environment_id(collection: &Collection, name: Option<&str>) -> Result<Option<String>, String> {
+/// The environment called `name` (by name or id), if one is asked for: the project's, or
+/// the workspace's with the project's of that name over it (R-WS-9).
+fn environment(
+    collection: &Collection,
+    workspace: &WorkspaceFile,
+    name: Option<&str>,
+) -> Result<Option<Environment>, String> {
     let Some(name) = name else { return Ok(None) };
-    collection
+    let own = collection
         .environments
         .iter()
-        .find(|e| e.id.eq_ignore_ascii_case(name) || e.name.eq_ignore_ascii_case(name))
-        .map(|e| Some(e.id.clone()))
-        .ok_or_else(|| {
-            let names: Vec<&str> = collection
-                .environments
-                .iter()
-                .map(|e| e.name.as_str())
-                .collect();
-            format!(
-                "no environment '{name}' in the project (it has: {})",
-                names.join(", ")
-            )
-        })
+        .find(|e| e.id.eq_ignore_ascii_case(name) || e.is_named(name));
+    let shared = workspace.environments.iter().find(|e| e.is_named(name));
+    // Secret values come from `--var` and `TORTUGA_VAR_<name>`, which win anyway.
+    tortuga_core::workspace::effective_environment(
+        shared,
+        &BTreeMap::new(),
+        own,
+        &collection.manifest,
+    )
+    .map(Some)
+    .ok_or_else(|| {
+        let names: Vec<&str> = workspace
+            .environments
+            .iter()
+            .map(|e| e.name.as_str())
+            .chain(collection.environments.iter().map(|e| e.name.as_str()))
+            .collect();
+        format!(
+            "no environment '{name}' in the project or workspace (there are: {})",
+            names.join(", ")
+        )
+    })
+}
+
+/// The project, with the environment `--env` asks for in it, and its id; and the
+/// workspace file `--workspace` names (R-WS-9).
+fn open_project(args: &Args) -> Result<(Collection, Option<String>, WorkspaceFile), String> {
+    let collection = Collection::open(&FsStorage, &args.project).map_err(|e| e.to_string())?;
+    let workspace = match &args.workspace {
+        None => WorkspaceFile::default(),
+        Some(path) => read_workspace(path)?,
+    };
+    Ok(
+        match environment(&collection, &workspace, args.env.as_deref())? {
+            Some(env) => {
+                let id = env.id.clone();
+                (collection.with_environment(env), Some(id), workspace)
+            }
+            None => (collection, None, workspace),
+        },
+    )
 }
 
 /// Runs what `args` asks for. `Ok(passed)`, or an error in the command or the project.
 fn run(args: &Args) -> Result<bool, String> {
-    let collection = Collection::open(&FsStorage, &args.project).map_err(|e| e.to_string())?;
+    let (collection, environment, workspace) = open_project(args)?;
     let workflow = find_target(&collection, args.target.as_deref())?;
-    let environment = environment_id(&collection, args.env.as_deref())?;
     if !args.mock {
         check_protected(
             &collection,
@@ -311,10 +345,6 @@ fn run(args: &Args) -> Result<bool, String> {
             data::parse(&path.to_string_lossy(), &text)
                 .map_err(|e| format!("{}: {e}", path.display()))?
         }
-    };
-    let workspace = match &args.workspace {
-        None => tortuga_core::workspace::WorkspaceFile::default(),
-        Some(path) => read_workspace(path)?,
     };
     let client = client(args)?;
     let mut options = RunOptions {

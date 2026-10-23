@@ -1,15 +1,15 @@
-//! Environments, runtime values and the variables a request is sent with: which
-//! environment each project uses (R-SRV-4, R-WS-6), values captured or set by scripts
-//! (R-TEST-5, R-WS-8), and the context a request resolves its variables in (R-VAR-1).
+//! Runtime values and the variables a request is sent with: values captured or set by
+//! scripts (R-TEST-5, R-WS-8), and the context a request resolves its variables in
+//! (R-VAR-1). Which environment each project uses is in `environments`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use tortuga_core::vars::{Source, dynamic};
-use tortuga_core::{Environment, Request, vars};
+use tortuga_core::{Environment, Request, vars, workspace};
 
 use crate::components::{VarHelp, VarInfo};
-use crate::state::{AppState, ItemKey, root_key};
+use crate::state::{AppState, ItemKey};
 
 /// Longest value shown next to a suggested name.
 const NOTE_BYTES: usize = 40;
@@ -97,9 +97,25 @@ impl AppState {
                 return Some(Source::Secret);
             }
             let mock = self.mock_environment(&key.root);
-            let env = mock
-                .as_ref()
-                .or_else(|| env_id.as_deref().and_then(|id| c.environment(id)));
+            let own = env_id.as_deref().and_then(|id| c.environment(id));
+            let set =
+                |vars: &BTreeMap<String, String>| vars.get(name).is_some_and(|v| !v.is_empty());
+            if mock.is_none()
+                && own.is_none_or(|e| !set(&e.variables))
+                && let Some(shared) = self.chosen_environment()
+            {
+                let secret = self
+                    .workspace_env_secrets
+                    .get(&shared.id)
+                    .filter(|_| shared.secrets.contains(name));
+                if has(secret) {
+                    return Some(Source::Secret);
+                }
+                if set(&shared.variables) {
+                    return Some(Source::WorkspaceEnvironment(shared.name.clone()));
+                }
+            }
+            let env = mock.as_ref().or(own);
             if let Some(source) = vars::project_source(c, env, Some(&key.path), name) {
                 return Some(source);
             }
@@ -108,115 +124,6 @@ impl AppState {
             return Some(Source::Workspace);
         }
         dynamic::is_dynamic(name).then_some(Source::Dynamic)
-    }
-
-    /// The active environment of a project: the workspace's environment if the project
-    /// has one with that name (R-WS-6), else the project's own choice, else its first.
-    pub fn active_environment(&self, root: &Path) -> Option<String> {
-        let c = self.collection(root)?;
-        let ws = self.workspace();
-        if let Some(name) = &ws.environment
-            && let Some(env) = c.environments.iter().find(|e| e.name == *name)
-        {
-            return Some(env.id.clone());
-        }
-        match ws.project_environments.get(&root_key(root)) {
-            Some(id) if c.environment(id).is_some() => Some(id.clone()),
-            _ => c.environments.first().map(|e| e.id.clone()),
-        }
-    }
-
-    /// The name of the protected environment requests of the project at `root` go to
-    /// now, if they go to one (R-SRV-9). The mock's never is.
-    pub fn protected_environment(&self, root: &Path) -> Option<String> {
-        if self.mock_environment(root).is_some() {
-            return None;
-        }
-        let id = self.active_environment(root)?;
-        let env = self.collection(root)?.environment(&id)?;
-        env.protected.then(|| env.name.clone())
-    }
-
-    /// False when the workspace's environment is one this project doesn't have (R-WS-6).
-    pub fn follows_workspace_environment(&self, root: &Path) -> bool {
-        let Some(name) = &self.workspace().environment else {
-            return true;
-        };
-        self.collection(root).is_none_or(|c| {
-            c.environments.is_empty() || c.environments.iter().any(|e| e.name == *name)
-        })
-    }
-
-    /// Environment names of all open projects, each once, in order of appearance.
-    pub fn environment_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = Vec::new();
-        for env in self.collections.iter().flat_map(|c| &c.environments) {
-            if !names.contains(&env.name) {
-                names.push(env.name.clone());
-            }
-        }
-        names
-    }
-
-    /// The colour of the environment called `name` (R-SRV-8): the one `root` gives it,
-    /// else the first project's that gives it one, since the picker switches them all.
-    pub fn environment_color(
-        &self,
-        root: &Path,
-        name: &str,
-    ) -> Option<tortuga_core::EnvironmentColor> {
-        let own = self
-            .collection(root)
-            .and_then(|c| c.environments.iter().find(|e| e.name == name))
-            .and_then(|e| e.color);
-        own.or_else(|| {
-            self.collections
-                .iter()
-                .flat_map(|c| &c.environments)
-                .filter(|e| e.name == name)
-                .find_map(|e| e.color)
-        })
-    }
-
-    /// Switches every project that has an environment called `name` (R-WS-6).
-    pub fn set_workspace_environment(&mut self, name: &str) {
-        self.mocks.selected = false;
-        self.refresh_mocks();
-        self.workspace_mut().environment = Some(name.to_owned());
-        self.save_local();
-    }
-
-    /// Keeps the project at `root` on its environment when a save renamed it (R-SRV-7): the
-    /// workspace picks environments by name (R-WS-6). `old` are its environments before.
-    pub fn follow_environment_renames(&mut self, root: &Path, old: &[Environment]) {
-        let (Some(chosen), Some(c)) = (self.workspace().environment.clone(), self.collection(root))
-        else {
-            return;
-        };
-        let Some(renamed) = old
-            .iter()
-            .filter(|e| e.name == chosen)
-            .find_map(|e| c.environment(&e.id))
-            .filter(|e| e.name != chosen)
-        else {
-            return;
-        };
-        let (id, name) = (renamed.id.clone(), renamed.name.clone());
-        if self.environment_names().contains(&chosen) {
-            // Other projects still have the old name and stay on it; only this one moves.
-            self.set_project_environment(root, &id);
-        } else {
-            self.set_workspace_environment(&name);
-        }
-    }
-
-    /// The environment a project uses when it has none named like the workspace's.
-    pub fn set_project_environment(&mut self, root: &Path, id: &str) {
-        self.workspace_mut()
-            .project_environments
-            .insert(root_key(root), id.to_owned());
-        self.refresh_mock(root);
-        self.save_local();
     }
 
     /// Servers and variables for requests of the collection at `root`; empty for scratch requests.
@@ -282,24 +189,29 @@ impl AppState {
     }
 
     fn context_at(&self, root: &Path, path: Option<&Path>) -> vars::Context {
-        let env = self.active_environment(root);
-        self.context_in(root, path, env.as_deref(), true)
+        let env = self.effective_environment(root);
+        self.context_in(root, path, env.as_ref(), true)
     }
 
-    /// The context of the request at `path` with environment `env` (by id): its values,
+    /// The context of the request at `path` with environment `env` as its requests use it: its values,
     /// this machine's secret values for it, and the runtime values (R-SRV-10). `mock`:
     /// the mock's environment wins while it is chosen (R-MOCK-4).
     pub fn context_in(
         &self,
         root: &Path,
         path: Option<&Path>,
-        env: Option<&str>,
+        env: Option<&Environment>,
         mock: bool,
     ) -> vars::Context {
+        // Secret values are kept by the project's own environment (R-VAR-3); one only the
+        // workspace has gets the project's secret defaults (R-WS-9).
+        let own = env
+            .map(|e| e.id.as_str())
+            .filter(|id| *id != workspace::WORKSPACE_ENVIRONMENT_ID);
         let secrets = self
             .secrets
             .get(root)
-            .map(|s| s.for_environment(env))
+            .map(|s| s.for_environment(own))
             .unwrap_or_default();
         let defaults = &self.workspace().defaults;
         // While the mock is chosen, its environment sends this project's requests there
@@ -312,9 +224,7 @@ impl AppState {
         let ctx = self
             .collection(root)
             .map(|c| {
-                let env = mock
-                    .as_ref()
-                    .or_else(|| env.and_then(|id| c.environment(id)));
+                let env = mock.as_ref().or(env);
                 vars::Context::for_request_in(c, env, path)
                     .with_workspace_defaults(defaults)
                     .with_secrets(secrets)

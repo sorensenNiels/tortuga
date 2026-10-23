@@ -175,11 +175,8 @@ impl AppState {
         let mut env = mock::environment(c, &format!("http://127.0.0.1:{port}"));
         // Variables keep the values of the environment chosen before, as with
         // `tortuga-cli run --mock --env` (R-MOCK-5).
-        if let Some(chosen) = self
-            .active_environment(root)
-            .and_then(|id| c.environment(&id))
-        {
-            env.variables.clone_from(&chosen.variables);
+        if let Some(chosen) = self.effective_environment(root) {
+            env.variables = chosen.variables;
         }
         Some(env)
     }
@@ -195,7 +192,14 @@ impl AppState {
                 collection.environments.push(mock);
                 Some((collection, Some(id)))
             }
-            None => Some((collection, self.active_environment(root))),
+            None => match self.effective_environment(root) {
+                // The workspace's environment, with the project's own over it (R-WS-9).
+                Some(env) => {
+                    let id = env.id.clone();
+                    Some((collection.with_environment(env), Some(id)))
+                }
+                None => Some((collection, None)),
+            },
         }
     }
 
@@ -221,7 +225,13 @@ impl AppState {
         let c = self
             .collection(root)
             .ok_or_else(|| "The project is not open.".to_owned())?;
-        Ok(MockApi::new(c, self.active_environment(root).as_deref()))
+        match self.effective_environment(root) {
+            Some(env) => {
+                let id = env.id.clone();
+                Ok(MockApi::new(&c.clone().with_environment(env), Some(&id)))
+            }
+            None => Ok(MockApi::new(c, None)),
+        }
     }
 }
 

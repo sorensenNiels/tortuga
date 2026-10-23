@@ -115,6 +115,8 @@ enum WorkspaceAction {
     Switch(usize),
     New,
     Rename,
+    /// The environments every project has (R-WS-9).
+    Environments,
     Variables,
     Defaults,
     SaveAsFile,

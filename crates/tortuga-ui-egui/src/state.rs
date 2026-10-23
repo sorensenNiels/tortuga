@@ -96,6 +96,9 @@ pub struct AppState {
     pub workspace_runtime: BTreeMap<String, BTreeMap<String, String>>,
     /// This machine's values of the active workspace's secret variables (R-WS-8).
     pub workspace_secrets: BTreeMap<String, String>,
+    /// This machine's values of the secret variables of the active workspace's
+    /// environments, by environment id, then name (R-WS-9).
+    pub workspace_env_secrets: BTreeMap<String, BTreeMap<String, String>>,
     /// The projects' running mock servers (R-MOCK-2).
     pub mocks: crate::mocks::Mocks,
 }
@@ -184,6 +187,7 @@ impl AppState {
             runtime: BTreeMap::new(),
             workspace_runtime: BTreeMap::new(),
             workspace_secrets: BTreeMap::new(),
+            workspace_env_secrets: BTreeMap::new(),
             mocks: crate::mocks::Mocks::default(),
         };
         state.open_workspace();
@@ -279,6 +283,8 @@ impl AppState {
                 if let Some(slot) = self.collections.iter_mut().find(|c| c.root == root) {
                     *slot = fresh;
                 }
+                // A `git pull` may bring an environment the workspace doesn't list yet.
+                self.adopt_environments();
                 // A saved edit or a `git pull` changes the mock's next answer (R-MOCK-2).
                 self.refresh_mock(root);
             }
@@ -311,7 +317,6 @@ impl AppState {
         self.unload_project(root);
         let ws = self.workspace_mut();
         ws.projects.retain(|p| p.path != root);
-        ws.project_environments.remove(&root_key(root));
         ws.mock_ports.remove(&root_key(root));
         self.workspace_changed();
     }
@@ -330,6 +335,7 @@ impl AppState {
         self.cookies.insert(root.to_owned(), jar);
         self.collections.push(collection);
         self.start_watching(root);
+        self.adopt_environments();
         Ok(())
     }
 
@@ -364,6 +370,7 @@ impl AppState {
                     let ws = self.workspace_mut();
                     ws.variables = read.variables;
                     ws.defaults = read.defaults;
+                    ws.environments = read.environments;
                     let projects = read
                         .projects
                         .into_iter()
@@ -467,6 +474,7 @@ impl AppState {
             projects: read.projects,
             variables: read.variables,
             defaults: read.defaults,
+            environments: read.environments,
             ..Workspace::default()
         });
         self.local.give_ids();
@@ -488,7 +496,14 @@ impl AppState {
         let Some(file) = &ws.file else {
             return Ok(());
         };
-        let text = workspace::write(&ws.name, &ws.projects, &ws.variables, &ws.defaults, file);
+        let shared = workspace::WorkspaceFile {
+            name: ws.name.clone(),
+            projects: ws.projects.clone(),
+            variables: ws.variables.clone(),
+            defaults: ws.defaults.clone(),
+            environments: ws.environments.clone(),
+        };
+        let text = workspace::write(&shared, file);
         if self.storage().read_to_string(file).ok().as_deref() == Some(text.as_str()) {
             return Ok(()); // unchanged: leave the file (and git) alone
         }
@@ -498,7 +513,7 @@ impl AppState {
     }
 
     /// Saves local state and the workspace file after the workspace changed.
-    fn workspace_changed(&mut self) {
+    pub(crate) fn workspace_changed(&mut self) {
         self.save_local();
         if let Err(e) = self.write_workspace_file() {
             self.notify(e);
@@ -508,23 +523,37 @@ impl AppState {
     // ------------------------------------------------------------ workspace variables (R-WS-8)
 
     /// Reads this machine's values of the workspace's secret variables.
-    fn load_workspace_secrets(&mut self) {
+    pub(crate) fn load_workspace_secrets(&mut self) {
         self.workspace_secrets.clear();
         let ws = self.workspace();
         let mut problem = None;
+        let mut read = |key: &tortuga_core::secrets::SecretKey| match self.host.secrets().get(key) {
+            Ok(value) => value,
+            Err(e) => {
+                problem = Some(e);
+                None
+            }
+        };
         let mut values = BTreeMap::new();
         for name in &ws.variables.secrets {
-            match self
-                .host
-                .secrets()
-                .get(&workspace::secret_key(&ws.id, name))
-            {
-                Ok(Some(value)) => drop(values.insert(name.clone(), value)),
-                Ok(None) => {}
-                Err(e) => problem = Some(e),
+            if let Some(value) = read(&workspace::secret_key(&ws.id, name)) {
+                values.insert(name.clone(), value);
+            }
+        }
+        let mut env_values: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for env in &ws.environments {
+            for name in &env.secrets {
+                if let Some(value) = read(&workspace::environment_secret_key(&ws.id, &env.id, name))
+                {
+                    env_values
+                        .entry(env.id.clone())
+                        .or_default()
+                        .insert(name.clone(), value);
+                }
             }
         }
         self.workspace_secrets = values;
+        self.workspace_env_secrets = env_values;
         if let Some(e) = problem {
             self.notify(format!("Could not read secret values: {e}"));
         }
@@ -610,10 +639,6 @@ impl AppState {
         }
         self.missing.retain(|(p, _)| p.path != old);
         let ws = self.workspace_mut();
-        // The project's own environment choice moves with it.
-        if let Some(id) = ws.project_environments.remove(&root_key(old)) {
-            ws.project_environments.entry(root_key(new)).or_insert(id);
-        }
         if let Some(port) = ws.mock_ports.remove(&root_key(old)) {
             ws.mock_ports.entry(root_key(new)).or_insert(port);
         }
@@ -907,7 +932,7 @@ pub(crate) fn root_key(root: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// R-CK-3: jars are saved as local data and come back when the collection opens again.
@@ -957,7 +982,7 @@ mod tests {
     }
 
     /// A fresh temp folder for a test.
-    fn temp(name: &str) -> PathBuf {
+    pub(crate) fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tortuga-ws-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
@@ -965,7 +990,7 @@ mod tests {
     }
 
     /// A project on disk with one request and the given environment names.
-    fn project(root: &Path, name: &str, environments: &[&str]) -> PathBuf {
+    pub(crate) fn project(root: &Path, name: &str, environments: &[&str]) -> PathBuf {
         use tortuga_core::storage::FsStorage;
 
         let c = Collection::create(&FsStorage, root, name).expect("create");
@@ -1063,17 +1088,8 @@ mod tests {
         assert_eq!(teammate.missing.len(), 1);
         assert_eq!(teammate.missing[0].0.path, users);
 
-        teammate.set_project_environment(&users, "chosen-before-it-moved");
         teammate.locate_missing(&users, &moved).expect("locate");
-        assert_eq!(
-            teammate
-                .workspace()
-                .project_environments
-                .get(&root_key(&moved))
-                .map(String::as_str),
-            Some("chosen-before-it-moved"),
-            "the project's environment choice follows it"
-        );
+
         assert_eq!(teammate.missing.len(), 0);
         assert_eq!(roots(&teammate), [orders, moved]);
         let text = std::fs::read_to_string(&file).expect("file");
@@ -1085,106 +1101,6 @@ mod tests {
         // Opening the same file again switches to that workspace instead of adding one.
         teammate.open_workspace_file(&file).expect("again");
         assert_eq!(teammate.local.workspaces.len(), 2);
-        std::fs::remove_dir_all(dir).expect("clean up");
-    }
-
-    /// R-WS-6: one environment choice switches every project that has it.
-    #[test]
-    fn environments_switch_by_name_across_the_workspace() {
-        let dir = temp("env");
-        let (a, b) = (dir.join("a"), dir.join("b"));
-        project(&a, "A", &["Dev", "Staging"]);
-        project(&b, "B", &["Local", "Dev"]);
-        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
-            open: vec![a.clone(), b.clone()],
-            ..Default::default()
-        }));
-        assert_eq!(state.environment_names(), ["Dev", "Staging", "Local"]);
-
-        state.set_workspace_environment("Dev");
-        assert_eq!(state.active_environment(&a).as_deref(), Some("dev"));
-        assert_eq!(state.active_environment(&b).as_deref(), Some("dev"));
-
-        state.set_workspace_environment("Staging");
-        assert_eq!(state.active_environment(&a).as_deref(), Some("staging"));
-        assert!(!state.follows_workspace_environment(&b));
-        let first = state.collection(&b).expect("b").environments[0].id.clone();
-        assert_eq!(state.active_environment(&b), Some(first), "keeps its first");
-        state.set_project_environment(&b, "local");
-        assert_eq!(state.active_environment(&b).as_deref(), Some("local"));
-        assert!(state.follows_workspace_environment(&a));
-        std::fs::remove_dir_all(dir).expect("clean up");
-    }
-
-    /// R-SRV-8: the picker's dot takes the colour the project gives the environment,
-    /// else the one another project gives an environment of that name.
-    #[test]
-    fn environment_colours_come_from_the_project_then_the_workspace() {
-        use tortuga_core::EnvironmentColor::{Blue, Red};
-        let dir = temp("env-colour");
-        let (a, b) = (dir.join("a"), dir.join("b"));
-        project(&a, "A", &["Prod", "Dev"]);
-        project(&b, "B", &["Prod", "Dev ü😀"]);
-        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
-            open: vec![a.clone(), b.clone()],
-            ..Default::default()
-        }));
-        let paint = |state: &mut AppState, root: &Path, name: &str, color| {
-            let mut envs = state.collection(root).expect("open").environments.clone();
-            envs.iter_mut().find(|e| e.name == name).expect("env").color = Some(color);
-            state
-                .run(root, |c, s| c.save_config(s, &c.manifest, &envs))
-                .expect("saved");
-        };
-        assert_eq!(state.environment_color(&a, "Prod"), None, "the default");
-        paint(&mut state, &b, "Prod", Red);
-        assert_eq!(state.environment_color(&a, "Prod"), Some(Red), "from B");
-        paint(&mut state, &a, "Prod", Blue);
-        assert_eq!(state.environment_color(&a, "Prod"), Some(Blue), "A's own");
-        assert_eq!(state.environment_color(&b, "Prod"), Some(Red), "B's own");
-        assert_eq!(state.environment_color(&a, "Dev ü😀"), None);
-        assert_eq!(state.environment_color(&a, "Gone"), None);
-        std::fs::remove_dir_all(&dir).expect("clean up");
-    }
-
-    /// R-SRV-7: renaming the workspace's environment keeps every project on it.
-    #[test]
-    fn renaming_the_chosen_environment_keeps_it_chosen() {
-        use tortuga_core::storage::FsStorage;
-        let dir = temp("env-rename");
-        let (a, b) = (dir.join("a"), dir.join("b"));
-        project(&a, "A", &["Alpha", "Dev"]);
-        project(&b, "B", &["Local", "Dev"]);
-        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
-            open: vec![a.clone(), b.clone()],
-            ..Default::default()
-        }));
-        state.set_workspace_environment("Dev");
-        let rename = |state: &mut AppState, root: &Path, to: &str| {
-            let old = state.collection(root).expect("open").environments.clone();
-            let mut envs = old.clone();
-            let dev = envs.iter_mut().find(|e| e.id == "dev").expect("dev");
-            dev.name = to.to_owned();
-            state
-                .run(root, |c, s| c.save_config(s, &c.manifest, &envs))
-                .expect("saved");
-            state.follow_environment_renames(root, &old);
-        };
-
-        // B still has "Dev": the workspace stays on it, A stays on its renamed one.
-        rename(&mut state, &a, "Development ü😀");
-        assert_eq!(state.workspace().environment.as_deref(), Some("Dev"));
-        assert_eq!(state.active_environment(&a).as_deref(), Some("dev"));
-        assert_eq!(state.active_environment(&b).as_deref(), Some("dev"));
-
-        // Now no project has "Dev": the workspace follows the new name.
-        rename(&mut state, &b, "Development ü😀");
-        assert_eq!(
-            state.workspace().environment.as_deref(),
-            Some("Development ü😀")
-        );
-        assert_eq!(state.active_environment(&b).as_deref(), Some("dev"));
-        assert!(Collection::open(&FsStorage, &b).is_ok());
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 
