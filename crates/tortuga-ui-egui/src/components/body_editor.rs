@@ -1,4 +1,5 @@
 use egui::{ComboBox, Grid, Ui};
+use tortuga_core::highlight::Language;
 use tortuga_core::{FormPart, KeyValue, Request, RequestBody, json, xml};
 
 use super::key_value_table::cell;
@@ -51,6 +52,15 @@ impl Kind {
             Self::Json => json::pretty(text),
             Self::Xml => xml::pretty(text),
             Self::None | Self::Text | Self::Form | Self::Multipart => None,
+        }
+    }
+
+    /// The text field: JSON and XML in colour (R-HTTP-24).
+    fn lines(self) -> Lines {
+        match self {
+            Self::Json => Lines::Code(Language::Json),
+            Self::Xml => Lines::Code(Language::Xml),
+            Self::None | Self::Text | Self::Form | Self::Multipart => Lines::Many,
         }
     }
 
@@ -158,7 +168,7 @@ pub fn body_editor(
                 id,
                 &mut drafts.text,
                 help,
-                Lines::Many,
+                kind.lines(),
                 FieldWidth::AsBuilt,
                 |e| {
                     e.code_editor()

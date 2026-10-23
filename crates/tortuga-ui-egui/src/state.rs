@@ -710,6 +710,19 @@ impl AppState {
         }
     }
 
+    /// Keeps the workspace's folded sidebar rows (R-COL-36).
+    pub fn remember_folded(&mut self, folded: Vec<(PathBuf, PathBuf)>) {
+        if self.workspace().folded != folded {
+            self.workspace_mut().folded = folded;
+            self.save_local();
+        }
+    }
+
+    /// The folded sidebar rows of the workspace as last remembered (R-COL-36).
+    pub fn remembered_folded(&self) -> &[(PathBuf, PathBuf)] {
+        &self.workspace().folded
+    }
+
     /// The open tabs of the workspace as last remembered.
     pub fn remembered_tabs(&self) -> &crate::host::SavedTabs {
         &self.workspace().tabs

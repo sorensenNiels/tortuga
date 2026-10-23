@@ -1,7 +1,8 @@
 //! Editing scripts (R-TEST-1, R-TEST-2): a code field with line numbers, where clicking a
 //! number sets or clears a breakpoint (R-TEST-10) and the last run's results show at the
 //! end of their lines (R-TEST-11), with "Beautify" (R-TEST-7), "Re-run tests" (R-TEST-12),
-//! editing keys and colours (R-TEST-14) and snippets (R-TEST-15).
+//! editing keys and colours (R-TEST-14), snippets (R-TEST-15), and line commands, pairs and
+//! a menu on the field (R-TEST-17).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,15 +13,16 @@ use egui::{
 };
 use tortuga_core::js_format::{Token, scan};
 use tortuga_core::script::{ConsoleEntry, ScriptKind};
+use tortuga_core::settings::ScriptCommand;
 
-use super::script_editing::{self, Edited};
+use super::script_editing::{self, Direction, Edited};
+use super::script_keys::{self, ScriptKeys};
+use crate::{format, theme};
 
-/// Keys of a script field (R-TEST-14), also listed on the shortcut sheet (R-COL-27).
+/// Keys of a script field that can't be changed (R-TEST-14), also listed on the shortcut
+/// sheet (R-COL-27). The others come from the settings (R-SET-16).
 pub(crate) const INDENT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Tab);
 pub(crate) const OUTDENT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::Tab);
-pub(crate) const TOGGLE_COMMENT: KeyboardShortcut =
-    KeyboardShortcut::new(Modifiers::COMMAND, Key::Slash);
-use crate::{format, theme};
 
 /// Longest script that is coloured; longer ones are shown plain, so typing stays quick.
 const MAX_COLOURED: usize = 100_000;
@@ -103,37 +105,186 @@ fn apply(state: &mut egui::text_edit::TextEditState, script: &mut String, edited
     )));
 }
 
-/// Tab, Shift+Tab, Enter and Ctrl+/ in the focused field `field` (R-TEST-14). Runs before
-/// the field, which then does not see these keys.
+/// The selection of a field state as (cursor, anchor).
+fn selection_of(state: &egui::text_edit::TextEditState) -> (usize, usize) {
+    let range = state.cursor.char_range().unwrap_or_default();
+    (range.primary.index.0, range.secondary.index.0)
+}
+
+/// What `command` makes of `text` (R-TEST-17).
+fn command_edit(command: ScriptCommand, text: &str, selection: (usize, usize)) -> Edited {
+    match command {
+        ScriptCommand::ToggleComment => script_editing::toggle_comment(text, selection),
+        ScriptCommand::BlockComment => script_editing::block_comment(text, selection),
+        ScriptCommand::MoveLinesUp => script_editing::move_lines(text, selection, Direction::Up),
+        ScriptCommand::MoveLinesDown => {
+            script_editing::move_lines(text, selection, Direction::Down)
+        }
+        ScriptCommand::CopyLinesUp => script_editing::copy_lines(text, selection, Direction::Up),
+        ScriptCommand::CopyLinesDown => {
+            script_editing::copy_lines(text, selection, Direction::Down)
+        }
+        ScriptCommand::DeleteLines => script_editing::delete_lines(text, selection),
+        ScriptCommand::IndentLines => script_editing::indent_lines(text, selection),
+        ScriptCommand::OutdentLines => script_editing::outdent(text, selection),
+        ScriptCommand::Beautify => script_editing::beautify(text, selection),
+    }
+}
+
+/// The keys of the focused field `field`: the commands' keys from the settings, Tab,
+/// Shift+Tab and Enter (R-TEST-14), Home, Backspace and paired brackets (R-TEST-17).
+/// Runs before the field, which then does not see these keys.
 fn editing_keys(ui: &Ui, field: Id, script: &mut String) {
-    type Edit = fn(&str, (usize, usize)) -> Edited;
     if !ui.memory(|m| m.has_focus(field)) {
         return;
     }
-    // Shift is ignored by `consume_key` unless asked for, so Shift+Tab goes first.
-    let pressed =
-        |i: &mut egui::InputState, k: KeyboardShortcut| i.consume_key(k.modifiers, k.logical_key);
-    let edit: Option<Edit> = ui.input_mut(|i| {
-        if pressed(i, OUTDENT) {
-            Some(script_editing::outdent as Edit)
-        } else if pressed(i, INDENT) {
-            Some(script_editing::indent as Edit)
-        } else if i.consume_key(Modifiers::NONE, Key::Enter) {
-            Some(script_editing::newline as Edit)
-        } else if pressed(i, TOGGLE_COMMENT) {
-            Some(script_editing::toggle_comment as Edit)
+    script_keys::note_focus(ui.ctx(), field);
+    let keys = script_keys::current(ui.ctx());
+    let mut state = TextEdit::load_state(ui.ctx(), field).unwrap_or_default();
+    let selection = selection_of(&state);
+    let edited = ui.input_mut(|i| typed_edit(i, &keys, script, selection));
+    if let Some(edited) = edited {
+        apply(&mut state, script, edited);
+        TextEdit::store_state(ui.ctx(), field, state);
+        return;
+    }
+    // Home moves the cursor only; with Shift the other end of the selection stays.
+    let home = ui.input_mut(|i| {
+        if i.consume_key(Modifiers::SHIFT, Key::Home) {
+            Some(true)
         } else {
-            None
+            i.consume_key(Modifiers::NONE, Key::Home).then_some(false)
         }
     });
-    let Some(edit) = edit else {
+    if let Some(extend) = home {
+        let (cursor, anchor) = selection;
+        let to = script_editing::smart_home(script, cursor);
+        let anchor = if extend { anchor } else { to };
+        state.cursor.set_char_range(Some(CCursorRange::two(
+            CCursor::new(anchor),
+            CCursor::new(to),
+        )));
+        TextEdit::store_state(ui.ctx(), field, state);
+    }
+}
+
+/// The edit a key or typed character this frame asks for, taking it from `i`.
+fn typed_edit(
+    i: &mut egui::InputState,
+    keys: &ScriptKeys,
+    script: &str,
+    selection: (usize, usize),
+) -> Option<Edited> {
+    // The commands first: Tab and Enter below would also match them with Shift or Alt.
+    if let Some(command) = keys.take_pressed(i) {
+        return Some(command_edit(command, script, selection));
+    }
+    // Shift is ignored by `consume_key` unless asked for, so Shift+Tab goes first.
+    if i.consume_shortcut(&OUTDENT) {
+        return Some(script_editing::outdent(script, selection));
+    }
+    if i.consume_shortcut(&INDENT) {
+        return Some(script_editing::indent(script, selection));
+    }
+    if i.consume_key(Modifiers::NONE, Key::Enter) {
+        return Some(script_editing::newline(script, selection));
+    }
+    if !keys.close_pairs() {
+        return None;
+    }
+    if i.key_pressed(Key::Backspace) && i.modifiers.is_none() {
+        let edited = script_editing::backspace_pair(script, selection)?;
+        i.consume_key(Modifiers::NONE, Key::Backspace);
+        return Some(edited);
+    }
+    // One character typed this frame: with more, pairing it could put things out of order.
+    let mut texts = i.events.iter().enumerate().filter_map(|(n, e)| match e {
+        egui::Event::Text(t) => Some((n, t)),
+        _ => None,
+    });
+    let (n, typed) = texts.next()?;
+    if texts.next().is_some() {
+        return None;
+    }
+    let mut chars = typed.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    let edited = script_editing::type_paired(script, selection, c)?;
+    i.events.remove(n);
+    Some(edited)
+}
+
+/// The menu on a script field (R-TEST-17): Cut, Copy, Paste and the line commands, each
+/// with its keys.
+fn field_menu(ui: &mut Ui, field: Id, script: &mut String, keys: &ScriptKeys) {
+    let mac = ui.ctx().os() == egui::os::OperatingSystem::Mac;
+    let mut state = TextEdit::load_state(ui.ctx(), field).unwrap_or_default();
+    let selection = selection_of(&state);
+    let picked = script_editing::selected(script, selection).to_owned();
+    let item = |ui: &mut Ui, label: &str, keys: String, enabled: bool| {
+        ui.add_enabled(enabled, egui::Button::new(label).shortcut_text(keys))
+            .clicked()
+    };
+    let label = |k: KeyboardShortcut| script_keys::key_label(k, mac);
+    let mut edited = None;
+    if item(ui, "Cut", label(CUT), !picked.is_empty()) {
+        ui.ctx().copy_text(picked.clone());
+        edited = Some(script_editing::replace_selection(script, selection, ""));
+    }
+    if item(ui, "Copy", label(COPY), !picked.is_empty()) {
+        ui.ctx().copy_text(picked);
+    }
+    if item(ui, "Paste", label(PASTE), true) {
+        // The pasted text arrives as an event for the focused field.
+        ui.memory_mut(|m| m.request_focus(field));
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+    }
+    ui.separator();
+    for command in ScriptCommand::ALL {
+        let enabled = command != ScriptCommand::Beautify || !script.trim().is_empty();
+        let shown = script_keys::keys_label(keys, command, mac);
+        if item(ui, command.name(), shown, enabled) {
+            edited = Some(command_edit(command, script, selection));
+        }
+    }
+    if let Some(edited) = edited {
+        apply(&mut state, script, edited);
+        TextEdit::store_state(ui.ctx(), field, state);
+        ui.memory_mut(|m| m.request_focus(field));
+    }
+}
+
+/// The menu's clipboard keys, as the field itself handles them.
+const CUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::X);
+const COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::C);
+const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V);
+
+/// A right-click moves the field's cursor to the click. One inside the selection keeps the
+/// selection, so the menu works on it.
+fn keep_selection_on_right_click(
+    ui: &Ui,
+    field: Id,
+    response: &egui::Response,
+    before: (usize, usize),
+) {
+    let right = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+    if !right || !response.hovered() || before.0 == before.1 {
+        return;
+    }
+    let Some(mut state) = TextEdit::load_state(ui.ctx(), field) else {
         return;
     };
-    let mut state = TextEdit::load_state(ui.ctx(), field).unwrap_or_default();
-    let range = state.cursor.char_range().unwrap_or_default();
-    let edited = edit(script, (range.primary.index.0, range.secondary.index.0));
-    apply(&mut state, script, edited);
-    TextEdit::store_state(ui.ctx(), field, state);
+    let at = selection_of(&state).0;
+    let (start, end) = (before.0.min(before.1), before.0.max(before.1));
+    if (start..=end).contains(&at) {
+        state.cursor.set_char_range(Some(CCursorRange::two(
+            CCursor::new(before.1),
+            CCursor::new(before.0),
+        )));
+        TextEdit::store_state(ui.ctx(), field, state);
+    }
 }
 
 /// `text` laid out with keywords, strings, numbers, comments and regular expressions in
@@ -274,6 +425,9 @@ pub fn script_editor(
 ) -> Option<u32> {
     let field = field_id(ui, id);
     editing_keys(ui, field, text);
+    let before = TextEdit::load_state(ui.ctx(), field)
+        .map(|s| selection_of(&s))
+        .unwrap_or_default();
     let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
         let job = coloured(ui, buffer.as_str(), wrap_width);
         ui.fonts_mut(|f| f.layout_job(job))
@@ -292,6 +446,11 @@ pub fn script_editor(
             bottom: 4,
         })
         .show(ui);
+    keep_selection_on_right_click(ui, field, &out.response.response, before);
+    let keys = script_keys::current(ui.ctx());
+    out.response
+        .response
+        .context_menu(|ui| field_menu(ui, field, text, &keys));
     let field = out.response.response.rect;
     let gutter = Rect::from_min_max(field.min, Pos2::new(field.min.x + GUTTER, field.max.y));
     let lines = line_positions(&out.galley, out.galley_pos);
@@ -487,6 +646,120 @@ mod tests {
         h.run();
         drop(h);
         assert_eq!(text, "// a();");
+    }
+
+    /// The script after `steps` in a focused field with `text` and the cursor at `cursor`,
+    /// with the script editor `settings`.
+    fn edited_in_field(
+        text: &str,
+        settings: &tortuga_core::settings::ScriptEditorSettings,
+        cursor: usize,
+        steps: impl FnOnce(&mut egui_kittest::Harness<'_>),
+    ) -> String {
+        let mut text = text.to_owned();
+        let mut place = Some(cursor);
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                script_keys::use_settings(ui.ctx(), settings);
+                if let Some(at) = place.take() {
+                    let field = field_id(ui, "keys");
+                    let mut state = TextEdit::load_state(ui.ctx(), field).unwrap_or_default();
+                    state
+                        .cursor
+                        .set_char_range(Some(CCursorRange::one(CCursor::new(at))));
+                    TextEdit::store_state(ui.ctx(), field, state);
+                    ui.memory_mut(|m| m.request_focus(field));
+                }
+                script_editor(ui, "keys", &mut text, 4, "script", None, &BTreeMap::new());
+            });
+            h.run();
+            steps(&mut h);
+            h.run();
+        }
+        text
+    }
+
+    /// R-TEST-17: line commands and pairs in the field; R-SET-16: with changed keys.
+    #[test]
+    fn line_commands_and_pairs_work_in_the_field() {
+        use tortuga_core::settings::ScriptEditorSettings;
+
+        let usual = ScriptEditorSettings::default();
+        let moved = edited_in_field("a\nb", &usual, 0, |h| {
+            h.key_press_modifiers(Modifiers::ALT, Key::ArrowDown);
+        });
+        assert_eq!(moved, "b\na");
+        let commented = edited_in_field("a();", &usual, 0, |h| {
+            h.key_press_modifiers(Modifiers::COMMAND, Key::Quote);
+        });
+        assert_eq!(commented, "// a();", "Ctrl+' as Ctrl+/");
+        let paired = edited_in_field("f", &usual, 1, |h| {
+            h.event(egui::Event::Text("(".into()));
+            h.run();
+            h.event(egui::Event::Text(")".into()));
+            h.run();
+            h.event(egui::Event::Text("ü".into()));
+        });
+        assert_eq!(paired, "f()ü", "the ) was stepped over");
+
+        let mut changed = ScriptEditorSettings {
+            close_pairs: false,
+            ..ScriptEditorSettings::default()
+        };
+        changed.set_keys(ScriptCommand::DeleteLines, vec!["Ctrl+D".into()]);
+        let deleted = edited_in_field("a\nb", &changed, 0, |h| {
+            h.key_press_modifiers(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::K);
+            h.run();
+            h.key_press_modifiers(Modifiers::COMMAND, Key::D);
+            h.run();
+            h.event(egui::Event::Text("(".into()));
+        });
+        assert_eq!(
+            deleted, "(b",
+            "Ctrl+D deletes, Ctrl+Shift+K no longer; no pairs"
+        );
+    }
+
+    /// R-TEST-17: a focused script field takes its keys before the app's shortcuts, so
+    /// Ctrl+Shift+K deletes lines rather than opening the palette (Ctrl+K).
+    #[test]
+    fn the_field_takes_its_keys_before_the_app() {
+        let mut text = "a();".to_owned();
+        let taken = std::cell::Cell::new(false);
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                taken.set(taken.get() || script_keys::field_takes_keys(ui.ctx()));
+                script_editor(ui, "keys", &mut text, 4, "script", None, &BTreeMap::new());
+            });
+            h.run();
+            h.get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+                .next()
+                .expect("field")
+                .click();
+            h.run();
+            assert!(!taken.get(), "no key of the field pressed yet");
+            h.key_press_modifiers(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::K);
+            h.run();
+        }
+        assert!(taken.get());
+        assert_eq!(text, "");
+    }
+
+    /// R-TEST-17: the field's menu runs a line command on the cursor's line.
+    #[test]
+    fn the_field_menu_runs_line_commands() {
+        let settings = tortuga_core::settings::ScriptEditorSettings::default();
+        let copied = edited_in_field("a();", &settings, 4, |h| {
+            h.get_all_by_role(egui::accesskit::Role::MultilineTextInput)
+                .next()
+                .expect("field")
+                .click_secondary();
+            h.run();
+            // Each item shows its keys.
+            h.get_by_label("Cut Ctrl+X");
+            h.get_by_label("Copy lines down Alt+Shift+Down").click();
+        });
+        assert_eq!(copied, "a();\na();");
     }
 
     /// R-TEST-10: clicking a line number returns that line, once per click.

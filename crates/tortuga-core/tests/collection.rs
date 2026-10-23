@@ -719,3 +719,91 @@ fn added_environments_get_a_free_id_and_go_last() {
     assert_eq!(names, ["Zeta", "Staging", "staging", "Prod ü😀"]);
     assert!(reopened[3].protected);
 }
+
+/// R-COL-38: a request or folder is copied into another project, at the end of the
+/// chosen folder, under its own name; the original stays where it was.
+#[test]
+fn copy_into_another_project() {
+    let (_a, source) = new_collection();
+    let folder = source
+        .new_folder(&FS, Path::new(""), "Bücher 😀")
+        .expect("folder");
+    let source = reopen(&source);
+    let req = source
+        .new_request(&FS, &folder, &request("List"))
+        .expect("request");
+    let source = reopen(&source);
+    let (_b, target) = new_collection();
+    let into = target
+        .new_folder(&FS, Path::new(""), "Users")
+        .expect("folder");
+    let target = reopen(&target);
+    target
+        .new_request(&FS, &into, &request("List"))
+        .expect("request");
+    let target = reopen(&target);
+
+    let copy = target
+        .copy_from(&FS, &source, &req, &into)
+        .expect("copy request");
+    assert_ne!(
+        copy,
+        into.join("list.toml"),
+        "no clash with the file already there"
+    );
+    let target = reopen(&target);
+    assert_eq!(names(target.children(&into)), ["List", "List"]);
+    assert!(
+        matches!(target.find(&copy), Some(Item::Request(r)) if r.request.url == "https://a.test/x")
+    );
+
+    let folder_copy = target
+        .copy_from(&FS, &source, &folder, Path::new(""))
+        .expect("copy folder");
+    let target = reopen(&target);
+    assert_eq!(
+        names(&target.items),
+        ["Users", "Bücher 😀"],
+        "placed at the end"
+    );
+    assert_eq!(names(target.children(&folder_copy)), ["List"]);
+
+    let source_after = reopen(&source);
+    assert_eq!(source_after, source, "the original is left as it was");
+}
+
+/// R-COL-38: copying needs a writable target folder that exists, and a folder can't be
+/// copied into itself; a read-only source can still be copied from.
+#[test]
+fn copy_into_another_project_edge_cases() {
+    let (_a, source) = new_collection();
+    let folder = source
+        .new_folder(&FS, Path::new(""), "Users")
+        .expect("folder");
+    let source = reopen(&source);
+    let (_b, target) = new_collection();
+
+    let err = target
+        .copy_from(&FS, &source, &folder, Path::new("missing"))
+        .expect_err("no such folder");
+    assert!(matches!(err, Error::NotFound(_)), "{err}");
+    let err = source
+        .copy_from(&FS, &source, &folder, &folder)
+        .expect_err("into itself");
+    assert!(matches!(err, Error::InvalidOperation(_)), "{err}");
+
+    std::fs::write(
+        source.root.join(MANIFEST_FILE),
+        "format = 99\nname = \"Future\"\n",
+    )
+    .expect("write");
+    let read_only = reopen(&source);
+    assert!(read_only.read_only);
+    target
+        .copy_from(&FS, &read_only, &folder, Path::new(""))
+        .expect("copy from a read-only project");
+    let err = read_only
+        .copy_from(&FS, &reopen(&target), &folder, Path::new(""))
+        .expect_err("into a read-only project");
+    assert!(matches!(err, Error::ReadOnly { .. }), "{err}");
+}

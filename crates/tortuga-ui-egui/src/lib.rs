@@ -263,8 +263,14 @@ mod tests {
         let mut harness = test_host::harness(|ui| {
             for symbol in [
                 "⏵", "⏷", "⏺", "⚠", "🗙", "⚙", "✏", "•", "…", "—", "“", "”", "🐢", "·", "🔒", "›",
-                "↑", "↓", "→", "☰", "✓", "✗", "−",
+                "↑", "↓", "→", "☰", "✓", "✗", "−", "🗋", "🗀", "🌐", "📥", "📖", "🔀", "▶", "🎭",
+                "⏹", "🏷", "🍪", "🔄", "📂", "⌨", "🗐", "⬆", "⬇", "↗", "📋", "🗑",
             ] {
+                // A missing glyph would draw as an empty box.
+                let found = ui
+                    .ctx()
+                    .fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(13.0), symbol));
+                assert!(found, "the bundled fonts have no glyph for {symbol}");
                 ui.label(symbol);
                 ui.monospace(symbol);
                 ui.label(theme::semibold(symbol));

@@ -7,8 +7,10 @@ use std::collections::BTreeMap;
 
 use egui::text::{CCursor, CCursorRange};
 use egui::{Id, Key, Modifiers, Response, RichText, TextEdit, Ui};
+use tortuga_core::highlight::Language;
 use tortuga_core::vars;
 
+use super::code_colours;
 use crate::{format, fuzzy, theme};
 
 /// Most names suggested at once; typing narrows them.
@@ -87,6 +89,8 @@ impl VarHelp {
 pub enum Lines {
     One,
     Many,
+    /// Several lines of JSON or XML, in colour (R-HTTP-24).
+    Code(Language),
 }
 
 /// How wide a field is.
@@ -204,9 +208,18 @@ fn show_field(
     configure: impl for<'a> FnOnce(TextEdit<'a>) -> TextEdit<'a>,
 ) -> egui::text_edit::TextEditOutput {
     let flagged = help.uses_undefined(text);
+    let language = match lines {
+        Lines::Code(language) => Some(language),
+        Lines::One | Lines::Many => None,
+    };
+    let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
+        let job = code_colours::layout(ui, buffer.as_str(), language, wrap_width);
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
     let edit = match lines {
         Lines::One => TextEdit::singleline(text),
         Lines::Many => TextEdit::multiline(text),
+        Lines::Code(_) => TextEdit::multiline(text).layouter(&mut layouter),
     };
     let mut edit = configure(edit.id(id));
     if flagged {

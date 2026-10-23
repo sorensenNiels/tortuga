@@ -15,6 +15,8 @@ use crate::storage::Storage;
 use crate::workflow::{WORKFLOWS_DIR, Workflow};
 use crate::{Error, Result};
 
+mod copy;
+
 pub const MANIFEST_FILE: &str = "tortuga.toml";
 pub const FOLDER_FILE: &str = "_folder.toml";
 pub const ENVIRONMENTS_DIR: &str = "environments";
@@ -429,46 +431,6 @@ impl Collection {
             items = &folder.items;
         }
         out
-    }
-
-    /// Copies a request or folder (with everything in it) right after the original.
-    pub fn duplicate(&self, storage: &dyn Storage, path: &Path) -> Result<PathBuf> {
-        self.ensure_writable()?;
-        let item = self
-            .find(path)
-            .ok_or_else(|| Error::NotFound(path.to_owned()))?;
-        let parent = parent_of(path);
-        let seq = self.seq_after(&parent, path);
-        let name = format!("{} copy", item.name());
-        match item {
-            Item::Request(r) => {
-                let copy = Request {
-                    name,
-                    ..r.request.clone()
-                };
-                let new_path = self.free_file_path(storage, &parent, &copy.name, None);
-                write(
-                    storage,
-                    &self.root.join(&new_path),
-                    &format::write_request(&copy, seq),
-                )?;
-                Ok(new_path)
-            }
-            Item::Folder(folder) => {
-                let new_path = self.free_dir_path(storage, &parent, &name, None);
-                copy_dir(storage, &self.root.join(path), &self.root.join(&new_path))?;
-                let meta = FolderMeta::new(name, seq, &folder.defaults);
-                write(
-                    storage,
-                    &self.root.join(&new_path).join(FOLDER_FILE),
-                    &format::write_folder(&meta),
-                )?;
-                Ok(new_path)
-            }
-            Item::Broken(_) => Err(Error::InvalidOperation(
-                "A file that cannot be read cannot be duplicated.".into(),
-            )),
-        }
     }
 
     /// Deletes a request, a broken file, or a folder with everything in it.

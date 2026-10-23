@@ -121,6 +121,10 @@ pub struct Workspace {
     /// The sidebar is hidden (R-COL-26).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub sidebar_hidden: bool,
+    /// Folded sidebar rows (R-COL-36): (project root, path in the project; empty for
+    /// the project's own row).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub folded: Vec<(PathBuf, PathBuf)>,
     /// Projects in sidebar order, including ones that are missing on this machine.
     pub projects: Vec<ProjectRef>,
     /// Variables every project can use (R-WS-8); kept in the workspace file too, if any.

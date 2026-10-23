@@ -263,7 +263,8 @@ impl Context {
 }
 
 /// The request as it will be sent, to show it (R-HTTP-14): like [`prepare`], with the
-/// Content-Type that sending adds, secret values shown as `<secret:name>`, and
+/// Content-Type and automatic headers (R-HTTP-23) that sending adds, secret values
+/// shown as `<secret:name>`, and
 /// undefined and dynamic variables left as `{{name}}` (a dynamic one gets a new value
 /// on every send, R-VAR-8). Cookies from the jar are not included.
 pub fn preview(request: &Request, ctx: &Context) -> Result<Request> {
@@ -286,6 +287,13 @@ pub fn preview(request: &Request, ctx: &Context) -> Result<Request> {
         out.headers
             .push(KeyValue::new("Content-Type", content_type));
     }
+    // The token is new on every send.
+    let automatic = crate::http::automatic_headers("(a new CUID2 for each send)");
+    let missing: Vec<_> = automatic
+        .into_iter()
+        .filter(|h| !out.has_header(&h.name))
+        .collect();
+    out.headers.extend(missing);
     Ok(out)
 }
 
@@ -397,11 +405,11 @@ pub fn prepare(request: &Request, ctx: &Context) -> Result<Request> {
     for field in auth.fields_mut() {
         *field = substitute(field, &ctx.variables, &mut undefined);
     }
-    // A hand-written Authorization header wins (like Content-Type, R-HTTP-4).
-    if !out.has_header("authorization")
-        && let Some(value) = auth.header_value()
+    // A hand-written header of the same name wins (like Content-Type, R-HTTP-4).
+    if let Some((name, value)) = auth.header()
+        && !out.has_header(&name)
     {
-        out.headers.push(KeyValue::new("Authorization", value));
+        out.headers.push(KeyValue::new(name, value));
     }
     if undefined.is_empty() {
         Ok(out)
@@ -830,6 +838,29 @@ mod tests {
         );
     }
 
+    /// R-HTTP-22: a header auth sends its name and value, both substituted; a
+    /// hand-written header of that name wins.
+    #[test]
+    fn header_auth_is_substituted_and_a_manual_header_wins() {
+        let sent = |req: &Request| -> Vec<(String, String)> {
+            prepare(req, &ctx())
+                .expect("prepared")
+                .headers
+                .iter()
+                .map(|h| (h.name.clone(), h.value.clone()))
+                .collect()
+        };
+        let mut req = Request::new(HttpMethod::Get, "https://a.test");
+        req.auth = Some(Auth::Header {
+            name: "X-Key-{{id}}".into(),
+            value: "k-{{id}}".into(),
+        });
+        assert_eq!(sent(&req), [("X-Key-42".to_owned(), "k-42".to_owned())]);
+
+        req.headers.push(KeyValue::new("x-key-42", "manual"));
+        assert_eq!(sent(&req), [("x-key-42".to_owned(), "manual".to_owned())]);
+    }
+
     #[test]
     fn secret_values_win_over_environment_and_collection() {
         let ctx = ctx().with_secrets(BTreeMap::from([("id".into(), "secret-7".into())]));
@@ -1012,7 +1043,7 @@ mod tests {
         let shown = preview(&r, &ctx).expect("preview");
         assert_eq!(shown.url, "https://api.test/u/{{missing}}");
         assert_eq!(
-            shown.headers,
+            shown.headers[..2],
             [
                 KeyValue::new("Authorization", "Bearer <secret:token>"),
                 KeyValue::new("Content-Type", "application/json"),
@@ -1021,6 +1052,43 @@ mod tests {
         assert!(
             prepare(&r, &ctx).is_err(),
             "sending still stops on undefined variables"
+        );
+    }
+
+    /// R-HTTP-23: the Preview lists the automatic headers after the request's own,
+    /// without those the request sets itself, and no token value (it is new each send).
+    #[test]
+    fn preview_shows_the_automatic_headers() {
+        let mut r = Request::new(HttpMethod::Get, "https://a.test/");
+        r.headers = vec![
+            KeyValue::new("user-agent", "curl/8 ü😀"),
+            KeyValue {
+                enabled: false,
+                ..KeyValue::new("Accept", "text/plain")
+            },
+        ];
+        let shown = preview(&r, &Context::default()).expect("preview");
+        let names: Vec<&str> = shown.headers.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "user-agent",
+                "Accept",
+                "Accept",
+                "Accept-Encoding",
+                "Cache-Control",
+                "X-Tortuga-Token"
+            ]
+        );
+        assert_eq!(shown.header("user-agent"), Some("curl/8 ü😀"));
+        assert_eq!(
+            shown.header("accept"),
+            Some("*/*"),
+            "a disabled one doesn't count"
+        );
+        assert_eq!(
+            shown.header("x-tortuga-token"),
+            Some("(a new CUID2 for each send)")
         );
     }
 

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use egui::{RichText, Ui};
+use egui::{AtomExt as _, RichText, Ui};
 use tortuga_core::Collection;
 use tortuga_core::collection::Direction;
 use tortuga_core::import::ImportKind;
@@ -94,83 +94,86 @@ pub(super) fn collection_menu(
 ) -> Option<MenuChoice> {
     let root = &c.root;
     let mut choice = None;
-    let mut item = |ui: &mut Ui, label: String, pick: &dyn Fn() -> MenuChoice| {
-        if ui.button(label).clicked() {
+    let mut item = |ui: &mut Ui, icon: &str, label: String, pick: &dyn Fn() -> MenuChoice| {
+        if entry(ui, icon, &label).clicked() {
             choice = Some(pick());
         }
     };
     if !c.read_only {
-        item(ui, "New request".into(), &|| {
+        item(ui, "🗋", "New request".into(), &|| {
             MenuChoice::Action(SidebarAction::NewRequest {
                 root: root.clone(),
                 parent: PathBuf::new(),
             })
         });
-        item(ui, "New folder".into(), &|| {
+        item(ui, "🗀", "New folder".into(), &|| {
             MenuChoice::Action(SidebarAction::NewFolder {
                 root: root.clone(),
                 parent: PathBuf::new(),
             })
         });
-        item(ui, "Rename".into(), &|| MenuChoice::Rename);
+        item(ui, "✏", "Rename".into(), &|| MenuChoice::Rename);
     }
-    item(ui, "Environments…".into(), &|| {
+    item(ui, "🌐", "Environments…".into(), &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
     });
     for kind in ENVIRONMENT_KINDS {
         if offers.environments(kind) && !c.read_only {
-            item(ui, environments_entry(kind).into(), &|| {
+            item(ui, "📥", environments_entry(kind).into(), &|| {
                 MenuChoice::Action(SidebarAction::ImportEnvironments(root.clone(), kind))
             });
         }
     }
-    item(ui, "Defaults (headers, auth, requests)…".into(), &|| {
-        MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
-    });
+    item(
+        ui,
+        "⚙",
+        "Defaults (headers, auth, requests)…".into(),
+        &|| MenuChoice::Action(SidebarAction::EditDefaults(root.clone())),
+    );
     if offers.features.docs {
-        item(ui, "Description…".into(), &|| {
+        item(ui, "📖", "Description…".into(), &|| {
             MenuChoice::Action(SidebarAction::ProjectDescription(root.clone()))
         });
     }
     if offers.features.workflows && !c.read_only {
-        item(ui, "New workflow…".into(), &|| {
+        item(ui, "🔀", "New workflow…".into(), &|| {
             MenuChoice::Action(SidebarAction::NewWorkflow(root.clone()))
         });
     }
     match mock_port {
         // Turned off (R-SET-13); one that is running can still be stopped.
         None if !offers.features.mock => {}
-        None => item(ui, "Start mock server".into(), &|| {
+        None => item(ui, "▶", "Start mock server".into(), &|| {
             MenuChoice::Action(SidebarAction::StartMock(root.clone()))
         }),
         Some(port) => {
-            item(ui, format!("Mock server (port {port})…"), &|| {
+            item(ui, "🎭", format!("Mock server (port {port})…"), &|| {
                 MenuChoice::Action(SidebarAction::ShowMock(root.clone()))
             });
-            item(ui, "Stop mock server".into(), &|| {
+            item(ui, "⏹", "Stop mock server".into(), &|| {
                 MenuChoice::Action(SidebarAction::StopMock(root.clone()))
             });
         }
     }
-    item(ui, "Runtime variables…".into(), &|| {
+    item(ui, "🏷", "Runtime variables…".into(), &|| {
         MenuChoice::Action(SidebarAction::RuntimeVariables(root.clone()))
     });
-    item(ui, format!("Cookies ({cookie_count})…"), &|| {
+    item(ui, "🍪", format!("Cookies ({cookie_count})…"), &|| {
         MenuChoice::Action(SidebarAction::ShowCookies(root.clone()))
     });
-    item(ui, "Reload from disk".into(), &|| {
+    item(ui, "🔄", "Reload from disk".into(), &|| {
         MenuChoice::Action(SidebarAction::Reload(root.clone()))
     });
     // R-GIT-13: commit, pull and push happen outside the app.
     if offers.open_folders {
-        item(ui, "Open in file manager".into(), &|| {
+        item(ui, "📂", "Open in file manager".into(), &|| {
             MenuChoice::Action(SidebarAction::OpenInFileManager(root.clone()))
         });
-        item(ui, "Open in terminal".into(), &|| {
+        item(ui, "⌨", "Open in terminal".into(), &|| {
             MenuChoice::Action(SidebarAction::OpenInTerminal(root.clone()))
         });
     }
-    item(ui, "Remove from workspace".into(), &|| {
+    item(ui, "🗙", "Remove from workspace".into(), &|| {
         MenuChoice::Action(SidebarAction::Close(root.clone()))
     });
     choice
@@ -186,54 +189,79 @@ pub(super) fn item_menu(
     let act = |a: SidebarAction| Some(MenuChoice::Action(a));
     let mut choice = None;
     if is_folder {
-        if ui.button("New request").clicked() {
+        if entry(ui, "🗋", "New request").clicked() {
             choice = act(SidebarAction::NewRequest {
                 root: key.root.clone(),
                 parent: key.path.clone(),
             });
         }
-        if ui.button("New folder").clicked() {
+        if entry(ui, "🗀", "New folder").clicked() {
             choice = act(SidebarAction::NewFolder {
                 root: key.root.clone(),
                 parent: key.path.clone(),
             });
         }
-        if ui
-            .button("Folder defaults…")
+        if entry(ui, "⚙", "Folder defaults…")
             .on_hover_text("Headers, auth and variables every request in this folder inherits")
             .clicked()
         {
             choice = act(SidebarAction::EditFolderDefaults(key.clone()));
         }
         if docs
-            && ui
-                .button("Description…")
+            && entry(ui, "📖", "Description…")
                 .on_hover_text("What this folder holds, in Markdown")
                 .clicked()
         {
             choice = act(SidebarAction::FolderDescription(key.clone()));
         }
     }
-    if ui.button("Rename").clicked() {
+    if entry(ui, "✏", "Rename").clicked() {
         choice = Some(MenuChoice::Rename);
     }
-    if ui.button("Duplicate").clicked() {
+    if entry(ui, "🗐", "Duplicate").clicked() {
         choice = act(SidebarAction::Duplicate(key.clone()));
     }
-    if ui.button("Move up").clicked() {
+    if entry(ui, "⬆", "Move up").clicked() {
         choice = act(SidebarAction::MoveBy(key.clone(), Direction::Up));
     }
-    if ui.button("Move down").clicked() {
+    if entry(ui, "⬇", "Move down").clicked() {
         choice = act(SidebarAction::MoveBy(key.clone(), Direction::Down));
     }
-    if ui.button("Move to…").clicked() {
+    if entry(ui, "↗", "Move to…").clicked() {
         choice = act(SidebarAction::MoveTo(key.clone()));
     }
+    if entry(ui, "📋", "Copy to project…")
+        .on_hover_text("Copy into a folder of another project; this one stays as it is")
+        .clicked()
+    {
+        choice = act(SidebarAction::CopyTo(key.clone()));
+    }
     let danger = theme::palette(ui).fail;
-    if ui.button(RichText::new("Delete…").color(danger)).clicked() {
+    let delete = entry_text(
+        ui,
+        RichText::new("🗑").color(danger),
+        RichText::new("Delete…").color(danger),
+    );
+    if delete.clicked() {
         choice = act(SidebarAction::Delete(key.clone()));
     }
     choice
+}
+
+/// Width of the icon column in the `…` menus, so the labels line up.
+const ICON_WIDTH: f32 = 18.0;
+
+/// A menu entry with its icon left of the label.
+fn entry(ui: &mut Ui, icon: &str, label: &str) -> egui::Response {
+    entry_text(ui, RichText::new(icon), RichText::new(label))
+}
+
+fn entry_text(ui: &mut Ui, icon: RichText, label: RichText) -> egui::Response {
+    let height = ui.text_style_height(&egui::TextStyle::Button);
+    let icon = egui::Atom::from(icon)
+        .atom_size(egui::vec2(ICON_WIDTH, height))
+        .atom_align(egui::Align2::CENTER_CENTER);
+    ui.button((icon, label))
 }
 
 pub(super) fn menu_button(

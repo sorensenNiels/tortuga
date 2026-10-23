@@ -228,6 +228,13 @@ pub enum Auth {
         #[serde(default)]
         token: String,
     },
+    /// Any header and value, e.g. `X-API-Key: {{api_key}}`.
+    Header {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        value: String,
+    },
 }
 
 impl Auth {
@@ -241,6 +248,7 @@ impl Auth {
             Self::None => vec![],
             Self::Basic { username, password } => vec![username, password],
             Self::Bearer { token } => vec![token],
+            Self::Header { name, value } => vec![name, value],
         }
     }
 
@@ -249,19 +257,31 @@ impl Auth {
             Self::None => vec![],
             Self::Basic { username, password } => vec![username, password],
             Self::Bearer { token } => vec![token],
+            Self::Header { name, value } => vec![name, value],
         }
     }
 
-    /// The `Authorization` header value, or `None` for no auth.
-    pub fn header_value(&self) -> Option<String> {
+    /// The header this auth adds as (name, value), or `None` for no auth or a
+    /// header without a name.
+    pub fn header(&self) -> Option<(String, String)> {
         use base64::Engine as _;
         match self {
             Self::None => None,
-            Self::Basic { username, password } => Some(format!(
-                "Basic {}",
-                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"))
+            Self::Basic { username, password } => Some((
+                "Authorization".to_owned(),
+                format!(
+                    "Basic {}",
+                    base64::engine::general_purpose::STANDARD
+                        .encode(format!("{username}:{password}"))
+                ),
             )),
-            Self::Bearer { token } => Some(format!("Bearer {}", token.trim())),
+            Self::Bearer { token } => Some((
+                "Authorization".to_owned(),
+                format!("Bearer {}", token.trim()),
+            )),
+            Self::Header { name, value } => {
+                (!name.trim().is_empty()).then(|| (name.trim().to_owned(), value.trim().to_owned()))
+            }
         }
     }
 }
@@ -690,15 +710,34 @@ mod tests {
             password: "open sesame".into(),
         };
         // Example from RFC 7617.
+        let authorization = |value: &str| Some(("Authorization".to_owned(), value.to_owned()));
         assert_eq!(
-            basic.header_value().as_deref(),
-            Some("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")
+            basic.header(),
+            authorization("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==")
         );
         let bearer = Auth::Bearer {
             token: " abc ".into(),
         };
-        assert_eq!(bearer.header_value().as_deref(), Some("Bearer abc"));
-        assert_eq!(Auth::None.header_value(), None);
+        assert_eq!(bearer.header(), authorization("Bearer abc"));
+        assert_eq!(Auth::None.header(), None);
+    }
+
+    /// R-HTTP-22: any header name and value.
+    #[test]
+    fn header_auth_sends_its_own_header() {
+        let key = Auth::Header {
+            name: " X-API-Key ".into(),
+            value: " ü😀 ".into(),
+        };
+        assert_eq!(
+            key.header(),
+            Some(("X-API-Key".to_owned(), "ü😀".to_owned()))
+        );
+        let unnamed = Auth::Header {
+            name: "  ".into(),
+            value: "k".into(),
+        };
+        assert_eq!(unnamed.header(), None, "no header without a name");
     }
 
     #[test]

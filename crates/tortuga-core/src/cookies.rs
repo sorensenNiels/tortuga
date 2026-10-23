@@ -177,6 +177,76 @@ mod imp {
 
 pub use imp::{CookieInfo, CookieJar};
 
+use crate::Response;
+
+/// A cookie a response sets with `Set-Cookie`, with its attributes as written (R-CK-6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetCookie {
+    pub name: String,
+    pub value: String,
+    /// The `Domain` attribute: sent to that domain and its subdomains. Without it, only
+    /// to the host that answered.
+    pub domain: Option<String>,
+    /// The `Path` attribute. Without it, the folder of the request's path.
+    pub path: Option<String>,
+    pub expires: Expiry,
+    pub secure: bool,
+    pub http_only: bool,
+    /// `Strict`, `Lax` or `None`, if set.
+    pub same_site: Option<String>,
+}
+
+/// When a cookie from `Set-Cookie` expires (R-CK-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expiry {
+    /// No `Expires` or `Max-Age`: kept until the app closes.
+    Session,
+    /// `Expires`, in milliseconds since 1970 (0 for earlier dates).
+    At(u64),
+    /// `Max-Age` in seconds; it wins over `Expires`. Zero or less removes the cookie.
+    MaxAge(i64),
+}
+
+/// The cookies a response sets, in header order, and the `Set-Cookie` values that could
+/// not be read (R-CK-6).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResponseCookies {
+    pub cookies: Vec<SetCookie>,
+    pub unreadable: Vec<String>,
+}
+
+impl ResponseCookies {
+    pub fn of(response: &Response) -> Self {
+        let mut out = Self::default();
+        for header in response.headers.iter().filter(|h| h.is_named("set-cookie")) {
+            match cookie_store::RawCookie::parse(header.value.as_str()) {
+                Ok(c) => out.cookies.push(SetCookie {
+                    name: c.name().to_owned(),
+                    value: c.value().to_owned(),
+                    domain: c.domain().map(str::to_owned),
+                    path: c.path().map(str::to_owned),
+                    expires: match (c.max_age(), c.expires_datetime()) {
+                        (Some(age), _) => Expiry::MaxAge(age.whole_seconds()),
+                        (None, Some(at)) => Expiry::At(
+                            u64::try_from(at.unix_timestamp_nanos() / 1_000_000).unwrap_or(0),
+                        ),
+                        (None, None) => Expiry::Session,
+                    },
+                    secure: c.secure().unwrap_or(false),
+                    http_only: c.http_only().unwrap_or(false),
+                    same_site: c.same_site().map(|s| s.to_string()),
+                }),
+                Err(_) => out.unreadable.push(header.value.clone()),
+            }
+        }
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cookies.is_empty() && self.unreadable.is_empty()
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -276,5 +346,55 @@ mod tests {
         clone.store_response_cookies(["a=1"], &url("http://a.test/"));
         assert_eq!(jar.len(), 1);
         assert_eq!(jar.id(), clone.id());
+    }
+    /// R-CK-6: each `Set-Cookie` header with its attributes as written; malformed ones
+    /// are kept as unreadable.
+    #[test]
+    fn response_cookies_keep_their_attributes() {
+        let response = crate::Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: vec![
+                crate::KeyValue::new("Set-Cookie", "session=abc; Path=/api; Secure; HttpOnly"),
+                crate::KeyValue::new("content-type", "text/plain"),
+                crate::KeyValue::new(
+                    "set-cookie",
+                    "theme=Zoë 😀; Domain=example.test; SameSite=Lax; \
+                     Expires=Wed, 21 Oct 2037 07:28:00 GMT",
+                ),
+                crate::KeyValue::new(
+                    "SET-COOKIE",
+                    "gone=; Max-Age=0; Expires=Wed, 21 Oct 2037 07:28:00 GMT",
+                ),
+                crate::KeyValue::new("Set-Cookie", "no-equals-sign"),
+            ],
+            body: Vec::new(),
+            elapsed: std::time::Duration::ZERO,
+        };
+        let found = ResponseCookies::of(&response);
+        let [session, theme, gone] = found.cookies.as_slice() else {
+            panic!("three cookies: {found:?}");
+        };
+        assert_eq!(
+            (session.name.as_str(), session.value.as_str()),
+            ("session", "abc")
+        );
+        assert_eq!(session.path.as_deref(), Some("/api"));
+        assert_eq!(session.domain, None);
+        assert_eq!(session.expires, Expiry::Session);
+        assert!(session.secure && session.http_only);
+        assert_eq!(theme.value, "Zoë 😀");
+        assert_eq!(theme.domain.as_deref(), Some("example.test"));
+        assert_eq!(theme.same_site.as_deref(), Some("Lax"));
+        assert_eq!(theme.expires, Expiry::At(2_139_722_880_000));
+        assert!(!theme.secure && !theme.http_only);
+        assert_eq!(gone.expires, Expiry::MaxAge(0), "Max-Age wins over Expires");
+        assert_eq!(found.unreadable, ["no-equals-sign"]);
+
+        let none = crate::Response {
+            headers: Vec::new(),
+            ..response
+        };
+        assert!(ResponseCookies::of(&none).is_empty());
     }
 }

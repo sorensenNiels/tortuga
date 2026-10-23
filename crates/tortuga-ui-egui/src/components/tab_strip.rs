@@ -1,7 +1,7 @@
 //! The request tabs above the editor (R-COL-13), grouped by project (R-COL-14).
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{
     Atom, Button, Color32, CornerRadius, Frame, Margin, RichText, Role, ScrollArea, Stroke, Ui,
@@ -286,8 +286,10 @@ fn all_tabs_menu(ui: &mut Ui, groups: &[TabGroup], actions: &mut Vec<TabAction>)
         for group in groups {
             for tab in &group.tabs {
                 let project = tab.place.split(" › ").next().unwrap_or_default();
-                if tab.key.is_some() && last_project != Some(project) {
-                    theme::section_label(ui, project);
+                if let Some(key) = &tab.key
+                    && last_project != Some(project)
+                {
+                    project_heading(ui, project, &key.root, actions);
                     last_project = Some(project);
                 }
                 let mut name = RichText::new(if tab.name.is_empty() {
@@ -324,10 +326,21 @@ fn all_tabs_menu(ui: &mut Ui, groups: &[TabGroup], actions: &mut Vec<TabAction>)
     response.on_hover_text("All open tabs");
 }
 
+/// A project's name in the "⏷" list, with 🗙 right after it to close its tabs (R-COL-37).
+fn project_heading(ui: &mut Ui, project: &str, root: &Path, actions: &mut Vec<TabAction>) {
+    ui.horizontal(|ui| {
+        theme::section_label(ui, project);
+        let close = ui
+            .add(theme::icon_button(ui, "🗙").small())
+            .on_hover_text("Close the project's tabs");
+        if close.clicked() {
+            actions.push(TabAction::CloseGroup(root.to_owned()));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use egui_kittest::kittest::Queryable;
 
     use super::*;
@@ -393,5 +406,25 @@ mod tests {
         }];
         let actions = run(&groups, |h| h.get_by_label("Users API · 2").click());
         assert_eq!(actions, [TabAction::ToggleGroup("/a".into())]);
+    }
+
+    /// R-COL-37: the 🗙 next to a project's name in the "⏷" list closes its tabs.
+    #[test]
+    fn the_list_closes_a_projects_tabs_from_its_name() {
+        let groups = [TabGroup {
+            chip: None,
+            tabs: vec![
+                tab("List users", true, false),
+                tab("Get user", false, false),
+            ],
+        }];
+        let actions = run(&groups, |h| {
+            h.get_by_label("⏷").click();
+            h.run();
+            h.get_by_label("USERS API");
+            // The menu's 🗙 comes before the tabs' ones in the tree.
+            h.get_all_by_label("🗙").next().expect("close").click();
+        });
+        assert_eq!(actions, [TabAction::CloseGroup("/a".into())]);
     }
 }

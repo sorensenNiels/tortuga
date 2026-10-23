@@ -2,11 +2,13 @@
 //! here, and the shortcut sheet (F1) lists this table, so it can't go out of date.
 
 use egui::gui_zoom::kb_shortcuts::{ZOOM_IN_SECONDARY, ZOOM_OUT, ZOOM_RESET};
-use egui::{Key, KeyboardShortcut, ModifierNames, Modifiers};
+use egui::{Key, KeyboardShortcut, Modifiers};
+use tortuga_core::settings::ScriptCommand;
 
 use crate::components::ShortcutRow;
 use crate::components::request_preview::CLOSE_PREVIEW;
-use crate::components::script_editor::{INDENT, OUTDENT, TOGGLE_COMMENT};
+use crate::components::script_editor::{INDENT, OUTDENT};
+use crate::components::script_keys::{self, ScriptKeys};
 
 pub(super) const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 pub(super) const SEND: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
@@ -40,13 +42,14 @@ pub(super) const GO_TO_TAB: [KeyboardShortcut; 9] = [
     KeyboardShortcut::new(Modifiers::COMMAND, Key::Num9),
 ];
 
-/// The shortcut sheet's lines, keys written as on `mac` or elsewhere.
-pub(super) fn sheet(mac: bool) -> Vec<ShortcutRow> {
+/// The shortcut sheet's lines, keys written as on `mac` or elsewhere, with the script
+/// editor's `script` keys (R-SET-16).
+pub(super) fn sheet(mac: bool, script: &ScriptKeys) -> Vec<ShortcutRow> {
     let keys = |k: KeyboardShortcut| keys(k, mac);
     let either = |a: KeyboardShortcut, b: KeyboardShortcut| format!("{} or {}", keys(a), keys(b));
     let row = |group, keys: String, does| ShortcutRow { group, keys, does };
     let [first, .., eighth, last] = GO_TO_TAB;
-    vec![
+    let mut rows = vec![
         row(
             "Anywhere",
             keys(SEND),
@@ -94,23 +97,42 @@ pub(super) fn sheet(mac: bool) -> Vec<ShortcutRow> {
             either(INDENT, OUTDENT),
             "Indent or outdent the lines",
         ),
-        row(
-            "Scripts",
-            keys(TOGGLE_COMMENT),
-            "Comment the lines out or back in",
-        ),
-    ]
+    ];
+    for command in ScriptCommand::ALL {
+        let shown = script_keys::keys_label(script, command, mac);
+        if !shown.is_empty() {
+            rows.push(row("Scripts", shown, command.name()));
+        }
+    }
+    rows
 }
 
-/// `shortcut` as `mac` or other systems write it, e.g. "Cmd+S" or "Ctrl+S". Words, not
-/// symbols like ⌘, which the bundled fonts may lack.
+/// The keys the app uses outside script fields and what they do there, as the sheet
+/// says it, so Settings can tell when a script key is one of them (R-SET-16).
+pub(crate) fn app_keys() -> Vec<(KeyboardShortcut, &'static str)> {
+    let mut keys = vec![
+        (SEND, "Send the request, or run the open workflow"),
+        (SEND_EVERYWHERE, "Send the request to every environment"),
+        (SAVE, "Save the request or workflow"),
+        (QUICK_OPEN, "Go to a request"),
+        (COMMANDS, "Every command"),
+        (COMMANDS_TOO, "Every command"),
+        (FOCUS_URL, "Go to the URL"),
+        (ENVIRONMENT, "Switch the environment"),
+        (FIND, "Search in the response"),
+        (TOGGLE_SIDEBAR, "Hide or show the sidebar"),
+        (SHORTCUTS, "This list"),
+        (PREVIOUS_TAB, "Back to the tab shown before"),
+        (NEXT_TAB, "The next or the previous tab"),
+        (TAB_BEFORE, "The next or the previous tab"),
+        (CLOSE_TAB, "Close the tab"),
+    ];
+    keys.extend(GO_TO_TAB.iter().map(|k| (*k, "The tab at that place")));
+    keys
+}
+
 fn keys(shortcut: KeyboardShortcut, mac: bool) -> String {
-    let mut text = ModifierNames::NAMES.format(&shortcut.modifiers, mac);
-    if !text.is_empty() {
-        text.push('+');
-    }
-    text.push_str(shortcut.logical_key.symbol_or_name());
-    text
+    script_keys::key_label(shortcut, mac)
 }
 
 #[cfg(test)]
@@ -125,15 +147,24 @@ mod tests {
         assert_eq!(keys(SAVE, false), "Ctrl+S");
         assert_eq!(keys(SAVE, true), "Cmd+S");
         assert_eq!(keys(COMMANDS_TOO, false), "Ctrl+Shift+P");
-        assert_eq!(keys(TOGGLE_COMMENT, false), "Ctrl+/");
         assert_eq!(keys(SHORTCUTS, false), "F1");
-        let rows = sheet(false);
+        let rows = sheet(false, &ScriptKeys::default());
         assert!(rows.iter().any(|r| r.keys == "Ctrl+1 … Ctrl+8"));
         assert!(
             rows.iter()
                 .any(|r| r.keys == "Ctrl+L" && r.does == "Go to the URL")
         );
-        for row in sheet(true).iter().chain(&rows) {
+        assert!(
+            rows.iter()
+                .any(|r| r.keys == "Ctrl+/ or Ctrl+'" && r.does == "Comment lines out or in")
+        );
+        for (_, does) in app_keys() {
+            assert!(
+                rows.iter().any(|r| r.does == does),
+                "{does} is on the sheet"
+            );
+        }
+        for row in sheet(true, &ScriptKeys::default()).iter().chain(&rows) {
             assert!(
                 row.keys.chars().all(|c| c.is_ascii() || "…−".contains(c)),
                 "{}",

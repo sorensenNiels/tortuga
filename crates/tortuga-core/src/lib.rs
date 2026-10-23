@@ -12,6 +12,7 @@ pub mod data;
 pub mod error;
 pub mod format;
 pub mod git;
+pub mod highlight;
 pub mod history;
 pub mod http;
 pub mod http_file;
@@ -41,7 +42,7 @@ pub mod xml;
 pub mod xpath;
 
 pub use collection::{Collection, Direction, Item, NewItem};
-pub use cookies::{CookieInfo, CookieJar};
+pub use cookies::{CookieInfo, CookieJar, Expiry, ResponseCookies, SetCookie};
 pub use error::{Error, Result};
 pub use format::{Environment, EnvironmentColor, Manifest, Server};
 pub use http::{Client, ClientSettings, FileReader, ProxyMode, check_proxy_url};

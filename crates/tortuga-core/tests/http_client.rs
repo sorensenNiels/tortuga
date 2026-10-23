@@ -91,6 +91,81 @@ async fn sends_enabled_headers_including_duplicates() {
     assert_eq!(header_values(&got, "x-off"), Vec::<String>::new());
 }
 
+/// R-HTTP-23: every send gets the automatic headers and a new CUID2 token.
+#[tokio::test]
+async fn sends_automatic_headers_with_a_new_token_each_time() {
+    let server = server_replying(200).await;
+    let req = Request::new(HttpMethod::Get, server.uri());
+    let client = Client::default();
+    client.execute(&req).await.expect("first send");
+    client.execute(&req).await.expect("second send");
+
+    let received = server.received_requests().await.expect("recording enabled");
+    let mut tokens = Vec::new();
+    for got in &received {
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            header_values(got, "user-agent"),
+            [format!("Tortuga/{version}")]
+        );
+        assert_eq!(header_values(got, "accept"), ["*/*"]);
+        assert_eq!(header_values(got, "accept-encoding"), ["gzip, deflate, br"]);
+        assert_eq!(header_values(got, "cache-control"), ["no-cache"]);
+        let token = header_values(got, "x-tortuga-token");
+        assert_eq!(token.len(), 1);
+        assert!(cuid2::is_cuid2(&token[0]), "{token:?}");
+        tokens.extend(token);
+    }
+    assert_eq!(tokens.len(), 2);
+    assert_ne!(tokens[0], tokens[1], "a new token for each send");
+}
+
+/// R-HTTP-23: a request's own enabled header wins over the automatic one, whatever
+/// its case; a disabled one doesn't.
+#[tokio::test]
+async fn own_headers_replace_automatic_ones() {
+    let server = server_replying(200).await;
+    let mut req = Request::new(HttpMethod::Get, server.uri());
+    req.headers = vec![
+        KeyValue::new("user-agent", "curl/8.5"),
+        KeyValue::new("X-TORTUGA-TOKEN", ""),
+        KeyValue {
+            enabled: false,
+            ..KeyValue::new("Accept", "text/plain")
+        },
+    ];
+    Client::default().execute(&req).await.expect("sent");
+
+    let got = only_received(&server).await;
+    assert_eq!(header_values(&got, "user-agent"), ["curl/8.5"]);
+    assert_eq!(header_values(&got, "x-tortuga-token"), [""]);
+    assert_eq!(header_values(&got, "accept"), ["*/*"]);
+}
+
+/// R-HTTP-23: with `Accept-Encoding` set by Tortuga, compressed bodies are still decoded.
+#[tokio::test]
+async fn gzip_bodies_are_decoded() {
+    // "Grüße 😀", gzipped.
+    let gzipped: Vec<u8> = vec![
+        31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 115, 47, 58, 188, 231, 240, 252, 84, 133, 15, 243, 103,
+        52, 0, 0, 189, 104, 224, 244, 12, 0, 0, 0,
+    ];
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Encoding", "gzip")
+                .set_body_bytes(gzipped),
+        )
+        .mount(&server)
+        .await;
+    let response = Client::default()
+        .execute(&Request::new(HttpMethod::Get, server.uri()))
+        .await
+        .expect("sent");
+    assert_eq!(response.body, "Grüße 😀".as_bytes());
+}
+
 /// R-HTTP-4, R-HTTP-19: each body type gets the right automatic Content-Type.
 #[tokio::test]
 async fn body_types_set_content_type_automatically() {

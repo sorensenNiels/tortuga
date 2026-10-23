@@ -1,5 +1,6 @@
 //! XML bodies (R-HTTP-19): checking and formatting what the user types, pretty-printing
-//! responses, and the tree the `XPath` filter and captures work on ([`crate::xpath`]).
+//! responses, the tree the `XPath` filter and captures work on ([`crate::xpath`]), and
+//! scripts' `xml2Json` ([`to_json`]).
 //!
 //! Parsing checks what makes a document unreadable: tags that don't match or aren't
 //! closed, broken attributes, unknown entities, a second root element and text outside
@@ -41,6 +42,22 @@ pub fn check(text: &str) -> Option<String> {
 /// not well-formed XML.
 pub fn pretty(text: &str) -> Option<String> {
     Document::parse(text).ok().map(|doc| doc.pretty())
+}
+
+/// `text` as a JSON value the way Postman's `xml2Json` gives it (R-TEST-18), so scripts
+/// written for Postman read it unchanged: `{root: …}`; an element with only text is that
+/// text (trimmed), an empty one `""`; otherwise an object with its attributes under `$`,
+/// its child elements by name (as written, with prefix; an array when a name repeats) and
+/// its text under `_`. Values stay strings; comments and declarations are left out.
+pub fn to_json(text: &str) -> Result<serde_json::Value, String> {
+    let doc = Document::parse(text)?;
+    let mut out = serde_json::Map::new();
+    if let Some(root) = doc.root()
+        && let Kind::Element(element) = &doc.nodes[root].kind
+    {
+        out.insert(element.name.clone(), doc.json_value(root, element));
+    }
+    Ok(serde_json::Value::Object(out))
 }
 
 /// A parsed document. Nodes are stored in document order; the document itself is node 0.
@@ -89,6 +106,54 @@ impl Document {
     /// Parses `text`. The error says what is wrong and where.
     pub fn parse(text: &str) -> Result<Self, String> {
         Parser::new(text).run()
+    }
+
+    /// The root element.
+    pub(crate) fn root(&self) -> Option<usize> {
+        self.nodes[0]
+            .children
+            .iter()
+            .copied()
+            .find(|&c| matches!(self.nodes[c].kind, Kind::Element(_)))
+    }
+
+    /// The element `node` as [`to_json`] gives it.
+    fn json_value(&self, node: usize, element: &Element) -> serde_json::Value {
+        use serde_json::Value;
+        let mut object = serde_json::Map::new();
+        if !element.attributes.is_empty() {
+            let attributes = element
+                .attributes
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
+            object.insert("$".to_owned(), Value::Object(attributes));
+        }
+        let mut text = String::new();
+        for &child in &self.nodes[node].children {
+            match &self.nodes[child].kind {
+                Kind::Text { value, .. } => text.push_str(value),
+                Kind::Element(e) => {
+                    let value = self.json_value(child, e);
+                    match object.get_mut(&e.name) {
+                        Some(Value::Array(items)) => items.push(value),
+                        Some(first) => *first = Value::Array(vec![first.take(), value]),
+                        None => {
+                            object.insert(e.name.clone(), value);
+                        }
+                    }
+                }
+                Kind::Document | Kind::Markup(_) => {}
+            }
+        }
+        let text = text.trim();
+        if object.is_empty() {
+            return Value::String(text.to_owned());
+        }
+        if !text.is_empty() {
+            object.insert("_".to_owned(), Value::String(text.to_owned()));
+        }
+        Value::Object(object)
     }
 
     /// The text of `node` and everything below it, as `XPath`'s `string()` gives it.
@@ -416,16 +481,6 @@ fn line_column(text: &str, at: usize) -> (usize, usize) {
 mod tests {
     use super::*;
 
-    impl Document {
-        fn root(&self) -> Option<usize> {
-            self.nodes[0]
-                .children
-                .iter()
-                .copied()
-                .find(|&c| matches!(self.nodes[c].kind, Kind::Element(_)))
-        }
-    }
-
     #[test]
     fn blank_text_is_valid() {
         assert_eq!(check(""), None);
@@ -516,5 +571,71 @@ mod tests {
         let items = "<i>ü</i>".repeat(20_000);
         let doc = Document::parse(&format!("<r>{items}</r>")).expect("parse");
         assert_eq!(doc.nodes[doc.root().expect("root")].children.len(), 20_000);
+    }
+
+    /// R-TEST-18: the shape of Postman's `xml2Json`: attributes under `$`, text under `_`,
+    /// repeated names as arrays, text-only elements as their trimmed text.
+    #[test]
+    fn xml_becomes_json_as_postman_gives_it() {
+        let xml = r#"<?xml version="1.0"?>
+<!-- users -->
+<soap:Envelope xmlns:soap="urn:s">
+  <soap:Body>
+    <user id="7" kind="admin">
+      <name> Ann &amp; ü😀 </name>
+      <tag>a</tag>
+      <tag>b</tag>
+      <tag><![CDATA[<c>]]></tag>
+      <empty/>
+      <note lang="en">hi</note>
+    </user>
+  </soap:Body>
+</soap:Envelope>"#;
+        let json = to_json(xml).expect("well-formed");
+        assert_eq!(
+            json,
+            serde_json::json!({"soap:Envelope": {
+                "$": {"xmlns:soap": "urn:s"},
+                "soap:Body": {"user": {
+                    "$": {"id": "7", "kind": "admin"},
+                    "name": "Ann & ü😀",
+                    "tag": ["a", "b", "<c>"],
+                    "empty": "",
+                    "note": {"$": {"lang": "en"}, "_": "hi"},
+                }},
+            }})
+        );
+        // `$` first, then the children in document order.
+        let user = &json["soap:Envelope"]["soap:Body"]["user"];
+        let keys: Vec<&str> = user
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["$", "name", "tag", "empty", "note"]);
+    }
+
+    /// R-TEST-18: text beside child elements goes under `_`; a lone root is text.
+    #[test]
+    fn mixed_text_and_lone_roots() {
+        assert_eq!(
+            to_json("<p>Hello <b>you</b> there</p>").expect("xml"),
+            serde_json::json!({"p": {"b": "you", "_": "Hello  there"}})
+        );
+        assert_eq!(to_json("<a/>").expect("xml"), serde_json::json!({"a": ""}));
+        assert_eq!(
+            to_json("<a>  </a>").expect("xml"),
+            serde_json::json!({"a": ""})
+        );
+    }
+
+    /// R-TEST-18: what isn't XML says what is wrong and where.
+    #[test]
+    fn json_from_text_that_is_not_xml_is_an_error() {
+        for text in ["", "{\"id\": 7}", "<a><b></a>"] {
+            let error = to_json(text).expect_err(text);
+            assert!(error.starts_with("Invalid XML"), "{text:?}: {error}");
+        }
     }
 }

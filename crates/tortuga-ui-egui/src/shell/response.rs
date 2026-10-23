@@ -8,7 +8,7 @@ use tortuga_core::settings::Feature;
 
 use super::{Modal, Selection, Sent, TortugaUi};
 use crate::components::{
-    ChangesDialog, Filtered, Outcome, PanelContext, ResponseAction, SaveExample, Trend,
+    ChangesDialog, CookiesTab, Filtered, Outcome, PanelContext, ResponseAction, SaveExample, Trend,
     response_panel,
 };
 
@@ -29,6 +29,7 @@ impl TortugaUi {
         } else {
             SaveExample::Hidden
         };
+        let cookies = self.cookies_tab(key);
         let sent = self.sent.get(key);
         let view = match sent.and_then(|s| s.outcome.as_ref()) {
             Some(Outcome::Response(view)) => Some(Arc::clone(view)),
@@ -66,6 +67,7 @@ impl TortugaUi {
             example,
             trend,
             changes: comparison.as_deref(),
+            cookies,
         };
         match response_panel(ui, outcome, &mut self.response, cx) {
             Some(ResponseAction::SaveBody) => {
@@ -105,7 +107,43 @@ impl TortugaUi {
                     }));
                 }
             }
+            Some(ResponseAction::ShowCookieJar) => {
+                if let Some(k) = key {
+                    self.show_cookies(k.root.clone());
+                }
+            }
             None => {}
         }
+    }
+
+    /// The Cookies tab is there only when the request sends and stores cookies: its own
+    /// switch and the project's, workspace's or app's setting (R-CK-6, R-SET-1).
+    fn cookies_tab(&self, key: &Selection) -> CookiesTab {
+        let root = key.as_ref().map(|k| k.root.as_path());
+        if !self.current.cookies || !self.state.resolved_settings(root).cookies.value {
+            CookiesTab::Hidden
+        } else if root.is_some() {
+            CookiesTab::Project
+        } else {
+            CookiesTab::Scratch
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_host::TestHost;
+
+    /// R-CK-6: the Cookies tab follows the request's switch and "Send and store cookies".
+    #[test]
+    fn the_cookies_tab_is_there_only_when_cookies_are_sent_and_stored() {
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+        assert_eq!(ui.cookies_tab(&None), CookiesTab::Scratch);
+        ui.current.cookies = false;
+        assert_eq!(ui.cookies_tab(&None), CookiesTab::Hidden);
+        ui.current.cookies = true;
+        ui.state.settings.client.send_cookies = false;
+        assert_eq!(ui.cookies_tab(&None), CookiesTab::Hidden);
     }
 }

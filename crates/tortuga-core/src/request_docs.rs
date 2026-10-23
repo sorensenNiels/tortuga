@@ -93,10 +93,11 @@ fn table(rows: &[Row<'_>]) -> String {
 
 fn auth_section(out: &mut String, auth: Option<&Auth>) {
     let text = match auth {
-        None => "Inherited from the folder or project.",
-        Some(Auth::None) => "None.",
-        Some(Auth::Basic { .. }) => "Basic: a user name and password.",
-        Some(Auth::Bearer { .. }) => "Bearer token.",
+        None => "Inherited from the folder or project.".to_owned(),
+        Some(Auth::None) => "None.".to_owned(),
+        Some(Auth::Basic { .. }) => "Basic: a user name and password.".to_owned(),
+        Some(Auth::Bearer { .. }) => "Bearer token.".to_owned(),
+        Some(Auth::Header { name, .. }) => format!("The header `{}`.", name.trim()),
     };
     let _ = write!(out, "\n## Auth\n\n{text}\n");
 }

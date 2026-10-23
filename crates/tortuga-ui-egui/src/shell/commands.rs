@@ -430,13 +430,15 @@ impl TortugaUi {
                 self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
             }
             Command::Settings => {
-                self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
+                self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(
+                    &self.state.settings,
+                ))));
             }
             Command::CheckForUpdates => {
                 self.check_for_updates_now(ctx);
-                self.modal = Some(Modal::Settings(
+                self.modal = Some(Modal::Settings(Box::new(
                     SettingsDialog::new(&self.state.settings).on_about_tab(),
-                ));
+                )));
             }
             Command::History => {
                 self.state.set_sidebar_hidden(false);

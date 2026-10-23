@@ -340,6 +340,11 @@ mod tests {
                         ],
                         collapsed: vec!["/repo/api".into()],
                     },
+                    // R-COL-36: a folded project and a folded folder.
+                    folded: vec![
+                        ("/repo/api".into(), PathBuf::new()),
+                        ("/repo/api".into(), "users ü😀".into()),
+                    ],
                     ..Workspace::default()
                 },
                 Workspace {

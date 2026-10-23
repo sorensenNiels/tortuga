@@ -176,10 +176,14 @@ impl TortugaUi {
     pub(super) fn switch_workspace(&mut self, change: impl FnOnce(&mut AppState)) {
         self.keep_if_edited();
         self.state.remember_tabs(self.tabs.to_saved());
+        if let Some(folded) = self.sidebar.take_folded() {
+            self.state.remember_folded(folded);
+        }
         self.select_and_remember(None, false);
         change(&mut self.state);
         self.check_restored_drafts();
         self.restore_tabs();
+        self.sidebar.restore(self.state.remembered_folded());
         let remembered = self.state.remembered_selection();
         self.tabs.open(&remembered, false);
         self.select_and_remember(remembered, false);

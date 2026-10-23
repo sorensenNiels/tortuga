@@ -823,6 +823,20 @@ content_type = "image/png"
         );
         assert_eq!(parse_request(&text, "x").expect("parse").0, r);
 
+        // R-HTTP-22.
+        r.auth = Some(Auth::Header {
+            name: "X-API-Key".into(),
+            value: "{{api_key}}".into(),
+        });
+        let text = write_request(&r, None);
+        assert!(
+            text.ends_with(
+                "\n[auth]\nkind = \"header\"\nname = \"X-API-Key\"\nvalue = \"{{api_key}}\"\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(parse_request(&text, "x").expect("parse").0, r);
+
         r.auth = Some(Auth::None);
         let text = write_request(&r, None);
         assert!(text.ends_with("\n[auth]\nkind = \"none\"\n"), "{text}");

@@ -3,19 +3,23 @@ use std::sync::{Arc, OnceLock};
 
 use egui::{Grid, Key, Label, RichText, ScrollArea, TextEdit, TextStyle, Ui};
 use tortuga_core::changes::Comparison;
+use tortuga_core::highlight::{self, Token};
 use tortuga_core::script::{ConsoleEntry, ScriptKind};
-use tortuga_core::{BodyView, Response};
+use tortuga_core::{BodyView, Response, ResponseCookies};
 
 use super::console_view::{console_view, console_went_wrong};
 
 use crate::{format, theme};
 
+mod cookies;
 mod filter;
 mod json_menu;
 mod picture;
 mod rows;
 mod trend;
 
+pub use cookies::CookiesTab;
+use cookies::cookies_tab;
 use filter::Syntax;
 pub use filter::{Filtered, filter_body};
 #[cfg(test)]
@@ -116,6 +120,8 @@ pub struct ResponseView {
     json: OnceLock<Option<serde_json::Value>>,
     /// The whole body parsed as XML, on first use by the filter (R-HTTP-19).
     xml: OnceLock<Option<tortuga_core::xml::Document>>,
+    /// What the `Set-Cookie` headers set (R-CK-6).
+    cookies: ResponseCookies,
 }
 
 #[derive(Debug)]
@@ -137,6 +143,8 @@ pub struct TextBody {
     truncated: bool,
     /// JSON or XML, which can be filtered.
     syntax: Syntax,
+    /// What to colour, for JSON and XML (R-HTTP-24).
+    spans: Vec<(Range<usize>, Token)>,
     /// How much of the body is shown when it is `truncated`.
     limit: usize,
 }
@@ -145,6 +153,10 @@ impl TextBody {
     fn new(text: String, truncated: bool, syntax: Syntax) -> Self {
         Self {
             rows: rows(&text),
+            spans: syntax
+                .language()
+                .map(|language| highlight::spans(language, &text))
+                .unwrap_or_default(),
             text,
             truncated,
             syntax,
@@ -168,6 +180,7 @@ impl ResponseView {
             return Self {
                 raw: Some(TextBody::hex(&response.body)),
                 body: Body::Image(image),
+                cookies: ResponseCookies::of(&response),
                 response,
                 json: OnceLock::new(),
                 xml: OnceLock::new(),
@@ -205,6 +218,7 @@ impl ResponseView {
             _ => None,
         };
         Self {
+            cookies: ResponseCookies::of(&response),
             response,
             body,
             raw,
@@ -340,6 +354,8 @@ enum Tab {
     Tests,
     /// What the scripts logged, breakpoint hits and errors (R-TEST-9, R-TEST-10).
     Console,
+    /// The cookies the response set (R-CK-6).
+    Cookies,
 }
 
 /// Panel state that is not part of the response; reset for each new response.
@@ -429,6 +445,8 @@ pub struct PanelContext<'a> {
     pub trend: Trend<'a>,
     /// How this response differs from the request's previous one (R-HIST-5).
     pub changes: Option<&'a Comparison>,
+    /// Whether there is a Cookies tab (R-CK-6).
+    pub cookies: CookiesTab,
 }
 
 /// "Save as example" is offered for requests of projects that can be changed (R-MOCK-1).
@@ -454,6 +472,8 @@ pub enum ResponseAction {
     },
     /// Show what changed since the previous response (R-HIST-5).
     ShowChanges,
+    /// Open the cookie viewer of the request's project (R-CK-5, R-CK-6).
+    ShowCookieJar,
 }
 
 /// "3 changes" (or "Same as before") since the previous response (R-HIST-5); returns
@@ -470,19 +490,25 @@ fn changes_chip(ui: &mut Ui, c: &Comparison) -> bool {
         .clicked()
 }
 
-/// Body, Headers, and Tests and Console when the request has scripts; Tests and Console
-/// are red when something went wrong (R-TEST-6, R-TEST-9).
+/// Body, Headers, Cookies when the request sends and stores them (R-CK-6), and Tests and
+/// Console when the request has scripts; Tests and Console are red when something went
+/// wrong (R-TEST-6, R-TEST-9).
 fn response_tabs(
     ui: &mut Ui,
-    response: &Response,
+    view: &ResponseView,
     tests: Option<&TestsView>,
+    cookies: CookiesTab,
     st: &mut ResponseState,
 ) {
-    let header_count = response.headers.len().to_string();
+    let header_count = view.response.headers.len().to_string();
     let mut tabs = vec![
         (Tab::Body, "Body", None),
         (Tab::Headers, "Headers", Some(header_count)),
     ];
+    if cookies != CookiesTab::Hidden {
+        let n = view.cookies.cookies.len();
+        tabs.push((Tab::Cookies, "Cookies", (n > 0).then(|| n.to_string())));
+    }
     if let Some(t) = tests {
         let label = if t.tests.is_empty() {
             (!t.errors.is_empty()).then(|| "✗".to_owned())
@@ -504,6 +530,9 @@ fn response_tabs(
     }
     if console_went_wrong(console) {
         failing.push(Tab::Console);
+    }
+    if !view.cookies.unreadable.is_empty() {
+        failing.push(Tab::Cookies);
     }
     theme::tabs_flagged(ui, &mut st.tab, &tabs, &failing);
 }
@@ -585,8 +614,10 @@ fn details(
         wrap,
         trend,
         changes,
+        cookies,
         ..
     } = cx;
+    let (now_ms, offset_minutes) = (trend.now_ms, trend.offset_minutes);
     let response = &view.response;
     let mut action = None;
     let p = theme::palette(ui);
@@ -643,7 +674,7 @@ fn details(
     if st.focus_search {
         st.tab = Tab::Body;
     }
-    response_tabs(ui, response, tests, st);
+    response_tabs(ui, view, tests, cookies, st);
     let console = tests.map(|t| t.console.as_slice()).unwrap_or_default();
 
     theme::card(ui).show(ui, |ui| match st.tab {
@@ -653,31 +684,39 @@ fn details(
             }
         }
         Tab::Tests => tests_tab(ui, tests),
+        Tab::Cookies => {
+            if let Some(asked) = cookies_tab(ui, &view.cookies, cookies, now_ms, offset_minutes) {
+                action = Some(asked);
+            }
+        }
         Tab::Console => {
             ScrollArea::vertical()
                 .id_salt("console")
                 .auto_shrink([false, false])
                 .show(ui, |ui| console_view(ui, console));
         }
-        Tab::Headers => {
-            ScrollArea::vertical()
-                .id_salt("response-headers")
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    Grid::new("response-headers-grid")
-                        .num_columns(2)
-                        .spacing([24.0, 8.0])
-                        .show(ui, |ui| {
-                            for h in &response.headers {
-                                ui.label(RichText::new(&h.name).monospace().color(p.muted));
-                                ui.add(Label::new(RichText::new(&h.value).monospace()).wrap());
-                                ui.end_row();
-                            }
-                        });
-                });
-        }
+        Tab::Headers => headers_tab(ui, response),
     });
     action
+}
+
+fn headers_tab(ui: &mut Ui, response: &Response) {
+    let p = theme::palette(ui);
+    ScrollArea::vertical()
+        .id_salt("response-headers")
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            Grid::new("response-headers-grid")
+                .num_columns(2)
+                .spacing([24.0, 8.0])
+                .show(ui, |ui| {
+                    for h in &response.headers {
+                        ui.label(RichText::new(&h.name).monospace().color(p.muted));
+                        ui.add(Label::new(RichText::new(&h.value).monospace()).wrap());
+                        ui.end_row();
+                    }
+                });
+        });
 }
 
 /// The body with its toolbar. Returns the new wrapping choice if it was changed.
@@ -995,6 +1034,7 @@ mod tests {
                 example: SaveExample::Offered,
                 trend: Trend::default(),
                 changes: None,
+                cookies: CookiesTab::Project,
             };
             response_panel(ui, outcome.as_ref(), &mut st, cx);
         });
@@ -1021,6 +1061,7 @@ mod tests {
                 example: SaveExample::Offered,
                 trend: Trend::default(),
                 changes: None,
+                cookies: CookiesTab::Project,
             };
             if let Some(a) = response_panel(ui, outcome.as_ref(), &mut st, cx) {
                 asked = Some(a);
@@ -1064,6 +1105,34 @@ mod tests {
         h.get_by_label("8 B");
         h.get_by_label("Headers (1)");
         h.get_by_label("  \"id\": 7");
+    }
+
+    /// R-HTTP-24: pretty JSON and XML are in colour; the raw view and plain text are not.
+    #[test]
+    fn pretty_bodies_are_coloured_and_raw_ones_are_not() {
+        let view = ResponseView::new(json_response());
+        let pretty = text(&view);
+        let coloured: Vec<_> = pretty
+            .spans
+            .iter()
+            .map(|(r, t)| (&pretty.text[r.clone()], *t))
+            .collect();
+        assert!(coloured.contains(&("\"id\"", Token::Key)), "{coloured:?}");
+        assert!(coloured.contains(&("7", Token::Number)), "{coloured:?}");
+        assert_eq!(view.raw.as_ref().expect("raw view").spans, []);
+
+        let view = ResponseView::new(xml_response("<a x=\"ü😀\"/>"));
+        assert!(
+            text(&view)
+                .spans
+                .iter()
+                .any(|(_, t)| *t == Token::Attribute)
+        );
+
+        let mut plain = json_response();
+        plain.headers.clear();
+        plain.body = "{{name}} ü😀".as_bytes().to_vec();
+        assert_eq!(text(&ResponseView::new(plain)).spans, []);
     }
 
     #[test]
@@ -1402,6 +1471,7 @@ mod tests {
                         example: SaveExample::Hidden,
                         trend: Trend::default(),
                         changes: Some(c),
+                        cookies: CookiesTab::Hidden,
                     };
                     if let Some(a) = response_panel(ui, Some(&outcome), &mut st, cx) {
                         asked = Some(a);
@@ -1413,5 +1483,84 @@ mod tests {
             }
             assert_eq!(asked, Some(ResponseAction::ShowChanges), "{label}");
         }
+    }
+    fn set_cookie_response() -> Response {
+        Response {
+            headers: vec![
+                KeyValue::new("Set-Cookie", "session=Zoë 😀; Path=/api; HttpOnly"),
+                KeyValue::new("Set-Cookie", "theme=dark; Domain=example.test; Max-Age=0"),
+            ],
+            ..json_response()
+        }
+    }
+
+    /// R-CK-6: the Cookies tab lists what the response set and opens the project's jar;
+    /// without cookies being sent and stored there is no tab.
+    #[test]
+    fn the_cookies_tab_lists_what_the_response_set() {
+        let outcome = Some(Outcome::from_result(Ok(set_cookie_response())));
+        let mut st = ResponseState::default();
+        let mut filter = String::new();
+        let mut asked = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                let cx = PanelContext {
+                    sending: false,
+                    can_save: false,
+                    filter: &mut filter,
+                    filtered: Filtered::Off,
+                    tests: None,
+                    wrap: false,
+                    example: SaveExample::Hidden,
+                    trend: Trend::default(),
+                    changes: None,
+                    cookies: CookiesTab::Project,
+                };
+                if let Some(a) = response_panel(ui, outcome.as_ref(), &mut st, cx) {
+                    asked = Some(a);
+                }
+            });
+            h.run();
+            h.get_by_label("Cookies (2)").click();
+            h.run();
+            h.get_by_label("Zoë 😀");
+            h.get_by_label("This host/api");
+            h.get_by_label("Session");
+            h.get_by_label("HttpOnly");
+            h.get_by_label("*.example.test");
+            h.get_by_label("Removes it");
+            h.get_by_label("Open the jar…").click();
+            h.run();
+        }
+        assert_eq!(asked, Some(ResponseAction::ShowCookieJar));
+
+        let mut st = ResponseState::default();
+        let mut filter = String::new();
+        let mut h = crate::test_host::harness(|ui| {
+            let cx = PanelContext {
+                sending: false,
+                can_save: false,
+                filter: &mut filter,
+                filtered: Filtered::Off,
+                tests: None,
+                wrap: false,
+                example: SaveExample::Hidden,
+                trend: Trend::default(),
+                changes: None,
+                cookies: CookiesTab::Hidden,
+            };
+            response_panel(ui, outcome.as_ref(), &mut st, cx);
+        });
+        h.run();
+        assert!(h.query_by_label_contains("Cookies").is_none());
+    }
+
+    /// R-CK-6: a response without cookies still has the tab, with no count.
+    #[test]
+    fn a_response_without_cookies_says_so() {
+        let mut h = render(Some(Outcome::from_result(Ok(json_response()))));
+        h.get_by_label("Cookies").click();
+        h.run();
+        h.get_by_label("This response set no cookies.");
     }
 }

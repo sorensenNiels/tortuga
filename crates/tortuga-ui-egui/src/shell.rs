@@ -21,6 +21,7 @@ mod request_head;
 mod response;
 mod sending;
 mod shortcuts;
+pub(crate) use shortcuts::app_keys;
 mod tabs;
 mod toast;
 mod updates;
@@ -37,12 +38,13 @@ use futures_util::future::AbortHandle;
 use tortuga_core::script::Breakpoints;
 use tortuga_core::{Request, vars};
 
+use crate::components::script_keys;
 use crate::components::{
     AddProjectsDialog, ChangesDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
-    CreateProjectDialog, DefaultsDialog, EditorContext, EditorState, EnvironmentsDialog, Marks,
-    MoveDialog, NameDialog, Outcome, Palette, Rerun, ResponseState, ResponseView,
-    SaveToCollectionDialog, SettingsDialog, SidebarState, TabStripState, TestsView, TextBody,
-    request_editor, sidebar,
+    CopyToProjectDialog, CreateProjectDialog, DefaultsDialog, EditorContext, EditorState,
+    EnvironmentsDialog, Marks, MoveDialog, NameDialog, Outcome, Palette, Rerun, ResponseState,
+    ResponseView, SaveToCollectionDialog, SettingsDialog, SidebarState, TabStripState, TestsView,
+    TextBody, request_editor, sidebar,
 };
 use crate::format::sentence;
 use crate::host::{Host, SavedDrafts};
@@ -60,11 +62,12 @@ use shortcuts::{
 
 #[derive(Debug)]
 enum Modal {
-    Settings(SettingsDialog),
+    Settings(Box<SettingsDialog>),
     Environments(EnvironmentsDialog),
     Defaults(DefaultsDialog),
     ConfirmDelete(ItemKey, ConfirmDialog),
     MoveTo(MoveDialog),
+    CopyTo(CopyToProjectDialog),
     SaveToCollection(SaveToCollectionDialog),
     CreateProject(CreateProjectDialog),
     AddProjects(AddProjectsDialog),
@@ -94,6 +97,8 @@ enum Modal {
     Shortcuts(crate::components::ShortcutsDialog),
     /// Asking before something goes to a protected environment (R-SRV-9).
     Protected(Guarded, ConfirmDialog),
+    /// Closing a project's tabs while some have unsaved edits (R-COL-37).
+    CloseProjectTabs(PathBuf, ConfirmDialog),
     /// What changed between two responses (R-HIST-5).
     Changes(ChangesDialog),
     /// The request sent to every environment (R-SRV-10); what came back is in
@@ -328,8 +333,9 @@ impl TortugaUi {
             updates: updates::Updates::default(),
         };
         ui.restore_drafts();
-        // Back where the user left off (R-WS-1, R-COL-13).
+        // Back where the user left off (R-WS-1, R-COL-13, R-COL-36).
         ui.restore_tabs();
+        ui.sidebar.restore(ui.state.remembered_folded());
         let remembered = ui.state.remembered_selection();
         ui.select(remembered);
         ui
@@ -344,6 +350,7 @@ impl TortugaUi {
             self.check_for_updates_at_start(ui.ctx());
         }
         self.apply_appearance(ui.ctx());
+        script_keys::use_settings(ui.ctx(), &self.state.settings.script_editor);
         self.collect_finished();
         self.collect_fanout();
         self.collect_workflow_events();
@@ -355,7 +362,8 @@ impl TortugaUi {
             self.on_disk_change(&root);
         }
         self.state.mocks.take_hits();
-        if self.modal.is_none() {
+        // A script field's own keys win over the app's (R-TEST-17).
+        if self.modal.is_none() && !script_keys::field_takes_keys(ui.ctx()) {
             self.shortcuts(ui);
         }
 
@@ -378,7 +386,7 @@ impl TortugaUi {
                         .color(p.warning_text),
                     );
                     if ui.link("Change in settings").clicked() {
-                        self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
+                        self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(&self.state.settings))));
                     }
                 });
             });
@@ -426,6 +434,9 @@ impl TortugaUi {
         self.show_modal(ui.ctx());
         self.toast(ui.ctx());
         self.sync_tabs();
+        if let Some(folded) = self.sidebar.take_folded() {
+            self.state.remember_folded(folded);
+        }
     }
 
     /// The sidebar: projects, or the history (R-HIST-2).
@@ -547,7 +558,7 @@ impl TortugaUi {
     fn show_shortcuts(&mut self, ctx: &egui::Context) {
         let mac = ctx.os() == egui::os::OperatingSystem::Mac;
         self.modal = Some(Modal::Shortcuts(crate::components::ShortcutsDialog::new(
-            shortcuts::sheet(mac),
+            shortcuts::sheet(mac, &script_keys::current(ctx)),
         )));
     }
 
@@ -604,7 +615,9 @@ impl TortugaUi {
                     egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, "Settings")
                 });
                 if settings.clicked() {
-                    self.modal = Some(Modal::Settings(SettingsDialog::new(&self.state.settings)));
+                    self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(
+                        &self.state.settings,
+                    ))));
                 }
                 self.update_link(ui);
                 let go_to = (
@@ -831,6 +844,7 @@ impl TortugaUi {
         // Every field that holds per-request state is listed here and in `forget`.
         self.retarget_workflows(root, old, new);
         self.tabs.remap(root, old, new);
+        self.sidebar.remap(root, old, new);
         let moved = |k: &ItemKey| k.moved(root, old, new);
         let moved_selection = |k: &Selection| k.as_ref().and_then(moved).map(Some);
         rekey(&mut self.drafts, moved);
@@ -863,6 +877,7 @@ impl TortugaUi {
         self.sent.retain(|k, _| !gone_selection(k));
         self.recent.retain(|k| !gone(k));
         self.tabs.retain(|k| !gone_selection(k));
+        self.sidebar.forget(root, prefix);
         self.forget_past_if(gone_selection);
         if self.selection.as_ref().is_some_and(gone) {
             // Not `select`: the request is gone, so its edits are not kept.
@@ -1181,6 +1196,105 @@ mod tests {
         }));
         assert_eq!(strip(&again), strip(&ui), "tabs restored");
         assert_eq!(again.selection, second_tab);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-36: a folded folder stays folded after a restart, follows a rename, and is
+    /// forgotten when the folder is deleted.
+    #[test]
+    fn folded_folders_come_back_after_a_restart() {
+        use egui_kittest::kittest::Queryable;
+
+        let (mut ui, root, _, local, drafts) = setup_shared("folded");
+        let folder = ui
+            .state
+            .run(&root, |c, s| c.new_folder(s, Path::new(""), "Users ü😀"))
+            .expect("folder");
+        let request = Request {
+            name: "List users".into(),
+            ..Request::default()
+        };
+        ui.state
+            .run(&root, |c, s| c.new_request(s, &folder, &request))
+            .expect("request");
+        let saved_folded = || {
+            local.borrow().as_ref().map_or_else(Vec::new, |l| {
+                l.workspaces[l.active_workspace].folded.clone()
+            })
+        };
+        {
+            let mut harness = crate::test_host::harness(|egui_ui| ui.ui(egui_ui));
+            harness.run();
+            harness.get_by_label_contains("Users ü😀").click();
+            harness.run();
+            assert!(harness.query_by_label_contains("List users").is_none());
+        }
+        assert_eq!(saved_folded(), [(root.clone(), folder.clone())]);
+        ui.on_exit();
+
+        let mut again = TortugaUi::new(Box::new(TestHost {
+            local: std::rc::Rc::clone(&local),
+            drafts,
+            ..TestHost::default()
+        }));
+        {
+            let mut harness = crate::test_host::harness(|egui_ui| again.ui(egui_ui));
+            harness.run();
+            harness.get_by_label_contains("Users ü😀");
+            assert!(
+                harness.query_by_label_contains("List users").is_none(),
+                "still folded"
+            );
+        }
+
+        again.rename(&ItemKey::new(&root, folder.clone()), "People".into());
+        crate::test_host::harness(|egui_ui| again.ui(egui_ui)).run();
+        let renamed = saved_folded();
+        assert_eq!(renamed.len(), 1);
+        assert_ne!(renamed[0].1, folder, "follows the rename");
+
+        let gone = ItemKey::new(&root, renamed[0].1.clone());
+        again
+            .state
+            .run(&root, |c, s| c.delete(s, &gone.path))
+            .expect("delete");
+        again.forget(&gone.root, &gone.path);
+        crate::test_host::harness(|egui_ui| again.ui(egui_ui)).run();
+        assert!(saved_folded().is_empty(), "forgotten with the folder");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-37: closing a project's tabs asks first when one has unsaved edits, and
+    /// the edits stay; with everything saved they close at once.
+    #[test]
+    fn closing_a_projects_tabs_warns_about_unsaved_edits() {
+        let (mut ui, root, first) = setup("close-project-tabs");
+        let second = add_request(&mut ui, &root, "List üsers 😀");
+        ui.open_tab(Some(first.clone()), true);
+        ui.open_tab(Some(second.clone()), true);
+        ui.current.set_display_url("https://a.test/edited");
+        ui.sync_tabs();
+
+        ui.on_tab(TabAction::CloseGroup(root.clone()));
+        assert!(
+            matches!(ui.modal, Some(Modal::CloseProjectTabs(..))),
+            "asks first"
+        );
+        assert_eq!(strip(&ui).len(), 2, "nothing closed before the answer");
+
+        ui.modal = None;
+        ui.close_project_tabs(&root);
+        assert!(
+            strip(&ui).iter().all(|(k, _)| k.is_none()),
+            "the project's tabs are closed"
+        );
+        assert!(ui.drafts.contains_key(&second), "the edits stay");
+
+        ui.drafts.remove(&second);
+        ui.open_tab(Some(first.clone()), true);
+        ui.on_tab(TabAction::CloseGroup(root.clone()));
+        assert!(ui.modal.is_none(), "nothing unsaved: no question");
+        assert!(strip(&ui).iter().all(|(k, _)| k.is_none()));
         std::fs::remove_dir_all(root).expect("clean up");
     }
 

@@ -1,5 +1,6 @@
 //! The filter above a JSON body (`JSONPath`, R-HTTP-13) or an XML body (`XPath`, R-HTTP-19).
 
+use tortuga_core::highlight::Language;
 use tortuga_core::model::is_json_content_type;
 use tortuga_core::{Response, jsonpath, xml, xpath};
 
@@ -25,6 +26,15 @@ impl Syntax {
             Self::Xml
         } else {
             Self::Plain
+        }
+    }
+
+    /// The language the body is coloured as (R-HTTP-24).
+    pub(super) fn language(self) -> Option<Language> {
+        match self {
+            Self::Json => Some(Language::Json),
+            Self::Xml => Some(Language::Xml),
+            Self::Plain => None,
         }
     }
 

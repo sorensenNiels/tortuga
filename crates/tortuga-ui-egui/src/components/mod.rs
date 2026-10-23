@@ -4,6 +4,7 @@
 mod auth_editor;
 mod body_editor;
 mod changes_dialog;
+mod code_colours;
 mod console_view;
 mod defaults_dialog;
 mod description;
@@ -22,6 +23,7 @@ mod request_scripts;
 mod response_panel;
 mod script_editing;
 pub(crate) mod script_editor;
+pub(crate) mod script_keys;
 mod settings_dialog;
 mod shortcuts_dialog;
 mod sidebar;
@@ -47,8 +49,8 @@ pub use key_value_table::key_value_table;
 pub use mock_dialog::{MockAction, MockDialog, MockView};
 pub use modals::{
     AddProjects, AddProjectsDialog, ConfirmDialog, CookieAction, CookiesDialog, CopyCurlDialog,
-    CreateProjectDialog, DialogResult, MoveDialog, NameDialog, RuntimeVarsDialog,
-    SaveToCollectionDialog,
+    CopyToProjectDialog, CreateProjectDialog, DialogResult, MoveDialog, NameDialog,
+    RuntimeVarsDialog, SaveToCollectionDialog,
 };
 use modals::{dialog, fitting_scroll_area, resizable_dialog};
 pub use palette::{Palette, PaletteItem};
@@ -57,8 +59,8 @@ pub use request_editor::{
 };
 pub use request_scripts::ScriptTab;
 pub use response_panel::{
-    Filtered, Outcome, PanelContext, ResponseAction, ResponseState, ResponseView, SaveExample,
-    TREND_LENGTH, TestsView, TextBody, Trend, TrendPoint, filter_body, response_panel,
+    CookiesTab, Filtered, Outcome, PanelContext, ResponseAction, ResponseState, ResponseView,
+    SaveExample, TREND_LENGTH, TestsView, TextBody, Trend, TrendPoint, filter_body, response_panel,
     tests_details,
 };
 pub use script_editing::insert_block;

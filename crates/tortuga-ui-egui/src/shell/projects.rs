@@ -8,8 +8,8 @@ use tortuga_core::{Item, Request};
 
 use super::{Modal, TortugaUi};
 use crate::components::{
-    AddProjectsDialog, ConfirmDialog, CreateProjectDialog, DefaultsDialog, EnvironmentsDialog,
-    MoveDialog, SidebarAction,
+    AddProjectsDialog, ConfirmDialog, CopyToProjectDialog, CreateProjectDialog, DefaultsDialog,
+    EnvironmentsDialog, MoveDialog, SidebarAction,
 };
 use crate::state::ItemKey;
 
@@ -58,6 +58,9 @@ impl TortugaUi {
                     .run(&key.root, |c, s| c.move_by(s, &key.path, direction));
             }
             SidebarAction::MoveTo(key) => self.modal = Some(Modal::MoveTo(MoveDialog::new(key))),
+            SidebarAction::CopyTo(key) => {
+                self.modal = Some(Modal::CopyTo(CopyToProjectDialog::new(&self.state, key)));
+            }
             SidebarAction::Delete(key) => {
                 let dialog = self.confirm_delete(&key);
                 self.modal = Some(Modal::ConfirmDelete(key, dialog));
@@ -124,6 +127,21 @@ impl TortugaUi {
             ),
             _ => return,
         });
+    }
+
+    /// Copies a request or folder into a folder of a project (R-COL-38) and opens a
+    /// copied request, so it shows where it went.
+    pub(super) fn copy_to_project(&mut self, item: &ItemKey, to: &ItemKey) {
+        // The target is re-read after the copy, so the source can't stay borrowed.
+        let Some(source) = self.state.collection(&item.root).cloned() else {
+            return;
+        };
+        if let Some(path) = self.state.run(&to.root, |c, s| {
+            c.copy_from(s, &source, &item.path, &to.path)
+        }) && path.extension().is_some_and(|e| e == "toml")
+        {
+            self.open_tab(Some(ItemKey::new(&to.root, path)), true);
+        }
     }
 
     /// Shows what went wrong, if anything did.

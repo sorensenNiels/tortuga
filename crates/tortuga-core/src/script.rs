@@ -1,16 +1,19 @@
 //! Pre-request and test scripts (R-TEST-1..3, D3, D24, D28): JavaScript run by Boa.
 //!
 //! A script sees `req`, `res` (tests only), `vars`, `test`, `expect`, `console`, `info`
-//! (R-TEST-16) and `workflow` (R-FLOW-6).
+//! (R-TEST-16), `workflow` (R-FLOW-6) and `xml2Json` (R-TEST-18).
 //! Everything else a browser or Node.js has (files, network, timers) does not exist, so
 //! scripts can only compute. Runaway scripts are stopped by Boa's loop and recursion
 //! limits. Inputs go in as one JSON value and results come back as one, so the script
-//! API is plain JavaScript (the prelude below) rather than native bindings.
+//! API is plain JavaScript (the prelude below) rather than native bindings; only
+//! `xml2Json` is native, since it takes any text the script has.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use boa_engine::{Context, Source};
+use boa_engine::{
+    Context, JsArgs, JsNativeError, JsResult, JsValue, NativeFunction, Source, js_string,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{KeyValue, Request, RequestBody, Response};
@@ -290,6 +293,16 @@ fn run_code(
     let limits = context.runtime_limits_mut();
     limits.set_loop_iteration_limit(LOOP_LIMIT);
     limits.set_recursion_limit(RECURSION_LIMIT);
+    if let Err(e) = context.register_global_callable(
+        js_string!("xml2Json"),
+        1,
+        NativeFunction::from_fn_ptr(xml2json),
+    ) {
+        return ScriptRun {
+            error: Some(format!("Tortuga's script setup failed: {e}")),
+            ..ScriptRun::default()
+        };
+    }
 
     // JSON is a valid JavaScript expression, so the input goes in as a literal.
     let prelude = format!("const __input = {input};\n{PRELUDE}");
@@ -340,6 +353,19 @@ fn run_code(
         run.console.push(ConsoleEntry::Error { message, line });
     }
     run
+}
+
+/// `xml2Json(text)` (R-TEST-18): XML text as an object, as Postman's gives it
+/// ([`crate::xml::to_json`]). Text that isn't XML throws, saying where.
+fn xml2json(_: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+    let text = args
+        .get_or_undefined(0)
+        .to_string(context)?
+        .to_std_string_escaped();
+    let json = crate::xml::to_json(&text).map_err(|e| {
+        JsNativeError::typ().with_message(format!("xml2Json got text that is not XML. {e}"))
+    })?;
+    JsValue::from_json(&json, context)
 }
 
 /// The line of the user's script an error happened on: the innermost stack frame in it.
@@ -1345,5 +1371,48 @@ mod tests {
                 .error
                 .is_some_and(|e| e.contains("workflow.next() needs the name of a step"))
         );
+    }
+
+    /// R-TEST-18: `xml2Json` reads an XML body as Postman's does, and says why when the
+    /// text isn't XML.
+    #[test]
+    fn xml2json_reads_xml_bodies() {
+        let res = response(
+            200,
+            r#"<users count="2"><user id="1">Ann ü😀</user><user id="2">Bo</user></users>"#,
+        );
+        let run = test_run(
+            r#"
+const users = xml2Json(res.body).users;
+test("count", () => expect(users.$.count).toBe("2"));
+test("names", () => expect(users.user.map((u) => u._)).toEqual(["Ann ü😀", "Bo"]));
+vars.set("first", users.user[0].$.id);
+const xml2JsonIsAFunction = typeof xml2Json === "function";
+console.log(xml2JsonIsAFunction);
+"#,
+            &res,
+        );
+        assert_eq!(run.error, None);
+        assert!(run.tests.iter().all(|t| t.passed), "{:?}", run.tests);
+        assert_eq!(run.vars["first"].as_deref(), Some("1"));
+        assert_eq!(logs(&run), ["true"]);
+
+        let run = test_run("xml2Json(res.body);", &response(200, r#"{"id": 1}"#));
+        let error = run.error.expect("JSON is not XML");
+        assert!(
+            error.ends_with(
+                "xml2Json got text that is not XML. Invalid XML at line 1, column 1: \
+                 there is text before the root element (line 1)"
+            ),
+            "{error}"
+        );
+
+        // A script may still declare its own `xml2Json`, as ported Postman scripts do.
+        let run = test_run(
+            "function xml2Json(t) { return 1; }\nvars.set(\"x\", xml2Json(\"\"));",
+            &res,
+        );
+        assert_eq!(run.error, None);
+        assert_eq!(run.vars["x"].as_deref(), Some("1"));
     }
 }

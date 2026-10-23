@@ -46,6 +46,8 @@ open = "5"
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 # Random values for dynamic variables (R-VAR-8); already in the build through Boa.
 rand = "0.10"
+# The `X-Tortuga-Token` header sent with every request (R-HTTP-23).
+cuid2 = "0.1"
 wasm-bindgen-futures = "0.4"
 # JavaScript for pre-request and test scripts (R-TEST-3, D24): pure Rust, sandboxed.
 boa_engine = { version = "0.22", default-features = false }

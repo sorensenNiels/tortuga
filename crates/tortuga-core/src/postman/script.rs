@@ -4,7 +4,8 @@
 //! common assertions, `pm.response.to.have.status(…)`/`.header(…)`/`.be.ok`, the
 //! response's code, status, time, size, headers, cookies and body, getting and setting
 //! variables (also the data row's, and `replaceIn`), `pm.info` (R-COL-21) and
-//! `setNextRequest` as `workflow.next`/`stop` (R-FLOW-6). A translated script runs only when nothing of Postman's API is left and
+//! `setNextRequest` as `workflow.next`/`stop` (R-FLOW-6), and the legacy `responseBody` as
+//! `res.body` (`xml2Json` is Tortuga's too, R-TEST-18). A translated script runs only when nothing of Postman's API is left and
 //! it still parses; otherwise it is kept as comments, translated as far as it went.
 //!
 //! The scanner only looks at code outside strings and comments, and only splits the
@@ -17,7 +18,7 @@ use crate::import::js::{
 use crate::script;
 
 /// Names a script may only use in Postman. A script that still uses one is not run.
-const POSTMAN_GLOBALS: [&str; 14] = [
+const POSTMAN_GLOBALS: [&str; 13] = [
     "pm",
     "postman",
     "tests",
@@ -30,7 +31,6 @@ const POSTMAN_GLOBALS: [&str; 14] = [
     "require",
     "CryptoJS",
     "cheerio",
-    "xml2Json",
     "_",
 ];
 
@@ -82,6 +82,9 @@ fn rewrite(code: &str) -> String {
 
 /// The translation of the call that `s` starts with, and how much of `s` it replaces.
 fn translate_at(s: &str) -> Option<(usize, String)> {
+    if let Some(end) = word(s, "responseBody") {
+        return Some((end, "res.body".to_owned()));
+    }
     if !(s.starts_with("pm.") || s.starts_with("postman.")) {
         return None;
     }
@@ -515,6 +518,23 @@ pm.environment.set("userId", pm.response.json().id);
         for (postman, tortuga) in cases {
             assert_eq!(rewrite(postman), tortuga, "translating {postman:?}");
         }
+    }
+
+    /// R-TEST-18: `xml2Json(responseBody)`, Postman's way to read an XML body, runs as it
+    /// is, with `responseBody` as `res.body`.
+    #[test]
+    fn xml2json_of_the_response_body_is_translated() {
+        let tortuga = complete(
+            "const doc = xml2Json(responseBody);\n\
+             const again = xml2Json(pm.response.text());\n\
+             pm.environment.set('id', doc.user.$.id + doc.responseBody);",
+        );
+        assert_eq!(
+            tortuga,
+            "const doc = xml2Json(res.body);\n\
+             const again = xml2Json(res.body);\n\
+             vars.set('id', doc.user.$.id + doc.responseBody);"
+        );
     }
 
     /// R-COL-19: what is not translated keeps the script from running, translated as far

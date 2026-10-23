@@ -1,8 +1,9 @@
 //! Settings of the app itself, kept on this machine (R-LOC-1): the HTTP client's
 //! (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-SET-3), which importers are offered (R-COL-18),
 //! appearance (R-SET-4, R-SET-5, R-SET-7, R-SET-10), history (R-SET-6), editing
-//! (R-SET-9, R-SET-11) and the new-version check (R-SET-15); and the request
-//! settings a workspace or project can override (R-SET-1, D39).
+//! (R-SET-9, R-SET-11), the script editor (R-SET-16) and the new-version check
+//! (R-SET-15); and the request settings a workspace or project can override (R-SET-1,
+//! D39).
 //!
 //! Every setting has a default that suits most developers, and only settings that
 //! differ from it are written, so a new setting never needs a migration.
@@ -13,6 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::http::ClientSettings;
 use crate::import::ImportKind;
+
+mod script_editor;
+pub use script_editor::{KeyScheme, ScriptCommand, ScriptEditorSettings};
 
 /// Everything in the app's settings file.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -34,6 +38,8 @@ pub struct AppSettings {
     pub features: FeatureSettings,
     #[serde(skip_serializing_if = "UpdateSettings::is_default")]
     pub updates: UpdateSettings,
+    #[serde(skip_serializing_if = "ScriptEditorSettings::is_default")]
+    pub script_editor: ScriptEditorSettings,
 }
 
 /// Whether the app looks for a new version by itself (R-SET-15, D63).

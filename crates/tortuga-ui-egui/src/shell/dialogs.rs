@@ -23,32 +23,9 @@ impl TortugaUi {
                 DialogResult::Done(defaults) => !self.save_defaults(&d.target.clone(), defaults),
                 result => result == DialogResult::Open,
             },
-            Modal::ConfirmDelete(key, d) => match d.show(ctx) {
-                DialogResult::Done(()) => {
-                    if self
-                        .state
-                        .run(&key.root, |c, s| c.delete(s, &key.path))
-                        .is_some()
-                    {
-                        self.forget(&key.root, &key.path);
-                    }
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
-            Modal::MoveTo(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(dest) => {
-                    let key = d.item.clone();
-                    if let Some(new_path) = self
-                        .state
-                        .run(&key.root, |c, s| c.move_to(s, &key.path, &dest))
-                    {
-                        self.remap(&key.root, &key.path, &new_path);
-                    }
-                    false
-                }
-                result => result == DialogResult::Open,
-            },
+            Modal::ConfirmDelete(..) | Modal::MoveTo(_) | Modal::CopyTo(_) => {
+                self.show_item_modal(ctx, &mut modal)
+            }
             Modal::SaveToCollection(d) => match d.show(ctx, &self.state) {
                 DialogResult::Done((folder, name)) => {
                     let request = Request {
@@ -88,6 +65,7 @@ impl TortugaUi {
             Modal::Mock(d) => self.show_mock_dialog(ctx, d),
             Modal::Import(open) => self.show_import_dialog(ctx, open),
             Modal::EnvironmentImport(open) => self.show_environment_import(ctx, open),
+            Modal::CloseProjectTabs(root, d) => self.show_close_project_tabs(ctx, root, d),
             Modal::ClearHistory(target, d) => match d.show(ctx) {
                 DialogResult::Done(()) => {
                     self.clear_history(target);
@@ -105,6 +83,46 @@ impl TortugaUi {
         // A dialog may have opened another one ("Create a project there…"); never overwrite it.
         if keep && self.modal.is_none() {
             self.modal = Some(modal);
+        }
+    }
+
+    /// Dialogs about one request or folder (R-COL-2, R-COL-38). Returns whether it stays open.
+    fn show_item_modal(&mut self, ctx: &egui::Context, modal: &mut Modal) -> bool {
+        match modal {
+            Modal::ConfirmDelete(key, d) => match d.show(ctx) {
+                DialogResult::Done(()) => {
+                    if self
+                        .state
+                        .run(&key.root, |c, s| c.delete(s, &key.path))
+                        .is_some()
+                    {
+                        self.forget(&key.root, &key.path);
+                    }
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::MoveTo(d) => match d.show(ctx, &self.state) {
+                DialogResult::Done(dest) => {
+                    let key = d.item.clone();
+                    if let Some(new_path) = self
+                        .state
+                        .run(&key.root, |c, s| c.move_to(s, &key.path, &dest))
+                    {
+                        self.remap(&key.root, &key.path, &new_path);
+                    }
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::CopyTo(d) => match d.show(ctx, &self.state) {
+                DialogResult::Done(to) => {
+                    self.copy_to_project(&d.item.clone(), &to);
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            _ => false,
         }
     }
 
@@ -229,6 +247,23 @@ impl TortugaUi {
         match d.show(ctx) {
             DialogResult::Done(()) => {
                 self.go_ahead(ctx, guarded.clone());
+                false
+            }
+            result => result == DialogResult::Open,
+        }
+    }
+
+    /// Asks before closing a project's tabs that have unsaved edits (R-COL-37).
+    /// Returns whether the question stays open.
+    fn show_close_project_tabs(
+        &mut self,
+        ctx: &egui::Context,
+        root: &std::path::Path,
+        d: &crate::components::ConfirmDialog,
+    ) -> bool {
+        match d.show(ctx) {
+            DialogResult::Done(()) => {
+                self.close_project_tabs(root);
                 false
             }
             result => result == DialogResult::Open,
@@ -394,6 +429,52 @@ impl TortugaUi {
 mod tests {
     use super::*;
 
+    /// R-COL-38: "Copy to project…" starts on another project; Copy writes the request
+    /// there, opens the copy and leaves the original as it was.
+    #[test]
+    fn copy_to_project_copies_into_the_other_project() {
+        use egui_kittest::kittest::Queryable;
+        use std::path::Path;
+        use tortuga_core::storage::FsStorage;
+        use tortuga_core::{Collection, HttpMethod};
+
+        use crate::components::CopyToProjectDialog;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        let source = Collection::create(&FsStorage, &a, "Source ü😀").expect("create");
+        Collection::create(&FsStorage, &b, "Target").expect("create");
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/x");
+        request.name = "List".into();
+        let path = source
+            .new_request(&FsStorage, Path::new(""), &request)
+            .expect("request");
+        let mut ui = TortugaUi::new(Box::new(crate::test_host::TestHost {
+            open: vec![a.clone(), b.clone()],
+            ..crate::test_host::TestHost::default()
+        }));
+        let item = ItemKey::new(&a, path.clone());
+        ui.modal = Some(Modal::CopyTo(CopyToProjectDialog::new(&ui.state, item)));
+        {
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1400.0, 860.0))
+                .build_ui(|egui_ui| ui.ui(egui_ui));
+            h.run_steps(4);
+            h.get_by_label("Copy").click();
+            h.run_steps(4);
+        }
+
+        assert!(ui.modal.is_none(), "closed");
+        let target = ui.state.collection(&b).expect("target");
+        assert!(
+            target.find(&path).is_some(),
+            "copied into the other project"
+        );
+        assert_eq!(ui.selection, Some(ItemKey::new(&b, path.clone())));
+        let source = ui.state.collection(&a).expect("source");
+        assert!(source.find(&path).is_some(), "the original stays");
+    }
+
     /// R-SET-10: a newly chosen code font that isn't a font keeps the dialog open with
     /// the reason; one already in use isn't read again.
     #[test]
@@ -428,7 +509,9 @@ mod tests {
         let mut ui = TortugaUi::new(Box::new(crate::test_host::TestHost::default()));
         let mut settings = ui.state.settings.clone();
         settings.client.proxy = tortuga_core::ProxyMode::Manual;
-        ui.modal = Some(super::Modal::Settings(SettingsDialog::new(&settings)));
+        ui.modal = Some(super::Modal::Settings(Box::new(SettingsDialog::new(
+            &settings,
+        ))));
         let mut h = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1400.0, 860.0))
             .build_ui(|egui_ui| ui.ui(egui_ui));

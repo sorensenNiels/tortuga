@@ -1,7 +1,10 @@
 //! The app's settings dialog: requests (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-HTTP-20,
 //! R-SET-3), appearance (R-SET-4, R-SET-5, R-SET-7, R-SET-10, R-SET-12), editing
-//! (R-SET-9, R-SET-11), features (R-SET-13), history (R-SET-6), importers (R-COL-18)
-//! and about, with the new-version check (R-SET-14, R-SET-15).
+//! (R-SET-9, R-SET-11), the script editor (R-SET-16), features (R-SET-13), history
+//! (R-SET-6), importers (R-COL-18) and about, with the new-version check (R-SET-14,
+//! R-SET-15).
+
+mod script_editor_tab;
 
 use std::path::PathBuf;
 
@@ -37,6 +40,7 @@ enum SettingsTab {
     Requests,
     Appearance,
     Editing,
+    ScriptEditor,
     Features,
     History,
     Importers,
@@ -62,6 +66,8 @@ pub struct SettingsDialog {
     pub choose_font_requested: bool,
     /// "Check now" was clicked on the About tab; the shell checks (R-SET-15).
     pub check_requested: bool,
+    /// The key being recorded on the Script editor tab (R-SET-16).
+    script_editor_tab: script_editor_tab::ScriptEditorTab,
     /// The height of the shown tab's content last frame (see `fitting_scroll_area`).
     content_height: f32,
 }
@@ -83,6 +89,7 @@ impl SettingsDialog {
             add_ca_requested: false,
             choose_font_requested: false,
             check_requested: false,
+            script_editor_tab: script_editor_tab::ScriptEditorTab::default(),
             content_height: 0.0,
         }
     }
@@ -124,6 +131,7 @@ impl SettingsDialog {
                     (SettingsTab::Requests, "Requests", None),
                     (SettingsTab::Appearance, "Appearance", None),
                     (SettingsTab::Editing, "Editing", None),
+                    (SettingsTab::ScriptEditor, "Script editor", None),
                     (SettingsTab::Features, "Features", None),
                     (SettingsTab::History, "History", None),
                     (SettingsTab::Importers, "Importers", None),
@@ -170,6 +178,9 @@ impl SettingsDialog {
                     appearance_settings(ui, &mut self.draft.appearance, can_pick_files);
             }
             SettingsTab::Editing => editing_settings(ui, &mut self.draft.editing),
+            SettingsTab::ScriptEditor => self
+                .script_editor_tab
+                .show(ui, &mut self.draft.script_editor),
             SettingsTab::Features => feature_settings(ui, &mut self.draft.features),
             SettingsTab::History => {
                 history_settings(ui, &mut self.draft.history, &mut self.history_text);
@@ -843,6 +854,64 @@ mod tests {
                 auto_save: true
             }
         );
+    }
+
+    /// R-SET-16: a script key is changed by clicking it and pressing another; Escape
+    /// cancels; brackets are paired or not.
+    #[test]
+    fn script_editor_keys_are_changed_in_settings() {
+        use tortuga_core::settings::ScriptCommand;
+
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        let saved = saved(&mut dialog, |h| {
+            h.get_by_label("Script editor").click();
+            h.run();
+            h.get_by_label("Close brackets and quotes").click();
+            h.get_by_label("Ctrl+Shift+K").click();
+            h.run();
+            h.get_by_label("Press a key…");
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
+            h.run();
+            h.get_by_label("Alt+Shift+F").click();
+            h.run();
+            h.key_press(egui::Key::Escape);
+            h.run();
+            assert!(h.query_by_label("Press a key…").is_none(), "Escape cancels");
+        })
+        .expect("saved, Escape didn't close the dialog");
+        let s = &saved.script_editor;
+        assert!(!s.close_pairs);
+        assert_eq!(s.keys(ScriptCommand::DeleteLines), ["Ctrl+D"]);
+        assert!(!s.changed(ScriptCommand::Beautify));
+    }
+
+    /// R-SET-16: choosing a scheme gives its keys and drops the changed ones.
+    #[test]
+    fn a_key_scheme_is_chosen_in_settings() {
+        use tortuga_core::settings::{KeyScheme, ScriptCommand};
+
+        let mut settings = AppSettings::default();
+        settings
+            .script_editor
+            .set_keys(ScriptCommand::DeleteLines, vec!["Ctrl+E".into()]);
+        let mut dialog = SettingsDialog::new(&settings);
+        let saved = saved(&mut dialog, |h| {
+            h.get_by_label("Script editor").click();
+            h.run();
+            h.get_by_label("Choosing a scheme replaces the keys you changed.");
+            h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Keys like")
+                .click();
+            h.run();
+            h.get_by_label("JetBrains (IntelliJ, WebStorm, …)").click();
+            h.run();
+            h.get_by_label("Ctrl+Alt+L");
+            assert!(h.query_by_label("Reset all").is_none(), "nothing changed");
+        })
+        .expect("saved");
+        let s = &saved.script_editor;
+        assert_eq!(s.scheme, KeyScheme::JetBrains);
+        assert_eq!(s.keys(ScriptCommand::DeleteLines), ["Ctrl+Y"]);
+        assert!(!s.changed(ScriptCommand::DeleteLines));
     }
 
     /// R-SET-10: density, code size and going back to the bundled code font.

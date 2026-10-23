@@ -57,6 +57,10 @@ const TEST_SNIPPETS: &[(&str, &str)] = &[
     ),
     ("Log the body", "console.log(res.json());"),
     (
+        XML_SNIPPET,
+        "// The XML body as an object: attributes under $, text under _ (as in Postman).\nconst xml = xml2Json(res.body);\nconsole.log(xml);",
+    ),
+    (
         "Save a cookie to a variable",
         "if (res.cookie(\"session\") !== undefined) {\n  vars.set(\"session\", res.cookie(\"session\"));\n}",
     ),
@@ -69,6 +73,9 @@ const TEST_SNIPPETS: &[(&str, &str)] = &[
         "// In a workflow run: end this iteration after this step.\nif (res.status === 404) {\n  workflow.stop();\n}",
     ),
 ];
+
+/// The test snippet that needs an XML response (R-TEST-18).
+const XML_SNIPPET: &str = "Read an XML body";
 
 /// Room under a script field for its "Reference" line.
 const BELOW_FIELD: f32 = 64.0;
@@ -244,7 +251,7 @@ pub fn request_scripts(
                 ui,
                 "pre-request",
                 "vars.get/set/unset/has/replaceIn, req.method/url/headers/body, \
-                 req.setHeader(name, value), info.requestName/iteration, workflow.next(step)/stop() \
+                 req.setHeader(name, value), xml2Json(text), info.requestName/iteration, workflow.next(step)/stop() \
                  in workflow runs, console.log/info/warn/error. Click a line number to set a breakpoint: the \
                  Console then shows the variables there.",
             );
@@ -274,6 +281,7 @@ pub fn request_scripts(
                 "test(name, fn); expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not) \
                  or Chai's expect(x).to.equal/.to.be.an(\"object\")/.to.have.property/…; \
                  res.status, res.json(), res.header(name), res.cookie(name), res.time, res.body; \
+                 xml2Json(text); \
                  vars; info; workflow.next(step)/stop() in workflow runs; console.log. Click a line number to set a breakpoint: the Console then shows \
                  the variables there.",
             );
@@ -370,7 +378,11 @@ mod tests {
             body: br#"{"id": 7}"#.to_vec(),
             elapsed: std::time::Duration::from_millis(5),
         };
-        let all: Vec<&str> = TEST_SNIPPETS.iter().map(|(_, c)| *c).collect();
+        let all: Vec<&str> = TEST_SNIPPETS
+            .iter()
+            .filter(|(label, _)| *label != XML_SNIPPET)
+            .map(|(_, c)| *c)
+            .collect();
         let run = script::run(
             &all.join("\n"),
             Phase::Test,
@@ -381,6 +393,18 @@ mod tests {
         assert_eq!(run.error, None);
         assert!(run.tests.iter().all(|t| t.passed), "{:?}", run.tests);
         assert_eq!(run.vars["id"].as_deref(), Some("7"));
+        let xml = TEST_SNIPPETS
+            .iter()
+            .find_map(|(label, code)| (*label == XML_SNIPPET).then_some(*code))
+            .expect("the XML snippet is in the list");
+        let xml_res = Response {
+            headers: vec![KeyValue::new("content-type", "application/xml")],
+            body: br#"<user id="7">Ann</user>"#.to_vec(),
+            ..res
+        };
+        let run = script::run(xml, Phase::Test, &BTreeMap::new(), &req, Some(&xml_res));
+        assert_eq!(run.error, None);
+        assert_eq!(run.console.len(), 1, "{:?}", run.console);
         let all: Vec<&str> = PRE_REQUEST_SNIPPETS.iter().map(|(_, c)| *c).collect();
         let run = script::run(
             &all.join("\n"),

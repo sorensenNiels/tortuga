@@ -13,6 +13,31 @@ use crate::cookies::CookieJar;
 use crate::model::{FormPart, HttpMethod, KeyValue, Request, RequestBody, Response};
 use crate::{Error, Result, query};
 
+/// The `User-Agent` sent unless a request sets its own (R-HTTP-23).
+pub const USER_AGENT: &str = concat!("Tortuga/", env!("CARGO_PKG_VERSION"));
+
+/// Names one send, so it can be found in a server's logs (R-HTTP-23).
+pub const TOKEN_HEADER: &str = "X-Tortuga-Token";
+
+/// The headers every request gets unless it has an enabled header of the same name
+/// (R-HTTP-23), with `token` as the [`TOKEN_HEADER`]. `Host`, `Content-Length` and the
+/// connection's headers are the transport's; `Content-Type` comes from the body.
+pub fn automatic_headers(token: &str) -> [KeyValue; 5] {
+    [
+        KeyValue::new("User-Agent", USER_AGENT),
+        KeyValue::new("Accept", "*/*"),
+        // What the client decodes (reqwest's `gzip`, `deflate` and `brotli` features).
+        KeyValue::new("Accept-Encoding", "gzip, deflate, br"),
+        KeyValue::new("Cache-Control", "no-cache"),
+        KeyValue::new(TOKEN_HEADER, token),
+    ]
+}
+
+/// A new value for the [`TOKEN_HEADER`]: a CUID2, different on every send.
+pub fn new_token() -> String {
+    cuid2::create_id()
+}
+
 /// Global HTTP settings (R-HTTP-7, R-HTTP-8, R-HTTP-20).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -342,6 +367,13 @@ impl Client {
             {
                 continue;
             }
+            builder = builder.header(header_name(header)?, header_value(header)?);
+        }
+
+        for header in automatic_headers(&new_token())
+            .iter()
+            .filter(|h| !request.has_header(&h.name))
+        {
             builder = builder.header(header_name(header)?, header_value(header)?);
         }
 

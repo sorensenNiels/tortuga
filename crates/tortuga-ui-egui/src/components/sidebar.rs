@@ -46,6 +46,8 @@ pub enum SidebarAction {
     Duplicate(ItemKey),
     MoveBy(ItemKey, Direction),
     MoveTo(ItemKey),
+    /// Copy into a folder of another project (R-COL-38).
+    CopyTo(ItemKey),
     Delete(ItemKey),
     ShowError(String),
     EditEnvironments(PathBuf),
@@ -106,10 +108,65 @@ const ROW_HEIGHT: f32 = 28.0;
 pub struct SidebarState {
     /// Collapsed folders; a collection's own row uses the key with an empty path.
     collapsed: HashSet<ItemKey>,
+    /// `collapsed` changed since [`Self::take_folded`] last looked (R-COL-36).
+    changed: bool,
     rename: Option<Rename>,
 }
 
 impl SidebarState {
+    /// Folds the rows the workspace had folded when it was last left (R-COL-36).
+    pub fn restore(&mut self, folded: &[(PathBuf, PathBuf)]) {
+        self.collapsed = folded
+            .iter()
+            .map(|(root, path)| ItemKey::new(root, path.clone()))
+            .collect();
+        self.changed = false;
+    }
+
+    /// The folded rows in a stable order, if they changed since the last call, for
+    /// local data (R-COL-36).
+    pub fn take_folded(&mut self) -> Option<Vec<(PathBuf, PathBuf)>> {
+        if !std::mem::take(&mut self.changed) {
+            return None;
+        }
+        let mut folded: Vec<(PathBuf, PathBuf)> = self
+            .collapsed
+            .iter()
+            .map(|k| (k.root.clone(), k.path.clone()))
+            .collect();
+        folded.sort();
+        Some(folded)
+    }
+
+    /// Folded folders follow renames and moves.
+    pub fn remap(&mut self, root: &Path, old: &Path, new: &Path) {
+        let moved: Vec<(ItemKey, ItemKey)> = self
+            .collapsed
+            .iter()
+            .filter_map(|k| k.moved(root, old, new).map(|to| (k.clone(), to)))
+            .collect();
+        for (from, to) in moved {
+            self.collapsed.remove(&from);
+            self.collapsed.insert(to);
+            self.changed = true;
+        }
+    }
+
+    /// Drops folded rows of deleted folders or closed projects (`prefix` "" = the whole project).
+    pub fn forget(&mut self, root: &Path, prefix: &Path) {
+        let before = self.collapsed.len();
+        self.collapsed
+            .retain(|k| !(k.root == root && k.path.starts_with(prefix)));
+        self.changed |= self.collapsed.len() != before;
+    }
+
+    fn toggle(&mut self, key: &ItemKey) {
+        if !self.collapsed.remove(key) {
+            self.collapsed.insert(key.clone());
+        }
+        self.changed = true;
+    }
+
     /// Starts inline renaming of an item, e.g. a folder that was just created.
     pub fn start_rename(&mut self, key: ItemKey, current_name: String) {
         self.rename = Some(Rename::new(key, current_name));
@@ -382,7 +439,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
         }
         let row = row.on_hover_text(hover);
         if row.clicked() {
-            toggle(&mut tree.st.collapsed, &key);
+            tree.st.toggle(&key);
         }
         let choice = from_button.or_else(|| context_menu(&row, menu));
         apply(tree, choice, &key, c.name());
@@ -439,7 +496,7 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
         .on_hover_text("Requests run one after the other, with checks (R-FLOW-1)")
         .clicked()
     {
-        toggle(&mut tree.st.collapsed, &group);
+        tree.st.toggle(&group);
     }
     if collapsed {
         return;
@@ -552,7 +609,7 @@ fn repository_row(
         hover = format!("{hover}\nGit branch: {branch}");
     }
     if row.on_hover_text(hover).clicked() {
-        toggle(&mut tree.st.collapsed, &key);
+        tree.st.toggle(&key);
     }
     collapsed
 }
@@ -747,7 +804,7 @@ fn tree_item(
             tree.actions.push(SidebarAction::Keep(Some(key.clone())));
         } else if row.clicked() {
             if is_folder {
-                toggle(&mut tree.st.collapsed, &key);
+                tree.st.toggle(&key);
             } else {
                 tree.actions.push(SidebarAction::Select(Some(key.clone())));
             }
@@ -831,12 +888,6 @@ fn skip_hidden_row(ui: &mut Ui) -> bool {
     }
     ui.allocate_space(size);
     true
-}
-
-fn toggle(set: &mut HashSet<ItemKey>, key: &ItemKey) {
-    if !set.remove(key) {
-        set.insert(key.clone());
-    }
 }
 
 fn is_renaming(tree: &Tree<'_>, key: &ItemKey) -> bool {
@@ -927,7 +978,7 @@ mod tests {
                         choices.push(collection_menu(ui, &c, 0, offers, None));
                     });
                     h.run();
-                    let found = h.query_by_label(entry);
+                    let found = h.query_by_label_contains(entry);
                     assert_eq!(found.is_some(), on, "{entry}");
                     if let Some(found) = found {
                         found.click();

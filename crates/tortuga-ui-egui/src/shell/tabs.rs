@@ -11,9 +11,10 @@ use egui::{Frame, Margin, Panel, Ui};
 use tortuga_core::{HttpMethod, Item, Request};
 
 use super::{
-    CLOSE_TAB, GO_TO_TAB, NEXT_TAB, PREVIOUS_TAB, Selection, TAB_BEFORE, TortugaUi, breadcrumb,
+    CLOSE_TAB, GO_TO_TAB, Modal, NEXT_TAB, PREVIOUS_TAB, Selection, TAB_BEFORE, TortugaUi,
+    breadcrumb,
 };
-use crate::components::{GroupChip, TabAction, TabGroup, TabView, tab_strip};
+use crate::components::{ConfirmDialog, GroupChip, TabAction, TabGroup, TabView, tab_strip};
 use crate::host::{SavedTab, SavedTabs};
 use crate::state::ItemKey;
 use crate::theme;
@@ -225,16 +226,56 @@ impl TortugaUi {
                 self.close_tabs(&saved);
             }
             TabAction::ToggleGroup(root) => self.tabs.toggle_group(&root),
-            TabAction::CloseGroup(root) => {
-                let group: Vec<Selection> = self
-                    .tabs
-                    .strip()
-                    .map(|(k, _)| k.clone())
-                    .filter(|k| k.as_ref().is_some_and(|k| k.root == root))
-                    .collect();
-                self.close_tabs(&group);
-            }
+            TabAction::CloseGroup(root) => self.ask_to_close_project_tabs(&root),
         }
+    }
+
+    /// Closes a project's tabs, asking first when some of them have unsaved edits
+    /// (R-COL-37). The edits stay either way (R-COL-6).
+    fn ask_to_close_project_tabs(&mut self, root: &Path) {
+        let dirty = self.dirty_keys();
+        let unsaved = self
+            .project_tabs(root)
+            .iter()
+            .flatten()
+            .filter(|k| dirty.contains(*k) || self.conflicts.contains_key(*k))
+            .count();
+        if unsaved == 0 {
+            self.close_project_tabs(root);
+            return;
+        }
+        let name = self
+            .state
+            .collection(root)
+            .map(|c| c.name().to_owned())
+            .unwrap_or_default();
+        let message = if unsaved == 1 {
+            "1 of its requests has unsaved edits.".to_owned()
+        } else {
+            format!("{unsaved} of its requests have unsaved edits.")
+        };
+        let dialog = ConfirmDialog {
+            title: format!("Close the tabs of “{name}”?"),
+            message: format!(
+                "{message} They are not lost: opening the request again shows them, until you save or revert."
+            ),
+            confirm_label: "Close tabs".into(),
+        };
+        self.modal = Some(Modal::CloseProjectTabs(root.to_owned(), dialog));
+    }
+
+    /// Closes every tab of the project at `root` (R-COL-14, R-COL-37).
+    pub(super) fn close_project_tabs(&mut self, root: &Path) {
+        let group = self.project_tabs(root);
+        self.close_tabs(&group);
+    }
+
+    fn project_tabs(&self, root: &Path) -> Vec<Selection> {
+        self.tabs
+            .strip()
+            .map(|(k, _)| k.clone())
+            .filter(|k| k.as_ref().is_some_and(|k| k.root == root))
+            .collect()
     }
 
     /// Closes tabs. Unsaved edits stay (R-COL-6): reopening the request shows them.

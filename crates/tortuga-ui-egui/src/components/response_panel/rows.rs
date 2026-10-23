@@ -1,12 +1,14 @@
 //! The rows of a text body: only the visible ones are laid out (R-NF-2), search matches
-//! are highlighted (R-HTTP-12), and formatted JSON has a menu per row (R-TEST-13).
+//! are highlighted (R-HTTP-12), JSON and XML are in colour (R-HTTP-24), and formatted JSON has a menu per row (R-TEST-13).
 
 use std::ops::Range;
 
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Label, RichText, ScrollArea, TextStyle, TextWrapMode, Ui};
+use egui::{Color32, Label, RichText, ScrollArea, TextStyle, TextWrapMode, Ui};
+use tortuga_core::highlight::Token;
 
 use super::{ResponseAction, ResponseState, TextBody, WrappedRows, json_menu, wrap_rows};
+use crate::components::code_colours;
 use crate::theme;
 
 /// Whether the body's rows have a menu (R-TEST-13).
@@ -86,7 +88,7 @@ pub(super) fn text_rows(
     area.show_rows(ui, row_height, rows.len(), |ui, visible| {
         for range in &rows[visible] {
             let found = matches_in(&st.matches, range);
-            let row = if found.is_empty() {
+            let row = if found.is_empty() && spans_in(&body.spans, range).is_empty() {
                 ui.add(
                     Label::new(RichText::new(&body.text[range.clone()]).monospace())
                         .wrap_mode(TextWrapMode::Extend)
@@ -112,7 +114,7 @@ pub(super) fn text_rows(
     action
 }
 
-/// A row with the search matches in it highlighted (R-HTTP-12).
+/// A row in colour (R-HTTP-24) with the search matches in it highlighted (R-HTTP-12).
 fn highlighted_row(
     ui: &mut Ui,
     body: &TextBody,
@@ -123,34 +125,66 @@ fn highlighted_row(
 ) -> egui::Response {
     let p = theme::palette(ui);
     let text_color = ui.visuals().text_color();
+    let spans = spans_in(&body.spans, range);
+    // The row is cut wherever a coloured part or a match starts or ends.
+    let mut cuts = vec![range.start, range.end];
+    let clamp = |at: usize| at.clamp(range.start, range.end);
+    for r in spans
+        .iter()
+        .map(|(r, _)| r)
+        .chain(found.iter().map(|(_, m)| *m))
+    {
+        cuts.extend([clamp(r.start), clamp(r.end)]);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
     let mut job = LayoutJob::default();
-    let plain = TextFormat::simple(font.clone(), text_color);
-    let mut at = range.start;
-    for &(i, m) in found {
-        let (start, end) = (m.start.max(range.start), m.end.min(range.end));
-        job.append(&body.text[at..start], 0.0, plain.clone());
-        let background = if i == current {
-            p.redirect
-        } else {
-            p.redirect.gamma_multiply(0.35)
+    let (mut span, mut hit) = (spans.iter().peekable(), found.iter().peekable());
+    for piece in cuts.windows(2) {
+        let [start, end] = [piece[0], piece[1]];
+        let Some(text) = body.text.get(start..end) else {
+            continue;
         };
-        let color = if i == current { p.bg } else { text_color };
+        // Both lists are in order: skip what ended before this piece.
+        while span.next_if(|(r, _)| r.end <= start).is_some() {}
+        while hit.next_if(|(_, m)| m.end <= start).is_some() {}
+        let mut color = span
+            .peek()
+            .filter(|(r, _)| r.start <= start)
+            .map_or(text_color, |(_, token)| code_colours::colour(&p, *token));
+        let mut background = Color32::TRANSPARENT;
+        if let Some((i, _)) = hit.peek().filter(|(_, m)| m.start <= start) {
+            if *i == current {
+                background = p.redirect;
+                color = p.bg;
+            } else {
+                background = p.redirect.gamma_multiply(0.35);
+            }
+        }
         job.append(
-            &body.text[start..end],
+            text,
             0.0,
             TextFormat {
                 background,
                 ..TextFormat::simple(font.clone(), color)
             },
         );
-        at = end;
     }
-    job.append(&body.text[at..range.end], 0.0, plain);
     ui.add(
         Label::new(job)
             .wrap_mode(TextWrapMode::Extend)
             .sense(egui::Sense::click()),
     )
+}
+
+/// The coloured parts that overlap `row`. `spans` is sorted.
+fn spans_in<'a>(
+    spans: &'a [(Range<usize>, Token)],
+    row: &Range<usize>,
+) -> &'a [(Range<usize>, Token)] {
+    let first = spans.partition_point(|(r, _)| r.end <= row.start);
+    let rest = &spans[first..];
+    &rest[..rest.partition_point(|(r, _)| r.start < row.end)]
 }
 
 /// The matches (with their index) that overlap `row`. `matches` is sorted.

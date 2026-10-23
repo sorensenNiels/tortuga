@@ -1,11 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
-use egui::{ComboBox, Context, Id, Modal, RichText, TextEdit, Ui};
+use egui::{Context, Id, Modal, RichText, TextEdit, Ui};
 use tortuga_core::CookieInfo;
 
-use crate::state::{AppState, ItemKey};
+use crate::state::AppState;
 use crate::theme;
+
+mod destinations;
+pub use destinations::{CopyToProjectDialog, MoveDialog, SaveToCollectionDialog};
 
 /// What a dialog wants after this frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,42 +165,11 @@ pub(super) fn finish<T>(cancel: bool, done: Option<T>) -> DialogResult<T> {
     }
 }
 
-/// A folder an item can go to: (display label, path relative to the root).
-fn destinations(state: &AppState, root: &Path) -> Vec<(String, PathBuf)> {
-    let Some(c) = state.collection(root) else {
-        return Vec::new();
-    };
-    let mut out = vec![(format!("{} (top level)", c.name()), PathBuf::new())];
-    for f in c.folders() {
-        let depth = f.path.components().count();
-        out.push((
-            format!("{}{}", "    ".repeat(depth), f.name),
-            f.path.clone(),
-        ));
-    }
-    out
-}
-
-fn folder_picker(ui: &mut Ui, id: &str, choices: &[(String, PathBuf)], target: &mut PathBuf) {
-    let selected = choices
-        .iter()
-        .find(|(_, p)| p == target)
-        .map(|(label, _)| label.trim().to_owned())
-        .unwrap_or_default();
-    ComboBox::from_id_salt(id)
-        .selected_text(selected)
-        .width(ui.available_width())
-        .show_ui(ui, |ui| {
-            for (label, path) in choices {
-                ui.selectable_value(target, path.clone(), label);
-            }
-        });
-}
-
-fn field_label(ui: &mut Ui, text: &str) {
+/// A small heading above a field; returns its id, to name the field for screen readers.
+fn field_label(ui: &mut Ui, text: &str) -> Id {
     ui.add_space(8.0);
     let color = theme::palette(ui).muted;
-    ui.label(theme::semibold(text).size(12.0).color(color));
+    ui.label(theme::semibold(text).size(12.0).color(color)).id
 }
 
 // ---------------------------------------------------------------- confirm
@@ -217,144 +189,6 @@ impl ConfirmDialog {
                 actions(ui, theme::danger_button(ui, &self.confirm_label), true);
             finish(cancel, confirm.then_some(()))
         })
-    }
-}
-
-// ---------------------------------------------------------------- move
-
-/// Pick a destination folder in the same project (R-COL-2).
-#[derive(Debug, Clone)]
-pub struct MoveDialog {
-    pub item: ItemKey,
-    target: PathBuf,
-}
-
-impl MoveDialog {
-    pub fn new(item: ItemKey) -> Self {
-        let target = current_parent(&item);
-        Self { item, target }
-    }
-
-    pub fn show(&mut self, ctx: &Context, state: &AppState) -> DialogResult<PathBuf> {
-        let item = &self.item;
-        let choices: Vec<(String, PathBuf)> = destinations(state, &item.root)
-            .into_iter()
-            .filter(|(_, p)| !p.starts_with(&item.path) || p.as_os_str().is_empty())
-            .collect();
-        let name = state
-            .collection(&item.root)
-            .and_then(|c| c.find(&item.path).map(tortuga_core::Item::name))
-            .unwrap_or_default();
-        let unchanged = self.target == current_parent(item);
-        let target = &mut self.target;
-        dialog(
-            ctx,
-            "move",
-            &format!("Move “{name}”"),
-            380.0,
-            true,
-            |ui| {
-                field_label(ui, "To folder");
-                folder_picker(ui, "move-target", &choices, target);
-                let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Move"), !unchanged);
-                finish(cancel, confirm.then(|| target.clone()))
-            },
-        )
-    }
-}
-
-fn current_parent(item: &ItemKey) -> PathBuf {
-    item.path.parent().map(PathBuf::from).unwrap_or_default()
-}
-
-// ---------------------------------------------------------------- save to project
-
-/// Save the scratch request into a project (R-COL-7 → R-COL-1).
-#[derive(Debug, Clone)]
-pub struct SaveToCollectionDialog {
-    root: Option<PathBuf>,
-    folder: PathBuf,
-    name: String,
-}
-
-impl SaveToCollectionDialog {
-    pub fn new(state: &AppState, initial_name: &str) -> Self {
-        Self {
-            root: state
-                .collections
-                .iter()
-                .find(|c| !c.read_only)
-                .map(|c| c.root.clone()),
-            folder: PathBuf::new(),
-            name: if initial_name == "Untitled request" {
-                String::new()
-            } else {
-                initial_name.to_owned()
-            },
-        }
-    }
-
-    /// Done with (folder to save in, request name).
-    pub fn show(&mut self, ctx: &Context, state: &AppState) -> DialogResult<(ItemKey, String)> {
-        let folders = self
-            .root
-            .as_ref()
-            .map(|r| destinations(state, r))
-            .unwrap_or_default();
-        dialog(
-            ctx,
-            "save-to-collection",
-            "Save request",
-            420.0,
-            true,
-            |ui| {
-                if state.collections.is_empty() {
-                    ui.label("Add or create a project first (“+ Add” in the sidebar).");
-                } else {
-                    field_label(ui, "Name");
-                    ui.add(
-                        TextEdit::singleline(&mut self.name)
-                            .hint_text("e.g. List users")
-                            .desired_width(f32::INFINITY),
-                    );
-                    field_label(ui, "Project");
-                    let selected = self
-                        .root
-                        .as_ref()
-                        .and_then(|r| state.collection(r))
-                        .map(|c| c.name().to_owned())
-                        .unwrap_or_default();
-                    let before = self.root.clone();
-                    ComboBox::from_id_salt("save-collection")
-                        .selected_text(selected)
-                        .width(ui.available_width())
-                        .show_ui(ui, |ui| {
-                            for c in &state.collections {
-                                ui.add_enabled_ui(!c.read_only, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.root,
-                                        Some(c.root.clone()),
-                                        c.name(),
-                                    );
-                                });
-                            }
-                        });
-                    if self.root != before {
-                        self.folder = PathBuf::new();
-                    }
-                    field_label(ui, "Folder");
-                    folder_picker(ui, "save-folder", &folders, &mut self.folder);
-                }
-                let name = self.name.trim();
-                let ok = self.root.is_some() && !name.is_empty();
-                let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Save"), ok);
-                let done = confirm
-                    .then_some(self.root.as_ref())
-                    .flatten()
-                    .map(|r| (ItemKey::new(r, self.folder.clone()), name.to_owned()));
-                finish(cancel, done)
-            },
-        )
     }
 }
 

@@ -10,6 +10,7 @@ enum Kind {
     None,
     Basic,
     Bearer,
+    Header,
 }
 
 impl Kind {
@@ -18,6 +19,7 @@ impl Kind {
             Auth::None => Self::None,
             Auth::Basic { .. } => Self::Basic,
             Auth::Bearer { .. } => Self::Bearer,
+            Auth::Header { .. } => Self::Header,
         }
     }
 
@@ -32,6 +34,10 @@ impl Kind {
             Self::Bearer => Some(Auth::Bearer {
                 token: String::new(),
             }),
+            Self::Header => Some(Auth::Header {
+                name: String::new(),
+                value: String::new(),
+            }),
         }
     }
 }
@@ -44,6 +50,11 @@ pub fn describe(auth: &Auth) -> String {
         Auth::Basic { username, .. } => format!("Basic auth as {username}"),
         Auth::Bearer { token } if vars::names(token).is_empty() => "Bearer token".to_owned(),
         Auth::Bearer { token } => format!("Bearer token {token}"),
+        Auth::Header { name, .. } if name.trim().is_empty() => "a header".to_owned(),
+        Auth::Header { name, value } if vars::names(value).is_empty() => {
+            format!("the header {}", name.trim())
+        }
+        Auth::Header { name, value } => format!("the header {}: {value}", name.trim()),
     }
 }
 
@@ -127,6 +138,7 @@ pub fn kind_picker(ui: &mut Ui, auth: &mut Option<Auth>, inherit: Option<&str>) 
         ui.radio_value(&mut chosen, Kind::None, "No auth");
         ui.radio_value(&mut chosen, Kind::Basic, "Basic");
         ui.radio_value(&mut chosen, Kind::Bearer, "Bearer token");
+        ui.radio_value(&mut chosen, Kind::Header, "Header");
     });
     if chosen != current {
         *auth = chosen.empty();
@@ -164,6 +176,11 @@ pub fn auth_fields(ui: &mut Ui, id: &str, auth: &mut Auth, help: &VarHelp, saved
                 changed |= field(ui, "Token", (id, "token"), token, help, width, true);
                 credential = Some(token.clone());
             }
+            Auth::Header { name, value } => {
+                changed |= field(ui, "Header", (id, "name"), name, help, width, false);
+                changed |= field(ui, "Value", (id, "value"), value, help, width, true);
+                credential = Some(value.clone());
+            }
         });
     if let Some(value) = credential
         && looks_like_plain_credential(&value)
@@ -177,8 +194,14 @@ pub fn auth_fields(ui: &mut Ui, id: &str, auth: &mut Auth, help: &VarHelp, saved
             ),
         );
     }
-    if !auth.is_none() {
-        theme::hint(ui, "An Authorization header added by hand replaces this.");
+    match auth.header() {
+        Some((name, _)) => {
+            theme::hint(ui, format!("A {name} header added by hand replaces this."));
+        }
+        None if matches!(auth, Auth::Header { .. }) => {
+            theme::hint(ui, "No header is added until it has a name.");
+        }
+        None => {}
     }
     changed
 }
@@ -240,6 +263,21 @@ mod tests {
             }),
             "Bearer token",
             "never shows a literal token"
+        );
+        assert_eq!(
+            describe(&Auth::Header {
+                name: "X-API-Key".into(),
+                value: "s3cret".into()
+            }),
+            "the header X-API-Key",
+            "R-HTTP-22: never shows a literal value"
+        );
+        assert_eq!(
+            describe(&Auth::Header {
+                name: "X-API-Key".into(),
+                value: "{{key}}".into()
+            }),
+            "the header X-API-Key: {{key}}"
         );
     }
 }
