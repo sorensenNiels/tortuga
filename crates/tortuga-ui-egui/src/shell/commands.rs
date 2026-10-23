@@ -75,29 +75,30 @@ pub(super) enum Command {
 /// R-COL-31, R-COL-32), with
 /// only the importers that are on (R-COL-18).
 fn project_commands(importers: &ImporterSettings) -> Vec<PaletteItem<PaletteChoice>> {
-    let run = |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+    let run =
+        |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
     [
-        run("Add existing projects…", Command::AddProjects),
-        run("New project…", Command::NewProject),
-        run("Import OpenAPI…", Command::Import(ImportKind::OpenApi))
-            .keywords("swagger spec yaml json"),
+        run(t!("cmd-add-projects"), Command::AddProjects),
+        run(t!("cmd-new-project"), Command::NewProject),
         run(
-            "Import Postman collection…",
+            t!("cmd-import-openapi"),
+            Command::Import(ImportKind::OpenApi),
+        )
+        .keywords("swagger spec yaml json"),
+        run(
+            t!("cmd-import-postman"),
             Command::Import(ImportKind::Postman),
         )
         .keywords("postman collection json"),
         run(
-            "Import Insomnia export…",
+            t!("cmd-import-insomnia"),
             Command::Import(ImportKind::Insomnia),
         )
         .keywords("insomnia kong export yaml json"),
-        run("Import .http file…", Command::Import(ImportKind::Http))
+        run(t!("cmd-import-http"), Command::Import(ImportKind::Http))
             .keywords("http rest client jetbrains requests"),
-        run(
-            "Import Bruno collection…",
-            Command::Import(ImportKind::Bruno),
-        )
-        .keywords("bruno bru collection folder"),
+        run(t!("cmd-import-bruno"), Command::Import(ImportKind::Bruno))
+            .keywords("bruno bru collection folder"),
     ]
     .into_iter()
     .filter(|item| match &item.value {
@@ -109,15 +110,19 @@ fn project_commands(importers: &ImporterSettings) -> Vec<PaletteItem<PaletteChoi
 
 /// The workspace's environments (R-WS-9), variables (R-WS-8) and defaults (R-SET-1, R-SET-2).
 fn workspace_commands(workspace: &str) -> [PaletteItem<PaletteChoice>; 3] {
-    let run = |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+    let run =
+        |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
     [
-        run("Workspace environments…", Command::WorkspaceEnvironments)
-            .detail(workspace)
-            .keywords("staging production servers urls"),
-        run("Workspace variables…", Command::WorkspaceVariables)
+        run(
+            t!("cmd-workspace-environments"),
+            Command::WorkspaceEnvironments,
+        )
+        .detail(workspace)
+        .keywords("staging production servers urls"),
+        run(t!("cmd-workspace-variables"), Command::WorkspaceVariables)
             .detail(workspace)
             .keywords("shared captured secret"),
-        run("Workspace defaults…", Command::WorkspaceDefaults)
+        run(t!("cmd-workspace-defaults"), Command::WorkspaceDefaults)
             .detail(workspace)
             .keywords("headers auth timeout redirects cookies settings"),
     ]
@@ -146,8 +151,8 @@ impl TortugaUi {
         // Stable: the tree order stays among requests that weren't opened.
         all.sort_by_key(|(key, _)| rank(key));
         let mut items = vec![
-            PaletteItem::new("Scratch request", PaletteChoice::Open(None))
-                .detail("Not saved anywhere"),
+            PaletteItem::new(t!("scratch-request"), PaletteChoice::Open(None))
+                .detail(t!("cmd-scratch-detail")),
         ];
         items.extend(all.into_iter().map(|(key, item)| item.value_for(key)));
         items
@@ -157,7 +162,7 @@ impl TortugaUi {
     /// (R-MOCK-4).
     fn environment_items(&self) -> Vec<PaletteItem<PaletteChoice>> {
         let run =
-            |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+            |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
         let in_mock = self.state.mocks.in_use();
         let shown = self.state.chosen_environment_name();
         let mut items: Vec<_> = self
@@ -166,15 +171,26 @@ impl TortugaUi {
             .into_iter()
             .map(|name| {
                 let current = !in_mock && shown.as_ref() == Some(&name);
-                run(&format!("Environment: {name}"), Command::Environment(name))
-                    .hint(if current { "current" } else { "" })
-                    .keywords("switch")
+                run(
+                    t!("cmd-environment", name = &name),
+                    Command::Environment(name),
+                )
+                .hint(if current {
+                    t!("cmd-current")
+                } else {
+                    String::new()
+                })
+                .keywords("switch")
             })
             .collect();
         if !self.state.mocks.ports().is_empty() {
             items.push(
-                run("Environment: Mock", Command::MockEnvironment)
-                    .hint(if in_mock { "current" } else { "" })
+                run(t!("cmd-environment-mock"), Command::MockEnvironment)
+                    .hint(if in_mock {
+                        t!("cmd-current")
+                    } else {
+                        String::new()
+                    })
                     .keywords("switch mock server"),
             );
         }
@@ -184,15 +200,15 @@ impl TortugaUi {
     /// A project's mock server commands (R-MOCK-2, R-MOCK-4).
     fn mock_items(&self, c: &tortuga_core::Collection) -> Vec<PaletteItem<PaletteChoice>> {
         let run =
-            |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+            |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
         let root = &c.root;
         let items = if self.state.mocks.port(root).is_some() {
             vec![
-                run("Mock server…", Command::ShowMock(root.clone())),
-                run("Stop mock server", Command::StopMock(root.clone())),
+                run(t!("cmd-mock-server"), Command::ShowMock(root.clone())),
+                run(t!("cmd-stop-mock"), Command::StopMock(root.clone())),
             ]
         } else if self.state.settings.features.enabled(Feature::Examples) {
-            vec![run("Start mock server", Command::StartMock(root.clone()))]
+            vec![run(t!("cmd-start-mock"), Command::StartMock(root.clone()))]
         } else {
             // Turned off (R-SET-13); one that is running can still be stopped.
             Vec::new()
@@ -217,7 +233,7 @@ impl TortugaUi {
     /// The commands for project `c`: its workflows, environments, defaults and mock.
     fn project_items(&self, c: &tortuga_core::Collection) -> Vec<PaletteItem<PaletteChoice>> {
         let run =
-            |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+            |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
         let workflows = self.state.settings.features.enabled(Feature::Workflows);
         let mut items = Vec::new();
         for w in c.workflows.iter().filter(|_| workflows) {
@@ -227,7 +243,7 @@ impl TortugaUi {
             };
             items.push(
                 run(
-                    &format!("Run workflow: {}", w.name),
+                    t!("cmd-run-workflow", name = &w.name),
                     Command::RunWorkflow(key),
                 )
                 .detail(c.name())
@@ -235,11 +251,13 @@ impl TortugaUi {
             );
         }
         if workflows && !c.read_only {
-            items.push(run("New workflow…", Command::NewWorkflow(c.root.clone())).detail(c.name()));
+            items.push(
+                run(t!("cmd-new-workflow"), Command::NewWorkflow(c.root.clone())).detail(c.name()),
+            );
         }
         items.push(
             run(
-                "Environments, servers and variables…",
+                t!("cmd-environments"),
                 Command::Environments(c.root.clone()),
             )
             .detail(c.name()),
@@ -266,7 +284,7 @@ impl TortugaUi {
         }
         items.push(
             run(
-                "Project defaults…",
+                t!("cmd-project-defaults"),
                 Command::ProjectDefaults(c.root.clone()),
             )
             .detail(c.name())
@@ -279,33 +297,33 @@ impl TortugaUi {
     /// The command palette's commands; those that don't apply right now are left out.
     pub(super) fn command_items(&self) -> Vec<PaletteItem<PaletteChoice>> {
         let run =
-            |label: &str, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+            |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
         let mut items = vec![
-            run("Send request", Command::Send).hint("Ctrl+Enter"),
-            run("Send to every environment", Command::SendEverywhere)
+            run(t!("cmd-send"), Command::Send).hint("Ctrl+Enter"),
+            run(t!("cmd-send-everywhere"), Command::SendEverywhere)
                 .hint("Ctrl+Shift+Enter")
                 .keywords("compare environments all"),
-            run("Quick open: go to a request", Command::QuickOpen).hint("Ctrl+P"),
+            run(t!("cmd-quick-open"), Command::QuickOpen).hint("Ctrl+P"),
         ];
         let key = self.selection.clone();
         let dirty = key
             .as_ref()
             .is_some_and(|k| self.is_dirty(k, &self.current));
         if key.is_none() || dirty {
-            items.push(run("Save", Command::Save).hint("Ctrl+S"));
+            items.push(run(t!("save"), Command::Save).hint("Ctrl+S"));
         }
         if dirty {
-            items.push(run("Revert changes", Command::Revert));
+            items.push(run(t!("cmd-revert"), Command::Revert));
         }
-        items.push(run("Copy as curl", Command::CopyCurl));
+        items.push(run(t!("copy-as-curl"), Command::CopyCurl));
         if !self.state.collections.is_empty() {
-            items.push(run("New request", Command::NewRequest));
+            items.push(run(t!("cmd-new-request"), Command::NewRequest));
         }
         items.extend(self.environment_items());
         for (i, ws) in self.state.local.workspaces.iter().enumerate() {
             if i != self.state.local.active_workspace {
                 items.push(
-                    run(&format!("Workspace: {}", ws.name), Command::Workspace(i))
+                    run(t!("cmd-workspace", name = &ws.name), Command::Workspace(i))
                         .keywords("switch"),
                 );
             }
@@ -323,24 +341,24 @@ impl TortugaUi {
         let place = root
             .as_ref()
             .and_then(|r| self.state.collection(r))
-            .map_or_else(|| "Scratch request".to_owned(), |c| c.name().to_owned());
+            .map_or_else(|| t!("scratch-request"), |c| c.name().to_owned());
         items.push(
-            run("Runtime variables…", Command::RuntimeVars(root))
+            run(t!("cmd-runtime-variables"), Command::RuntimeVars(root))
                 .detail(place)
                 .keywords("captured clear"),
         );
         items.extend(workspace_commands(&self.state.workspace().name));
-        items.push(run("Settings…", Command::Settings).keywords("preferences options"));
+        items.push(run(t!("cmd-settings"), Command::Settings).keywords("preferences options"));
         if self.state.host.checks_for_updates() {
             items.push(
-                run("Check for updates", Command::CheckForUpdates)
+                run(t!("cmd-check-updates"), Command::CheckForUpdates)
                     .keywords("new version release upgrade about"),
             );
         }
         let sidebar = if self.state.sidebar_hidden() {
-            "Show the sidebar"
+            t!("cmd-show-sidebar")
         } else {
-            "Hide the sidebar"
+            t!("cmd-hide-sidebar")
         };
         items.push(
             run(sidebar, Command::ToggleSidebar)
@@ -348,12 +366,14 @@ impl TortugaUi {
                 .keywords("projects panel toggle"),
         );
         items.push(
-            run("Keyboard shortcuts", Command::Shortcuts)
+            run(t!("shortcuts-title"), Command::Shortcuts)
                 .hint("F1")
                 .keywords("keys help"),
         );
         if self.state.host.keeps_history() {
-            items.push(run("Show history", Command::History).keywords("sent past responses"));
+            items.push(
+                run(t!("cmd-show-history"), Command::History).keywords("sent past responses"),
+            );
         }
         if self.state.host.can_pick_folders() {
             items.extend(project_commands(&self.state.settings.importers));

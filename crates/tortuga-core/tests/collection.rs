@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use tortuga_core::vars::Origin;
 
 use tortuga_core::collection::{ENVIRONMENTS_DIR, MANIFEST_FILE};
 use tortuga_core::storage::FsStorage;
@@ -430,21 +431,21 @@ fn folder_defaults_are_inherited_nearest_first() {
         ctx.variables["version"], "v9",
         "the environment wins over folders"
     );
-    let origins: Vec<(&str, &str)> = ctx
+    let origins: Vec<(&str, &Origin)> = ctx
         .headers
         .iter()
         .zip(&ctx.header_origins)
-        .map(|(h, o)| (h.name.as_str(), o.as_str()))
+        .map(|(h, o)| (h.name.as_str(), o))
         .collect();
     assert_eq!(
         origins,
         [
-            ("X-Team", "the project"),
-            ("Accept", "folder “Admin”"),
-            ("X-Area", "folder “Users”"),
+            ("X-Team", &Origin::Project),
+            ("Accept", &Origin::Folder("Admin".into())),
+            ("X-Area", &Origin::Folder("Users".into())),
         ]
     );
-    assert_eq!(ctx.auth_origin, "folder “Admin”");
+    assert_eq!(ctx.auth_origin, Origin::Folder("Admin".into()));
     let sent = prepare(&col.request(&req).expect("saved").request, &ctx).expect("prepare");
     assert!(
         sent.headers
@@ -476,7 +477,7 @@ fn a_folder_can_say_no_auth() {
     let col = reopen(&col);
     let ctx = Context::for_request(&col, Some("dev"), Some(&req));
     assert_eq!(ctx.auth, Some(tortuga_core::Auth::None));
-    assert_eq!(ctx.auth_origin, "folder “Users”");
+    assert_eq!(ctx.auth_origin, Origin::Folder("Users".into()));
     let sent = prepare(&col.request(&req).expect("saved").request, &ctx).expect("prepare");
     assert!(!sent.has_header("authorization"), "{:?}", sent.headers);
 
@@ -485,7 +486,7 @@ fn a_folder_can_say_no_auth() {
         .expect("saved");
     let col = reopen(&col);
     let outer_ctx = Context::for_request(&col, Some("dev"), Some(&outer.join("x.toml")));
-    assert_eq!(outer_ctx.auth_origin, "the project");
+    assert_eq!(outer_ctx.auth_origin, Origin::Project);
 }
 
 /// R-COL-11: renaming, reordering and duplicating a folder keep its defaults.

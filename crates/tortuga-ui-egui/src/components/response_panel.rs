@@ -65,7 +65,7 @@ impl Outcome {
                 errors
                     .first()
                     .cloned()
-                    .unwrap_or_else(|| "Not sent.".into()),
+                    .unwrap_or_else(|| t!("response-not-sent")),
             ),
         }
     }
@@ -481,12 +481,11 @@ pub enum ResponseAction {
 fn changes_chip(ui: &mut Ui, c: &Comparison) -> bool {
     let p = theme::palette(ui);
     let (text, color) = match c.count() {
-        0 => ("Same as before".to_owned(), p.muted),
-        1 => ("1 change".to_owned(), p.redirect),
-        n => (format!("{n} changes"), p.redirect),
+        0 => (t!("response-same-as-before"), p.muted),
+        n => (t!("response-changes", count = n), p.redirect),
     };
     ui.add(egui::Button::new(RichText::new(text).small().color(color)).small())
-        .on_hover_text("What changed since the previous response")
+        .on_hover_text(t!("response-changes-hint"))
         .clicked()
 }
 
@@ -502,12 +501,16 @@ fn response_tabs(
 ) {
     let header_count = view.response.headers.len().to_string();
     let mut tabs = vec![
-        (Tab::Body, "Body", None),
-        (Tab::Headers, "Headers", Some(header_count)),
+        (Tab::Body, t!("body"), None),
+        (Tab::Headers, t!("headers"), Some(header_count)),
     ];
     if cookies != CookiesTab::Hidden {
         let n = view.cookies.cookies.len();
-        tabs.push((Tab::Cookies, "Cookies", (n > 0).then(|| n.to_string())));
+        tabs.push((
+            Tab::Cookies,
+            t!("response-cookies"),
+            (n > 0).then(|| n.to_string()),
+        ));
     }
     if let Some(t) = tests {
         let label = if t.tests.is_empty() {
@@ -515,11 +518,11 @@ fn response_tabs(
         } else {
             Some(format!("{}/{}", t.tests.len() - t.failed(), t.tests.len()))
         };
-        tabs.push((Tab::Tests, "Tests", label));
+        tabs.push((Tab::Tests, t!("tests"), label));
     }
     let console = tests.map(|t| t.console.as_slice()).unwrap_or_default();
     if !console.is_empty() {
-        tabs.push((Tab::Console, "Console", Some(console.len().to_string())));
+        tabs.push((Tab::Console, t!("console"), Some(console.len().to_string())));
     }
     if !tabs.iter().any(|(t, ..)| *t == st.tab) {
         st.tab = Tab::Body;
@@ -548,7 +551,7 @@ pub fn response_panel(
     if cx.sending {
         empty_state(ui, |ui| {
             ui.spinner();
-            ui.label(RichText::new("Sending request…").color(p.muted));
+            ui.label(RichText::new(t!("response-sending")).color(p.muted));
         });
         return None;
     }
@@ -556,14 +559,14 @@ pub fn response_panel(
         None => {
             empty_state(ui, |ui| {
                 ui.label(RichText::new("⏵").size(28.0).color(p.border));
-                ui.label(theme::semibold("No response yet").color(p.muted));
+                ui.label(theme::semibold(t!("response-none-yet")).color(p.muted));
                 ui.label(
-                    RichText::new("Send a request to see the response here.")
+                    RichText::new(t!("response-none-yet-hint"))
                         .small()
                         .color(p.muted),
                 );
                 ui.label(
-                    RichText::new("Ctrl+Enter sends, Ctrl+S saves")
+                    RichText::new(t!("response-keys-hint"))
                         .small()
                         .color(p.muted.gamma_multiply(0.7)),
                 );
@@ -572,7 +575,7 @@ pub fn response_panel(
         }
         Some(Outcome::Cancelled) => {
             empty_state(ui, |ui| {
-                ui.label(theme::semibold("Request cancelled.").color(p.muted));
+                ui.label(theme::semibold(t!("response-cancelled")).color(p.muted));
             });
             None
         }
@@ -581,7 +584,7 @@ pub fn response_panel(
                 .corner_radius(egui::CornerRadius::same(8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.label(theme::semibold("Could not get a response").color(p.fail));
+                    ui.label(theme::semibold(t!("response-failed")).color(p.fail));
                     ui.add(Label::new(RichText::new(message).color(p.fail)).wrap());
                 });
             None
@@ -631,7 +634,7 @@ fn details(
     egui::Sides::new().shrink_left().show(
         ui,
         |ui| {
-            theme::section_label(ui, "Response");
+            theme::section_label(ui, &t!("response"));
             ui.add_space(4.0);
             theme::badge(
                 ui,
@@ -639,10 +642,10 @@ fn details(
                 status_color,
             );
             ui.label(RichText::new(format::elapsed(response.elapsed)).color(p.muted))
-                .on_hover_text("Time");
+                .on_hover_text(t!("mock-time"));
             ui.label(RichText::new("·").color(p.muted));
             ui.label(RichText::new(format::size(response.body.len())).color(p.muted))
-                .on_hover_text("Size");
+                .on_hover_text(t!("response-size"));
             ui.add_space(6.0);
             trend::trend(ui, trend);
             if let Some(c) = changes {
@@ -650,13 +653,13 @@ fn details(
             }
         },
         |ui| {
-            if can_save && ui.button("Save to file…").clicked() {
+            if can_save && ui.button(t!("response-save-to-file")).clicked() {
                 action = Some(ResponseAction::SaveBody);
             }
             if example == SaveExample::Offered
                 && ui
-                    .button("Save as example")
-                    .on_hover_text("Keep this response as an example the mock server answers with")
+                    .button(t!("response-save-as-example"))
+                    .on_hover_text(t!("response-save-as-example-hint"))
                     .clicked()
             {
                 action = Some(ResponseAction::SaveAsExample);
@@ -730,26 +733,23 @@ fn body(
 ) -> Option<ResponseAction> {
     // "Preview" for content that is not text, "Pretty" for text (R-HTTP-18).
     let modes = view.raw.as_ref().map(|_| match view.body {
-        Body::Image(_) | Body::Binary => "Preview",
-        _ => "Pretty",
+        Body::Image(_) | Body::Binary => t!("preview"),
+        _ => t!("response-pretty"),
     });
     let raw = view.raw.as_ref().filter(|_| st.raw);
     let full = match (&view.body, raw) {
         (_, Some(raw)) => raw,
         (Body::Empty, None) => {
-            theme::hint(ui, "No body.");
+            theme::hint(ui, t!("no-body"));
             return None;
         }
         (Body::Binary, None) => {
-            view_modes(ui, &mut st.raw, modes);
-            theme::hint(
-                ui,
-                "Binary content. Use “Save to file” to keep it, or “Raw” to see its bytes.",
-            );
+            view_modes(ui, &mut st.raw, modes.as_deref());
+            theme::hint(ui, t!("response-binary"));
             return None;
         }
         (Body::Image(img), None) => {
-            view_modes(ui, &mut st.raw, modes);
+            view_modes(ui, &mut st.raw, modes.as_deref());
             image_view(ui, img, st);
             return None;
         }
@@ -771,23 +771,20 @@ fn body(
         st.update_matches(&shown.text);
     }
     let filter = (full.syntax != Syntax::Plain).then_some((filter, full.syntax));
-    let wrap_changed = toolbar(ui, st, modes, filter, wrap).map(ResponseAction::SetWrap);
+    let wrap_changed = toolbar(ui, st, modes.as_deref(), filter, wrap).map(ResponseAction::SetWrap);
     if let Filtered::Failed(message) = filtered {
         theme::warning(ui, message);
     }
     let Some(shown) = shown else {
         ui.horizontal(|ui| {
             ui.spinner();
-            theme::hint(ui, "Filtering…");
+            theme::hint(ui, t!("response-filtering"));
         });
         return wrap_changed;
     };
     if shown.truncated {
         let limit = format::size(shown.limit);
-        theme::hint(
-            ui,
-            format!("Showing the first {limit}. Use “Save to file” for the full body."),
-        );
+        theme::hint(ui, t!("response-truncated", limit = limit));
     }
     // Tests and captures come from the whole formatted JSON only (R-TEST-13).
     let menus = if raw.is_none()
@@ -811,14 +808,14 @@ fn view_modes(ui: &mut Ui, raw: &mut bool, modes: Option<&str>) {
         ui.spacing_mut().item_spacing.x = 2.0;
         if ui
             .add(egui::Button::selectable(!*raw, pretty))
-            .on_hover_text("Show the body formatted")
+            .on_hover_text(t!("response-pretty-hint"))
             .clicked()
         {
             *raw = false;
         }
         if ui
-            .add(egui::Button::selectable(*raw, "Raw"))
-            .on_hover_text("Show the body as it came: unformatted text, or the bytes as hex")
+            .add(egui::Button::selectable(*raw, t!("response-raw")))
+            .on_hover_text(t!("response-raw-hint"))
             .clicked()
         {
             *raw = true;
@@ -843,10 +840,7 @@ pub fn tests_details(ui: &mut Ui, t: &TestsView) {
     {
         {
             if t.tests.is_empty() && t.errors.is_empty() {
-                theme::hint(
-                    ui,
-                    "No tests ran. Add some with test(\"name\", () => expect(res.status).toBe(200)) in the Scripts tab.",
-                );
+                theme::hint(ui, t!("response-no-tests"));
             }
             for test in &t.tests {
                 ui.horizontal_wrapped(|ui| {
@@ -867,7 +861,7 @@ pub fn tests_details(ui: &mut Ui, t: &TestsView) {
             }
             if !t.vars.is_empty() {
                 ui.add_space(8.0);
-                theme::section_label(ui, "Variables set");
+                theme::section_label(ui, &t!("response-variables-set"));
                 Grid::new("tests-vars")
                     .num_columns(2)
                     .spacing([16.0, 4.0])
@@ -875,7 +869,7 @@ pub fn tests_details(ui: &mut Ui, t: &TestsView) {
                         for (name, value) in &t.vars {
                             ui.label(RichText::new(name).monospace());
                             let shown = value.as_deref().map_or_else(
-                                || "(removed)".to_owned(),
+                                || t!("response-variable-removed"),
                                 |v| format::truncate(v, 120).0.to_owned(),
                             );
                             ui.add(
@@ -885,10 +879,7 @@ pub fn tests_details(ui: &mut Ui, t: &TestsView) {
                             ui.end_row();
                         }
                     });
-                theme::hint(
-                    ui,
-                    "Kept for this project until Tortuga closes; they win over environment values.",
-                );
+                theme::hint(ui, t!("response-variables-kept"));
             }
         }
     }
@@ -912,7 +903,7 @@ fn toolbar(
         |ui| {
             view_modes(ui, &mut raw, modes);
             if let Some((filter, syntax)) = filter {
-                ui.label(RichText::new("Filter").small().color(p.muted));
+                ui.label(RichText::new(t!("response-filter")).small().color(p.muted));
                 let edit = TextEdit::singleline(filter)
                     .id_salt("json-filter")
                     .font(TextStyle::Monospace)
@@ -923,8 +914,8 @@ fn toolbar(
         },
         |ui| {
             if ui
-                .add(egui::Button::selectable(wrap, "Wrap"))
-                .on_hover_text("Wrap long lines (also in Settings → Appearance)")
+                .add(egui::Button::selectable(wrap, t!("response-wrap")))
+                .on_hover_text(t!("response-wrap-hint"))
                 .clicked()
             {
                 wrap_changed = Some(!wrap);
@@ -933,22 +924,22 @@ fn toolbar(
             if !st.search.is_empty() {
                 if ui
                     .add_enabled(n > 0, theme::icon_button(ui, "↓"))
-                    .on_hover_text("Next match (Enter)")
+                    .on_hover_text(t!("response-next-match"))
                     .clicked()
                 {
                     st.step(true);
                 }
                 if ui
                     .add_enabled(n > 0, theme::icon_button(ui, "↑"))
-                    .on_hover_text("Previous match (Shift+Enter)")
+                    .on_hover_text(t!("response-previous-match"))
                     .clicked()
                 {
                     st.step(false);
                 }
                 let count = if n == 0 {
-                    "No matches".to_owned()
+                    t!("response-no-matches")
                 } else {
-                    format!("{} of {n}", st.current + 1)
+                    t!("response-match-of", current = st.current + 1, total = n)
                 };
                 ui.label(RichText::new(count).small().color(p.muted));
             }
@@ -956,12 +947,10 @@ fn toolbar(
                 .add(
                     TextEdit::singleline(&mut st.search)
                         .id_salt("response-search")
-                        .hint_text("Search (Ctrl+F)")
+                        .hint_text(t!("response-search"))
                         .desired_width(180.0),
                 )
-                .on_hover_text(
-                    "Search in the body (Ctrl+F). Enter: next match, Shift+Enter: previous.",
-                );
+                .on_hover_text(t!("response-search-hint"));
             if std::mem::take(&mut st.focus_search) {
                 search.request_focus();
             }

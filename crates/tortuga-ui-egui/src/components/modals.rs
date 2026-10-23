@@ -109,7 +109,7 @@ pub(super) fn resizable_dialog<T>(
             let grip = ui
                 .interact(grip_rect, size_id.with("grip"), egui::Sense::drag())
                 .on_hover_cursor(egui::CursorIcon::ResizeNwSe)
-                .on_hover_text("Drag to resize");
+                .on_hover_text(t!("drag-to-resize"));
             paint_grip(ui, grip_rect, grip.hovered() || grip.dragged());
             if grip.dragged() {
                 // The dialog stays centred, so it grows on both sides: twice the pointer's move
@@ -152,7 +152,7 @@ pub(super) fn actions(
     ui.add_space(16.0);
     theme::button_row(ui, |ui| {
         let confirm = ui.add_enabled(confirm_enabled, confirm).clicked();
-        let cancel = ui.button("Cancel").clicked();
+        let cancel = ui.button(t!("cancel")).clicked();
         (cancel, confirm)
     })
 }
@@ -222,36 +222,43 @@ impl CreateProjectDialog {
 
     /// Done with (project name, make the folder a git repository).
     pub fn show(&mut self, ctx: &Context) -> DialogResult<(String, bool)> {
-        dialog(ctx, "create-project", "New project", 440.0, true, |ui| {
-            theme::hint(
-                ui,
-                format!(
-                    "Tortuga will add a tortuga.toml file to {}; requests are saved next to it.",
-                    self.dir.display()
-                ),
-            );
-            field_label(ui, "Project name");
-            ui.add(TextEdit::singleline(&mut self.name).desired_width(f32::INFINITY));
-            ui.add_space(8.0);
-            match &self.repository {
-                Some(repo) => theme::hint(
+        dialog(
+            ctx,
+            "create-project",
+            &t!("new-project-title"),
+            440.0,
+            true,
+            |ui| {
+                theme::hint(
                     ui,
-                    format!(
-                        "Inside the git repository at {}: commit the project with your code.",
-                        repo.display()
+                    t!("new-project-hint", path = self.dir.display().to_string()),
+                );
+                field_label(ui, &t!("new-project-name"));
+                ui.add(TextEdit::singleline(&mut self.name).desired_width(f32::INFINITY));
+                ui.add_space(8.0);
+                match &self.repository {
+                    Some(repo) => theme::hint(
+                        ui,
+                        t!(
+                            "import-inside-repository",
+                            path = repo.display().to_string()
+                        ),
                     ),
-                ),
-                None if self.can_init_git => {
-                    ui.checkbox(&mut self.init_git, "Make the folder a git repository")
-                        .on_hover_text("So the project can be shared with git (git init)");
+                    None if self.can_init_git => {
+                        ui.checkbox(&mut self.init_git, t!("new-project-git-init"))
+                            .on_hover_text(t!("new-project-git-init-hint"));
+                    }
+                    None => {}
                 }
-                None => {}
-            }
-            let name = self.name.trim();
-            let (cancel, confirm) =
-                actions(ui, theme::primary_button(ui, "Create"), !name.is_empty());
-            finish(cancel, confirm.then(|| (name.to_owned(), self.init_git)))
-        })
+                let name = self.name.trim();
+                let (cancel, confirm) = actions(
+                    ui,
+                    theme::primary_button(ui, t!("create")),
+                    !name.is_empty(),
+                );
+                finish(cancel, confirm.then(|| (name.to_owned(), self.init_git)))
+            },
+        )
     }
 }
 
@@ -295,7 +302,7 @@ impl AddProjectsDialog {
         dialog(
             ctx,
             "add-projects",
-            "Add existing projects",
+            &t!("add-projects-title"),
             520.0,
             true,
             |ui| {
@@ -304,25 +311,19 @@ impl AddProjectsDialog {
                     None => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(format!("Looking for projects in {}…", dir.display()));
+                            ui.label(t!("add-projects-looking", path = dir.display().to_string()));
                         });
                     }
                     Some(Err(e)) => theme::error(ui, e.as_str()),
                     Some(Ok(found)) if found.is_empty() => {
-                        ui.label(format!(
-                            "No projects (folders with a tortuga.toml file) in {}.",
-                            dir.display()
-                        ));
+                        ui.label(t!("add-projects-none", path = dir.display().to_string()));
                         ui.add_space(8.0);
-                        create_here = ui.button("Create a project there…").clicked();
+                        create_here = ui.button(t!("add-projects-create-there")).clicked();
                     }
                     Some(Ok(found)) => {
                         theme::hint(
                             ui,
-                            format!(
-                                "Found in {}. Git-ignored folders were skipped.",
-                                dir.display()
-                            ),
+                            t!("add-projects-found", path = dir.display().to_string()),
                         );
                         ui.add_space(6.0);
                         egui::ScrollArea::vertical()
@@ -336,7 +337,7 @@ impl AddProjectsDialog {
                                         Err(_) => path.display().to_string(),
                                     };
                                     let label = if open {
-                                        format!("{label}  (already in the workspace)")
+                                        t!("add-projects-already", path = label.as_str())
                                     } else {
                                         label
                                     };
@@ -353,10 +354,7 @@ impl AddProjectsDialog {
                         .collect(),
                     _ => Vec::new(),
                 };
-                let label = match chosen.len() {
-                    1 => "Add 1 project".to_owned(),
-                    n => format!("Add {n} projects"),
-                };
+                let label = t!("add-projects-add", count = chosen.len());
                 let (cancel, confirm) =
                     actions(ui, theme::primary_button(ui, &label), !chosen.is_empty());
                 if create_here {
@@ -384,20 +382,17 @@ impl CopyCurlDialog {
     /// Done with the text to copy.
     pub fn show(&self, ctx: &Context) -> DialogResult<String> {
         let names = self.command.secrets.join(", ");
-        dialog(ctx, "copy-curl", "Copy as curl", 460.0, true, |ui| {
-            ui.label(format!(
-                "This request uses secret values ({names}). Copy it with them shown as <secret:name>, or include the real values?"
-            ));
+        dialog(ctx, "copy-curl", &t!("copy-as-curl"), 460.0, true, |ui| {
+            ui.label(t!("curl-secrets-question", names = names.as_str()));
             ui.add_space(6.0);
-            theme::hint(
-                ui,
-                "Commands you paste into chats, tickets or shell history may be kept for a long time.",
-            );
+            theme::hint(ui, t!("curl-secrets-hint"));
             ui.add_space(16.0);
             theme::button_row(ui, |ui| {
-                let masked = ui.add(theme::primary_button(ui, "Copy masked")).clicked();
-                let full = ui.button("Include secret values").clicked();
-                let cancel = ui.button("Cancel").clicked();
+                let masked = ui
+                    .add(theme::primary_button(ui, t!("curl-copy-masked")))
+                    .clicked();
+                let full = ui.button(t!("curl-include-secrets")).clicked();
+                let cancel = ui.button(t!("cancel")).clicked();
                 let done = if masked {
                     self.command.masked.clone()
                 } else if full {
@@ -434,7 +429,7 @@ impl NameDialog {
 
     pub fn show(&mut self, ctx: &Context) -> DialogResult<String> {
         dialog(ctx, "name", &self.title.clone(), 380.0, true, |ui| {
-            field_label(ui, "Name");
+            field_label(ui, &t!("name"));
             let field = ui.add(
                 TextEdit::singleline(&mut self.name)
                     .id_salt("name-dialog")
@@ -471,7 +466,7 @@ impl RuntimeVarsDialog {
     pub fn new(root: Option<PathBuf>, place: &str) -> Self {
         Self {
             root,
-            title: format!("Runtime variables — {place}"),
+            title: t!("runtime-vars-title", place = place),
         }
     }
 
@@ -489,7 +484,7 @@ impl RuntimeVarsDialog {
             );
             ui.add_space(8.0);
             match vars {
-                None => theme::hint(ui, "None yet."),
+                None => theme::hint(ui, t!("none-yet")),
                 Some(vars) => {
                     let p = theme::palette(ui);
                     egui::ScrollArea::vertical()
@@ -516,7 +511,11 @@ impl RuntimeVarsDialog {
                         });
                 }
             }
-            let (close, clear) = actions(ui, theme::danger_button(ui, "Clear all"), vars.is_some());
+            let (close, clear) = actions(
+                ui,
+                theme::danger_button(ui, t!("clear-all")),
+                vars.is_some(),
+            );
             finish(close, clear.then_some(()))
         })
     }
@@ -542,7 +541,7 @@ impl CookiesDialog {
     pub fn new(root: PathBuf, place: &str) -> Self {
         Self {
             root,
-            title: format!("Cookies — {place}"),
+            title: t!("cookies-title", place = place),
         }
     }
 
@@ -563,7 +562,7 @@ impl CookiesDialog {
             );
             ui.add_space(8.0);
             if cookies.is_empty() {
-                theme::hint(ui, "The jar is empty.");
+                theme::hint(ui, t!("cookies-jar-empty"));
             } else {
                 let p = theme::palette(ui);
                 egui::ScrollArea::vertical()
@@ -574,16 +573,21 @@ impl CookiesDialog {
                             .spacing([14.0, 6.0])
                             .striped(true)
                             .show(ui, |ui| {
-                                for heading in
-                                    ["", "Name", "Value", "Domain and path", "Expires", ""]
-                                {
-                                    theme::section_label(ui, heading);
+                                for heading in [
+                                    String::new(),
+                                    t!("name"),
+                                    t!("value"),
+                                    t!("cookies-domain-path"),
+                                    t!("cookies-expires"),
+                                    String::new(),
+                                ] {
+                                    theme::section_label(ui, &heading);
                                 }
                                 ui.end_row();
                                 for c in cookies {
                                     if ui
                                         .add(theme::icon_button(ui, "🗙"))
-                                        .on_hover_text("Remove this cookie")
+                                        .on_hover_text(t!("cookies-remove"))
                                         .clicked()
                                     {
                                         action = Some(CookieAction::Remove(c.clone()));
@@ -616,7 +620,7 @@ impl CookiesDialog {
             }
             let (close, clear) = actions(
                 ui,
-                theme::danger_button(ui, "Clear all"),
+                theme::danger_button(ui, t!("clear-all")),
                 !cookies.is_empty(),
             );
             if clear {
@@ -637,11 +641,12 @@ fn cookie_place(c: &CookieInfo) -> (String, String) {
         format!("*.{}{path}", c.domain)
     };
     let hover = if c.host_only {
-        format!("Sent to {} only, for paths under {}", c.domain, c.path)
+        t!("cookies-host-only", domain = &c.domain, path = &c.path)
     } else {
-        format!(
-            "Sent to {} and its subdomains, for paths under {}",
-            c.domain, c.path
+        t!(
+            "cookies-with-subdomains",
+            domain = &c.domain,
+            path = &c.path
         )
     };
     (shown, hover)
@@ -649,7 +654,7 @@ fn cookie_place(c: &CookieInfo) -> (String, String) {
 
 fn cookie_expiry(c: &CookieInfo, now_ms: u64, offset_minutes: i32) -> String {
     match c.expires_ms {
-        None => "Session".into(),
+        None => t!("cookies-session"),
         Some(ms) => format!(
             "{} {}",
             crate::format::day_label(ms, now_ms, offset_minutes),

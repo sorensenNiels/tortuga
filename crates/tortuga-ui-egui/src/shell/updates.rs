@@ -81,10 +81,10 @@ impl TortugaUi {
     pub(super) fn update_link(&self, ui: &mut Ui) {
         if let UpdateStatus::Available(release) = &self.updates.status {
             ui.hyperlink_to(
-                format!("Tortuga {} is available", release.version),
+                t!("update-available", version = release.version.as_str()),
                 &release.page,
             )
-            .on_hover_text("Opens its release page, with what's new and the installers");
+            .on_hover_text(t!("update-available-hint"));
         }
     }
 }

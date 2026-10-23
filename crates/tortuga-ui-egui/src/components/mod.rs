@@ -43,7 +43,7 @@ pub use fanout_dialog::{FanoutResult, FanoutRow, fanout_dialog};
 pub use history_list::{ClearHistory, HistoryAction, HistoryContext, HistoryRow, history_list};
 pub use import_dialog::{
     ENVIRONMENT_KINDS, EnvironmentImportDialog, ImportAction, ImportDialog, ImportTarget,
-    environments_entry, file_names,
+    environments_entry, file_names, importer_name, kind_label,
 };
 pub use key_value_table::key_value_table;
 pub use mock_dialog::{MockAction, MockDialog, MockView};

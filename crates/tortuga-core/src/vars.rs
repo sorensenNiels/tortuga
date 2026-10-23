@@ -30,13 +30,13 @@ pub struct Context {
     /// Headers every request inherits (R-COL-4), from the project and the request's
     /// folders (R-COL-11).
     pub headers: Vec<KeyValue>,
-    /// Where each of `headers` comes from, e.g. "the project" or "folder “Users”".
-    pub header_origins: Vec<String>,
+    /// Where each of `headers` comes from.
+    pub header_origins: Vec<Origin>,
     /// Auth for requests that don't set their own (R-HTTP-5); `None` when no level sets
     /// any, so none is sent. `Some(Auth::None)` is a level saying "no auth".
     pub auth: Option<Auth>,
     /// Where `auth` comes from.
-    pub auth_origin: String,
+    pub auth_origin: Origin,
     /// The project folder, which relative paths of files to upload start from (R-HTTP-15, D21).
     pub base_dir: Option<std::path::PathBuf>,
     /// How requests are sent: the project's settings, then the workspace's, then the
@@ -100,17 +100,15 @@ impl Context {
         }
 
         // Each level's headers, unless a deeper level names the same header.
-        let levels: Vec<(String, &[KeyValue])> = std::iter::once((
-            "the project".to_owned(),
-            collection.manifest.headers.as_slice(),
-        ))
-        .chain(folders.iter().map(|f| {
-            (
-                format!("folder “{}”", f.name),
-                f.defaults.headers.as_slice(),
-            )
-        }))
-        .collect();
+        let levels: Vec<(Origin, &[KeyValue])> =
+            std::iter::once((Origin::Project, collection.manifest.headers.as_slice()))
+                .chain(folders.iter().map(|f| {
+                    (
+                        Origin::Folder(f.name.clone()),
+                        f.defaults.headers.as_slice(),
+                    )
+                }))
+                .collect();
         let mut headers = Vec::new();
         let mut header_origins = Vec::new();
         for (i, (origin, level)) in levels.iter().enumerate() {
@@ -130,9 +128,9 @@ impl Context {
             .rev()
             .find_map(|f| {
                 let auth = f.defaults.auth.clone()?;
-                Some((Some(auth), format!("folder “{}”", f.name)))
+                Some((Some(auth), Origin::Folder(f.name.clone())))
             })
-            .unwrap_or_else(|| (collection.manifest.auth.clone(), "the project".to_owned()));
+            .unwrap_or_else(|| (collection.manifest.auth.clone(), Origin::Project));
         Self {
             environment: env.map(|e| e.name.clone()),
             server_names: crate::collection::server_names(&collection.manifest),
@@ -160,12 +158,12 @@ impl Context {
             .filter(|h| !self.headers.iter().any(|own| same_name(own, h)))
             .cloned()
             .collect();
-        let origins = vec!["the workspace".to_owned(); inherited.len()];
+        let origins = vec![Origin::Workspace; inherited.len()];
         self.headers.splice(0..0, inherited);
         self.header_origins.splice(0..0, origins);
         if self.auth.is_none() && !defaults.auth.is_none() {
             self.auth = Some(defaults.auth.clone());
-            "the workspace".clone_into(&mut self.auth_origin);
+            self.auth_origin = Origin::Workspace;
         }
         self
     }
@@ -227,19 +225,12 @@ impl Context {
     pub fn inherited_headers_with_origins<'a>(
         &'a self,
         request: &'a Request,
-    ) -> impl Iterator<Item = (&'a KeyValue, &'a str)> {
+    ) -> impl Iterator<Item = (&'a KeyValue, &'a Origin)> {
         self.headers
             .iter()
             .enumerate()
             .filter(|(_, h)| h.is_active() && !request.headers.iter().any(|own| same_name(own, h)))
-            .map(|(i, h)| {
-                (
-                    h,
-                    self.header_origins
-                        .get(i)
-                        .map_or("the project", String::as_str),
-                )
-            })
+            .map(|(i, h)| (h, self.header_origins.get(i).unwrap_or(&Origin::Project)))
     }
 
     /// Whether `{{name}}` gets a value: a variable, or a dynamic variable (R-VAR-8).
@@ -484,6 +475,16 @@ pub fn spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
     found
 }
 
+/// The level a default header or auth comes from (R-COL-4, R-COL-11, R-SET-2).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Origin {
+    #[default]
+    Project,
+    Workspace,
+    /// The folder of that name.
+    Folder(String),
+}
+
 /// Where a variable's value comes from (R-VAR-9), from the level that wins down.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -508,27 +509,6 @@ pub enum Source {
     Workspace,
     /// A dynamic variable: a new value at every use (R-VAR-8).
     Dynamic,
-}
-
-impl Source {
-    /// "the environment “Staging”", to show after "From".
-    pub fn describe(&self) -> String {
-        match self {
-            Self::Runtime => "a capture or script, kept while the app runs".to_owned(),
-            Self::WorkspaceRuntime => {
-                "a capture or script for the workspace, kept while the app runs".to_owned()
-            }
-            Self::Secret => "this computer's secret value".to_owned(),
-            Self::Environment(name) => format!("the environment “{name}”"),
-            Self::WorkspaceEnvironment(name) => {
-                format!("the workspace's environment “{name}”")
-            }
-            Self::Folder { name, .. } => format!("the folder “{name}”"),
-            Self::Project => "the project".to_owned(),
-            Self::Workspace => "the workspace".to_owned(),
-            Self::Dynamic => "a dynamic variable: a new value every time".to_owned(),
-        }
-    }
 }
 
 /// Which of the project's levels gives `name` its value for the request at `path` with
@@ -937,24 +917,21 @@ mod tests {
         };
         let mut ctx = ctx();
         ctx.headers = vec![KeyValue::new("accept", "application/json")];
-        ctx.header_origins = vec!["the project".into()];
+        ctx.header_origins = vec![Origin::Project];
         let ctx = ctx.with_workspace_defaults(&workspace);
         let req = Request::new(HttpMethod::Get, "https://a.test/");
-        let inherited: Vec<(String, String)> = ctx
+        let inherited: Vec<(String, Origin)> = ctx
             .inherited_headers_with_origins(&req)
-            .map(|(h, o)| (format!("{}: {}", h.name, h.value), o.to_owned()))
+            .map(|(h, o)| (format!("{}: {}", h.name, h.value), o.clone()))
             .collect();
         assert_eq!(
             inherited,
             [
-                ("X-Tenant: acme".to_owned(), "the workspace".to_owned()),
-                (
-                    "accept: application/json".to_owned(),
-                    "the project".to_owned()
-                ),
+                ("X-Tenant: acme".to_owned(), Origin::Workspace),
+                ("accept: application/json".to_owned(), Origin::Project),
             ]
         );
-        assert_eq!(ctx.auth_origin, "the workspace");
+        assert_eq!(ctx.auth_origin, Origin::Workspace);
         let out = prepare(&req, &ctx).expect("prepared");
         assert!(
             out.headers
@@ -966,18 +943,18 @@ mod tests {
         own.auth = Some(Auth::Bearer {
             token: "project".into(),
         });
-        own.auth_origin = "the project".into();
+        own.auth_origin = Origin::Project;
         assert_eq!(
             own.with_workspace_defaults(&workspace).auth_origin,
-            "the project"
+            Origin::Project
         );
 
         // "No auth" in the project keeps the workspace's out.
         let mut none = super::tests::ctx();
         none.auth = Some(Auth::None);
-        none.auth_origin = "the project".into();
+        none.auth_origin = Origin::Project;
         let none = none.with_workspace_defaults(&workspace);
-        assert_eq!(none.auth_origin, "the project");
+        assert_eq!(none.auth_origin, Origin::Project);
         let out = prepare(&req, &none).expect("prepared");
         assert!(!out.has_header("authorization"), "{:?}", out.headers);
     }
@@ -1186,11 +1163,7 @@ mod tests {
             "an empty folder value inherits"
         );
         assert_eq!(at("nope"), None);
-        assert_eq!(dynamic::describe("$guid"), Some("a random UUID"));
-        assert!(
-            dynamic::SUGGESTED
-                .iter()
-                .all(|(n, _)| dynamic::is_dynamic(n))
-        );
+        assert_eq!(dynamic::kind("$guid"), Some(dynamic::Dynamic::Uuid));
+        assert!(dynamic::SUGGESTED.iter().all(|n| dynamic::is_dynamic(n)));
     }
 }

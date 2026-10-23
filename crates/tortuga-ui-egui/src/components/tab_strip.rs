@@ -139,19 +139,23 @@ fn group_chip(ui: &mut Ui, chip: &GroupChip, count: usize, actions: &mut Vec<Tab
                 .corner_radius(CornerRadius::same(10)),
         )
         .on_hover_text(if chip.collapsed {
-            "Show this project's tabs"
+            t!("tabs-show-project")
         } else {
-            "Fold this project's tabs into the chip"
+            t!("tabs-fold-project")
         });
     if response.clicked() {
         actions.push(TabAction::ToggleGroup(chip.root.clone()));
     }
     response.context_menu(|ui| {
-        let label = if chip.collapsed { "Expand" } else { "Collapse" };
+        let label = if chip.collapsed {
+            t!("expand")
+        } else {
+            t!("collapse")
+        };
         if ui.button(label).clicked() {
             actions.push(TabAction::ToggleGroup(chip.root.clone()));
         }
-        if ui.button("Close the project's tabs").clicked() {
+        if ui.button(t!("tabs-close-project")).clicked() {
             actions.push(TabAction::CloseGroup(chip.root.clone()));
         }
     });
@@ -182,7 +186,7 @@ fn tab_widget(ui: &mut Ui, tab: &TabView, reveal: bool, actions: &mut Vec<TabAct
     let title = if cut {
         format!("{title}…")
     } else if title.is_empty() {
-        "Untitled request".to_owned()
+        t!("untitled-request")
     } else {
         title.to_owned()
     };
@@ -214,7 +218,7 @@ fn tab_widget(ui: &mut Ui, tab: &TabView, reveal: bool, actions: &mut Vec<TabAct
         label.widget_info(|| WidgetInfo::selected(Role::Tab, true, tab.active, &title));
         let close = ui
             .add(theme::icon_button(ui, "🗙").small())
-            .on_hover_text("Close (unsaved edits are kept)");
+            .on_hover_text(t!("tabs-close-hint"));
         (label, close)
     });
     let (label, close) = shown.inner;
@@ -236,9 +240,8 @@ fn tab_widget(ui: &mut Ui, tab: &TabView, reveal: bool, actions: &mut Vec<TabAct
     let key = &tab.key;
     let mut hover = tab.place.clone();
     if tab.preview {
-        hover.push_str(
-            "\nPreview: the next request you open replaces it. Double-click to keep it open.",
-        );
+        hover.push('\n');
+        hover.push_str(&t!("tabs-preview-hint"));
     }
     let label = label.on_hover_text(hover);
     if close.clicked() || label.middle_clicked() {
@@ -254,21 +257,21 @@ fn tab_widget(ui: &mut Ui, tab: &TabView, reveal: bool, actions: &mut Vec<TabAct
 /// The right-click menu of a tab.
 fn tab_menu(ui: &mut Ui, tab: &TabView, actions: &mut Vec<TabAction>) {
     let key = &tab.key;
-    if tab.preview && ui.button("Keep open").clicked() {
+    if tab.preview && ui.button(t!("tabs-keep-open")).clicked() {
         actions.push(TabAction::Keep(key.clone()));
     }
-    if ui.button("Close").clicked() {
+    if ui.button(t!("close")).clicked() {
         actions.push(TabAction::Close(key.clone()));
     }
-    if ui.button("Close others").clicked() {
+    if ui.button(t!("tabs-close-others")).clicked() {
         actions.push(TabAction::CloseOthers(key.clone()));
     }
-    if ui.button("Close to the right").clicked() {
+    if ui.button(t!("tabs-close-right")).clicked() {
         actions.push(TabAction::CloseToTheRight(key.clone()));
     }
     if ui
-        .button("Close saved tabs")
-        .on_hover_text("Close every tab without unsaved edits")
+        .button(t!("tabs-close-saved"))
+        .on_hover_text(t!("tabs-close-saved-hint"))
         .clicked()
     {
         actions.push(TabAction::CloseSaved);
@@ -293,9 +296,9 @@ fn all_tabs_menu(ui: &mut Ui, groups: &[TabGroup], actions: &mut Vec<TabAction>)
                     last_project = Some(project);
                 }
                 let mut name = RichText::new(if tab.name.is_empty() {
-                    "Untitled request"
+                    t!("untitled-request")
                 } else {
-                    &tab.name
+                    tab.name.clone()
                 });
                 if tab.preview {
                     name = name.italics();
@@ -319,11 +322,11 @@ fn all_tabs_menu(ui: &mut Ui, groups: &[TabGroup], actions: &mut Vec<TabAction>)
             }
         }
         ui.separator();
-        if ui.button("Close saved tabs").clicked() {
+        if ui.button(t!("tabs-close-saved")).clicked() {
             actions.push(TabAction::CloseSaved);
         }
     });
-    response.on_hover_text("All open tabs");
+    response.on_hover_text(t!("tabs-all"));
 }
 
 /// A project's name in the "⏷" list, with 🗙 right after it to close its tabs (R-COL-37).
@@ -332,7 +335,7 @@ fn project_heading(ui: &mut Ui, project: &str, root: &Path, actions: &mut Vec<Ta
         theme::section_label(ui, project);
         let close = ui
             .add(theme::icon_button(ui, "🗙").small())
-            .on_hover_text("Close the project's tabs");
+            .on_hover_text(t!("tabs-close-project"));
         if close.clicked() {
             actions.push(TabAction::CloseGroup(root.to_owned()));
         }

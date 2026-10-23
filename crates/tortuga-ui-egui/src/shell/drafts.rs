@@ -68,9 +68,7 @@ impl TortugaUi {
             return;
         }
         if let Err(e) = self.state.host.save_drafts(&snapshot) {
-            self.state.notify(format!(
-                "Unsaved edits could not be kept for next time: {e}"
-            ));
+            self.state.notify(t!("drafts-not-kept", error = e));
         }
         self.drafts_saved = snapshot;
     }
@@ -80,9 +78,7 @@ impl TortugaUi {
         let saved = match self.state.host.load_drafts() {
             Ok(saved) => saved,
             Err(e) => {
-                self.state.notify(format!(
-                    "Could not read the unsaved edits of last time: {e}"
-                ));
+                self.state.notify(t!("drafts-not-read", error = e));
                 return;
             }
         };

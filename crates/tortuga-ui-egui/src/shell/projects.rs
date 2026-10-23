@@ -20,7 +20,7 @@ impl TortugaUi {
             SidebarAction::Keep(key) => self.open_tab(key, true),
             SidebarAction::NewRequest { root, parent } => {
                 let request = Request {
-                    name: "New request".into(),
+                    name: t!("new-request-name"),
                     ..Request::default()
                 };
                 if let Some(path) = self
@@ -31,10 +31,9 @@ impl TortugaUi {
                 }
             }
             SidebarAction::NewFolder { root, parent } => {
-                if let Some(path) = self
-                    .state
-                    .run(&root, |c, s| c.new_folder(s, &parent, "New folder"))
-                {
+                if let Some(path) = self.state.run(&root, |c, s| {
+                    c.new_folder(s, &parent, &t!("new-folder-name"))
+                }) {
                     let key = ItemKey::new(&root, path);
                     let name = self
                         .state
@@ -211,24 +210,20 @@ impl TortugaUi {
             .and_then(|c| c.find(&key.path));
         let name = item.map(Item::name).unwrap_or_default();
         let message = if matches!(item, Some(Item::Folder(_))) {
-            format!("“{name}” and everything in it will be deleted from disk.")
+            t!("delete-folder-message", name = name)
         } else {
-            format!("“{name}” will be deleted from disk.")
+            t!("delete-message", name = name)
         };
         ConfirmDialog {
-            title: "Delete?".into(),
+            title: t!("delete-title"),
             message,
-            confirm_label: "Delete".into(),
+            confirm_label: t!("delete"),
         }
     }
 
     /// R-WS-7: pick (or make) a folder, then name the project there.
     pub(super) fn new_project(&mut self) {
-        let Some(dir) = self
-            .state
-            .host
-            .pick_folder("Choose or create a folder for the new project")
-        else {
+        let Some(dir) = self.state.host.pick_folder(&t!("new-project-pick-folder")) else {
             return;
         };
         self.create_project_in(dir);
@@ -252,11 +247,7 @@ impl TortugaUi {
 
     /// R-WS-3: pick a folder or repository and list the projects in it.
     pub(super) fn add_projects(&mut self) {
-        let Some(dir) = self
-            .state
-            .host
-            .pick_folder("Add the projects in a folder or repository")
-        else {
+        let Some(dir) = self.state.host.pick_folder(&t!("add-projects-pick-folder")) else {
             return;
         };
         let (tx, rx) = channel();
@@ -277,7 +268,11 @@ impl TortugaUi {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let Some(dir) = self.state.host.pick_folder(&format!("Locate “{name}”")) else {
+        let Some(dir) = self
+            .state
+            .host
+            .pick_folder(&t!("locate-project", name = name.as_str()))
+        else {
             return;
         };
         if !self
@@ -285,10 +280,8 @@ impl TortugaUi {
             .storage()
             .exists(&dir.join(tortuga_core::collection::MANIFEST_FILE))
         {
-            self.state.notify(format!(
-                "{} is not a Tortuga project (it has no tortuga.toml).",
-                dir.display()
-            ));
+            self.state
+                .notify(t!("not-a-project", path = dir.display().to_string()));
             return;
         }
         if let Err(e) = self.state.locate_missing(old, &dir) {

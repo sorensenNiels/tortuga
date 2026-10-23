@@ -146,10 +146,10 @@ impl EnvironmentsDialog {
             .focus
             .as_deref()
             .and_then(|root| state.collection(root));
-        let title = match focused {
-            Some(c) => format!("Environments — {}", c.name()),
-            None => format!("Environments — {}", state.workspace().name),
-        };
+        let title = t!(
+            "env-title",
+            name = focused.map_or(state.workspace().name.as_str(), |c| c.name())
+        );
         let servers = server_names(state);
         resizable_dialog(
             ctx,
@@ -222,20 +222,20 @@ impl EnvironmentsDialog {
     /// The workspace's environments (drag ☰ to reorder, R-SRV-6), then each project's
     /// servers and variables.
     fn list_panel(&mut self, ui: &mut Ui) {
-        theme::section_label(ui, "Environments");
+        theme::section_label(ui, &t!("import-row-environments"));
         let mut move_env = None;
         for i in 0..self.list.len() {
             let e = &self.list[i];
             let row = ui.horizontal(|ui| {
                 views::drag_handle(ui, ("env-drag", i), EnvDrag(i));
                 let name = if e.name.trim().is_empty() {
-                    "(no name)"
+                    t!("example-no-name")
                 } else {
-                    e.name.as_str()
+                    e.name.clone()
                 };
                 let selected = self.shown == Shown::Environment(i);
                 let width = ui.available_width();
-                if theme::environment_button(ui, selected, e.color, name, width).clicked() {
+                if theme::environment_button(ui, selected, e.color, &name, width).clicked() {
                     self.shown = Shown::Environment(i);
                 }
             });
@@ -244,20 +244,17 @@ impl EnvironmentsDialog {
             }
         }
         if self.list.is_empty() {
-            theme::hint(
-                ui,
-                "None yet. Add one (for example “Development”): every project gets it.",
-            );
+            theme::hint(ui, t!("env-none-yet"));
         }
         ui.add_space(6.0);
-        if ui.add(theme::ghost_button("+ Add environment")).clicked() {
+        if ui.add(theme::ghost_button(t!("env-add"))).clicked() {
             self.add_environment();
         }
         if let Some((from, to)) = move_env {
             self.move_environment(from, to);
         }
         ui.add_space(14.0);
-        theme::section_label(ui, "Servers and variables");
+        theme::section_label(ui, &t!("env-servers-and-variables"));
         let width = ui.available_width();
         for p in self.shown_projects() {
             let selected = self.shown == Shown::Project(p);
@@ -265,7 +262,7 @@ impl EnvironmentsDialog {
                 .min_size(egui::vec2(width, 0.0));
             if ui
                 .add(button)
-                .on_hover_text("The project's servers and variables, secret flags and defaults")
+                .on_hover_text(t!("env-project-hint"))
                 .clicked()
             {
                 self.shown = Shown::Project(p);
@@ -274,7 +271,7 @@ impl EnvironmentsDialog {
     }
 
     fn add_environment(&mut self) {
-        let name = format!("Environment {}", self.list.len() + 1);
+        let name = t!("env-default-name", number = self.list.len() + 1);
         for p in &mut self.projects {
             p.draft.add_environment();
             if let Some(col) = p.draft.environments.last_mut() {
@@ -331,14 +328,14 @@ impl EnvironmentsDialog {
         };
         let remove = ui
             .horizontal(|ui| {
-                ui.label("Name");
+                ui.label(t!("name"));
                 theme::sized_edit(
                     ui,
                     220.0,
                     TextEdit::singleline(&mut env.name).id_salt(("env-name", i)),
                 );
-                ui.add(theme::ghost_button("Remove environment"))
-                    .on_hover_text("Removes it from the workspace and from every project")
+                ui.add(theme::ghost_button(t!("env-remove")))
+                    .on_hover_text(t!("env-remove-hint"))
                     .clicked()
             })
             .inner;
@@ -347,17 +344,16 @@ impl EnvironmentsDialog {
             return;
         }
         ui.horizontal(|ui| {
-            ui.label("Colour");
+            ui.label(t!("env-colour"));
             views::color_choice(ui, &mut env.color);
         });
-        ui.checkbox(&mut env.protected, "Protected").on_hover_text(
-            "Asks before anything but GET, HEAD or OPTIONS is sent here, in every project",
-        );
+        ui.checkbox(&mut env.protected, t!("env-protected"))
+            .on_hover_text(t!("env-protected-hint"));
         let inherited = Inherited::of(env);
         ui.add_space(12.0);
         if self.focus.is_none() {
-            ui.label(theme::semibold("All projects"));
-            theme::hint(ui, "Values every project uses unless it sets its own.");
+            ui.label(theme::semibold(t!("env-all-projects")));
+            theme::hint(ui, t!("env-all-projects-hint"));
             ui.add_space(4.0);
             views::shared_servers(ui, env, servers, &mut self.new_server);
             ui.add_space(10.0);
@@ -372,12 +368,7 @@ impl EnvironmentsDialog {
         }
         if self.focus.is_some() {
             ui.add_space(12.0);
-            if ui
-                .add(theme::ghost_button(
-                    "Show every project and the shared values",
-                ))
-                .clicked()
-            {
+            if ui.add(theme::ghost_button(t!("env-show-all"))).clicked() {
                 self.focus = None;
             }
         }
@@ -388,9 +379,9 @@ impl EnvironmentsDialog {
         let Some(project) = self.projects.get_mut(p) else {
             return;
         };
-        ui.label(theme::semibold(format!(
-            "{}: servers and variables",
-            project.name
+        ui.label(theme::semibold(t!(
+            "env-project-servers",
+            name = &project.name
         )));
         ui.add_space(4.0);
         ui.push_id(("defaults", p), |ui| {
@@ -437,7 +428,7 @@ impl EnvironmentsDialog {
 /// A project's values for environment `col`, folded under its name (R-WS-10).
 fn project_section(ui: &mut Ui, project: &mut ProjectDraft, col: usize, inherited: &Inherited) {
     let title = if project.read_only {
-        format!("{} (read-only)", project.name)
+        t!("env-read-only", name = &project.name)
     } else {
         project.name.clone()
     };
@@ -445,10 +436,7 @@ fn project_section(ui: &mut Ui, project: &mut ProjectDraft, col: usize, inherite
         .id_salt("values")
         .open(Some(project.expanded))
         .show(ui, |ui| {
-            theme::hint(
-                ui,
-                "Its own values win; an empty one uses the workspace's (greyed), then the default.",
-            );
+            theme::hint(ui, t!("env-project-values-hint"));
             ui.add_enabled_ui(!project.read_only, |ui| {
                 views::project_values(
                     ui,
@@ -479,28 +467,21 @@ fn server_names(state: &AppState) -> Vec<String> {
 /// Where everything is kept, any error, and Cancel/Save. Returns (cancel, save).
 fn footer(ui: &mut Ui, state: &AppState, error: Option<&str>) -> (bool, bool) {
     let kept = match &state.workspace().file {
-        Some(file) => format!("the workspace file {}", file.display()),
-        None => "this machine (“Save as file…” in the workspace menu shares it)".to_owned(),
+        Some(file) => t!("env-kept-in-file", file = file.display().to_string()),
+        None => t!("env-kept-on-machine"),
     };
-    theme::callout(
-        ui,
-        format!(
-            "The list and the values all projects share are kept in {kept}; each project's \
-             values in its own files, shared through git. Secret (🔒) values stay on this \
-             machine."
-        ),
-    );
+    theme::callout(ui, t!("env-kept", kept = kept));
     if let Some(warning) = state.host.secrets_warning() {
         ui.add_space(4.0);
-        theme::callout(ui, warning);
+        theme::callout(ui, warning.text());
     }
     if let Some(err) = error {
         theme::error(ui, err);
     }
     ui.add_space(8.0);
     theme::button_row(ui, |ui| {
-        let save = ui.add(theme::primary_button(ui, "Save")).clicked();
-        (ui.button("Cancel").clicked(), save)
+        let save = ui.add(theme::primary_button(ui, t!("save"))).clicked();
+        (ui.button(t!("cancel")).clicked(), save)
     })
 }
 

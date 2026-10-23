@@ -48,7 +48,7 @@ impl MockDialog {
     pub fn new(root: PathBuf, project: &str, port: u16) -> Self {
         Self {
             root,
-            title: format!("Mock server — {project}"),
+            title: t!("mock-title", project = project),
             port_text: port.to_string(),
         }
     }
@@ -71,14 +71,14 @@ impl MockDialog {
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                theme::section_label(ui, "Received");
-                if !view.hits.is_empty() && ui.small_button("Clear").clicked() {
+                theme::section_label(ui, &t!("mock-received"));
+                if !view.hits.is_empty() && ui.small_button(t!("clear")).clicked() {
                     action = Some(MockAction::ClearLog);
                 }
             });
             log(ui, view.hits, view.offset_minutes);
             ui.add_space(12.0);
-            let close = theme::button_row(ui, |ui| ui.button("Close").clicked());
+            let close = theme::button_row(ui, |ui| ui.button(t!("close")).clicked());
             finish::<()>(close, None)
         });
         (result, action)
@@ -92,26 +92,26 @@ fn controls(ui: &mut Ui, port_text: &mut String, view: MockView<'_>) -> Option<M
     ui.horizontal(|ui| {
         match view.running {
             Some(port) => {
-                theme::badge(ui, "Running", p.ok);
+                theme::badge(ui, t!("mock-running"), p.ok);
                 ui.label(RichText::new(format!("http://127.0.0.1:{port}")).monospace());
             }
             None => {
-                theme::badge(ui, "Stopped", p.muted);
+                theme::badge(ui, t!("mock-stopped-badge"), p.muted);
             }
         }
         ui.add_space(12.0);
-        let label = ui.label("Port");
+        let label = ui.label(t!("mock-port"));
         let edit = TextEdit::singleline(port_text).id_salt("mock-port");
         theme::sized_edit(ui, 60.0, edit).labelled_by(label.id);
         let typed = parse_port(port_text);
         if typed.is_none() {
-            theme::warning(ui, "A port from 1 to 65535");
+            theme::warning(ui, t!("mock-port-range"));
         }
         if let Some(port) = typed.filter(|p| *p != view.port) {
             let label = if view.running.is_some() {
-                "Restart on this port"
+                t!("mock-restart-on-port")
             } else {
-                "Use this port"
+                t!("mock-use-port")
             };
             if ui.button(label).clicked() {
                 action = Some(MockAction::SetPort(port));
@@ -119,18 +119,21 @@ fn controls(ui: &mut Ui, port_text: &mut String, view: MockView<'_>) -> Option<M
         }
         theme::button_row(ui, |ui| {
             if view.running.is_some() {
-                if ui.add(theme::danger_button(ui, "Stop")).clicked() {
+                if ui.add(theme::danger_button(ui, t!("mock-stop"))).clicked() {
                     action = Some(MockAction::Stop);
                 }
                 if !view.in_use
                     && ui
-                        .button("Send requests here")
-                        .on_hover_text("Choose the “Mock” environment")
+                        .button(t!("mock-send-here"))
+                        .on_hover_text(t!("mock-send-here-hint"))
                         .clicked()
                 {
                     action = Some(MockAction::UseMockEnvironment);
                 }
-            } else if ui.add(theme::primary_button(ui, "Start")).clicked() {
+            } else if ui
+                .add(theme::primary_button(ui, t!("mock-start")))
+                .clicked()
+            {
                 action = Some(MockAction::Start);
             }
         });
@@ -141,7 +144,7 @@ fn controls(ui: &mut Ui, port_text: &mut String, view: MockView<'_>) -> Option<M
 /// The requests the mock received, newest first.
 fn log(ui: &mut Ui, hits: &[Hit], offset_minutes: i32) {
     if hits.is_empty() {
-        theme::hint(ui, "Nothing yet.");
+        theme::hint(ui, t!("mock-nothing-yet"));
         return;
     }
     let p = theme::palette(ui);
@@ -151,8 +154,14 @@ fn log(ui: &mut Ui, hits: &[Hit], offset_minutes: i32) {
             .spacing([14.0, 6.0])
             .striped(true)
             .show(ui, |ui| {
-                for heading in ["Time", "Status", "Request", "Answered by", ""] {
-                    theme::section_label(ui, heading);
+                for heading in [
+                    t!("mock-time"),
+                    t!("status"),
+                    t!("mock-request"),
+                    t!("mock-answered-by"),
+                    String::new(),
+                ] {
+                    theme::section_label(ui, &heading);
                 }
                 ui.end_row();
                 for hit in hits.iter().rev() {

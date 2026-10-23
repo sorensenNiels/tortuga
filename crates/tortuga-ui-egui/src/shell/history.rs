@@ -58,8 +58,7 @@ impl TortugaUi {
         let key = root.map(Path::to_path_buf);
         if !self.history.loaded.contains_key(&key) {
             let list = self.state.host.history_list(root).unwrap_or_else(|e| {
-                self.state
-                    .notify(format!("Could not read the history: {e}"));
+                self.state.notify(t!("history-read-failed", error = e));
                 Vec::new()
             });
             self.history.loaded.insert(key.clone(), list);
@@ -121,7 +120,7 @@ impl TortugaUi {
             .iter()
             .map(|c| (Some(c.root.clone()), c.name().to_owned()))
             .collect();
-        places.push((None, "Scratch request".to_owned()));
+        places.push((None, t!("scratch-request")));
         for (root, _) in &places {
             self.history_of(root.as_deref());
         }
@@ -164,10 +163,7 @@ impl TortugaUi {
                 .map(|(_, id)| id.as_str()),
         };
         if !self.state.settings.history.on() {
-            crate::theme::hint(
-                ui,
-                "History is off: new sends are not recorded (Settings → History).",
-            );
+            crate::theme::hint(ui, t!("history-off"));
         }
         let mut filter = std::mem::take(&mut self.history.filter);
         let action = history_list(ui, &rows, &mut filter, cx);
@@ -178,15 +174,12 @@ impl TortugaUi {
             Some(HistoryAction::CompareWithBefore { root, id }) => {
                 match self.send_before(root.as_deref(), &id) {
                     Some(before) => self.compare_history(&(root.clone(), before), &(root, id)),
-                    None => self
-                        .state
-                        .inform("This is the request's first send with a response in history."),
+                    None => self.state.inform(t!("history-first-send")),
                 }
             }
             Some(HistoryAction::SelectForComparing { root, id }) => {
                 self.history.selected_for_comparing = Some((root, id));
-                self.state
-                    .inform("Selected: now right-click another send and compare it.");
+                self.state.inform(t!("history-selected-for-compare"));
             }
             Some(HistoryAction::CompareWithSelected { root, id }) => {
                 if let Some(selected) = self.history.selected_for_comparing.clone() {
@@ -196,18 +189,18 @@ impl TortugaUi {
             Some(HistoryAction::Clear(target)) => {
                 let (title, message) = match &target {
                     ClearHistory::One(_, name) => (
-                        "Clear history?".to_owned(),
-                        format!("The history of {name} will be removed from this computer."),
+                        t!("history-clear-title"),
+                        t!("history-clear-message", name = name),
                     ),
                     ClearHistory::All => (
-                        "Clear all history?".to_owned(),
-                        "All request history will be removed from this computer.".to_owned(),
+                        t!("history-clear-all-title"),
+                        t!("history-clear-all-message"),
                     ),
                 };
                 let dialog = ConfirmDialog {
                     title,
                     message,
-                    confirm_label: "Clear".into(),
+                    confirm_label: t!("clear"),
                 };
                 self.modal = Some(Modal::ClearHistory(target, dialog));
             }
@@ -235,9 +228,7 @@ impl TortugaUi {
         let (a, b) = match (load(self, a), load(self, b)) {
             (Ok(a), Ok(b)) => (a, b),
             (Err(e), _) | (_, Err(e)) => {
-                return self
-                    .state
-                    .notify(format!("Could not open the history entry: {e}"));
+                return self.state.notify(t!("history-open-failed", error = e));
             }
         };
         let (before, after) = if a.summary.sent_at_ms <= b.summary.sent_at_ms {
@@ -246,9 +237,7 @@ impl TortugaUi {
             (b, a)
         };
         let (Some(old), Some(new)) = (&before.response, &after.response) else {
-            return self
-                .state
-                .inform("Only sends that got a response can be compared.");
+            return self.state.inform(t!("history-compare-needs-response"));
         };
         let comparison = tortuga_core::changes::compare(&old.to_response(), &new.to_response());
         let offset = self.state.host.utc_offset_minutes();
@@ -277,8 +266,7 @@ impl TortugaUi {
         let entry = match self.state.host.history_entry(root, id) {
             Ok(entry) => entry,
             Err(e) => {
-                self.state
-                    .notify(format!("Could not open the history entry: {e}"));
+                self.state.notify(t!("history-open-failed", error = e));
                 return;
             }
         };
@@ -313,7 +301,7 @@ impl TortugaUi {
             .as_ref()
             .is_some_and(tortuga_core::history::StoredResponse::truncated)
         {
-            label.push_str(" · body cut to 1 MB");
+            label.push_str(&t!("history-body-cut"));
         }
         let latest = self
             .sent
@@ -365,7 +353,7 @@ impl TortugaUi {
             return;
         };
         let p = theme::palette(ui);
-        let label = format!("From history: sent {}", past.label);
+        let label = t!("history-past-label", sent = past.label.as_str());
         let (restore, back) = egui::Sides::new()
             .shrink_left()
             .show(
@@ -376,14 +364,12 @@ impl TortugaUi {
                 },
                 |ui| {
                     let back = ui
-                        .button("Back to latest")
-                        .on_hover_text("Show the latest response of this request")
+                        .button(t!("history-back-to-latest"))
+                        .on_hover_text(t!("history-back-to-latest-hint"))
                         .clicked();
                     let restore = ui
-                        .button("Restore request")
-                        .on_hover_text(
-                            "Put this version of the request in the editor, as unsaved changes",
-                        )
+                        .button(t!("history-restore"))
+                        .on_hover_text(t!("history-restore-hint"))
                         .clicked();
                     (restore, back)
                 },
@@ -414,10 +400,8 @@ impl TortugaUi {
             }
         };
         match result {
-            Ok(()) => self.state.inform("History cleared."),
-            Err(e) => self
-                .state
-                .notify(format!("Could not clear the history: {e}")),
+            Ok(()) => self.state.inform(t!("history-cleared")),
+            Err(e) => self.state.notify(t!("history-clear-failed", error = e)),
         }
     }
 }

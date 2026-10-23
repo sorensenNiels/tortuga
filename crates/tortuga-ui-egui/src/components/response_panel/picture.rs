@@ -24,7 +24,7 @@ pub struct ImageBody {
     /// Width and height of the image as sent.
     pub(super) size: [u32; 2],
     /// "PNG", "JPEG", …
-    format: &'static str,
+    format: String,
 }
 
 impl std::fmt::Debug for ImageBody {
@@ -73,15 +73,15 @@ pub(super) fn decode_image(response: &Response) -> Option<ImageBody> {
     })
 }
 
-fn image_format_name(format: image::ImageFormat) -> &'static str {
+fn image_format_name(format: image::ImageFormat) -> String {
     match format {
-        image::ImageFormat::Png => "PNG",
-        image::ImageFormat::Jpeg => "JPEG",
-        image::ImageFormat::Gif => "GIF",
-        image::ImageFormat::WebP => "WebP",
-        image::ImageFormat::Bmp => "BMP",
-        image::ImageFormat::Ico => "ICO",
-        _ => "Image",
+        image::ImageFormat::Png => "PNG".to_owned(),
+        image::ImageFormat::Jpeg => "JPEG".to_owned(),
+        image::ImageFormat::Gif => "GIF".to_owned(),
+        image::ImageFormat::WebP => "WebP".to_owned(),
+        image::ImageFormat::Bmp => "BMP".to_owned(),
+        image::ImageFormat::Ico => "ICO".to_owned(),
+        _ => t!("image"),
     }
 }
 
@@ -112,7 +112,7 @@ pub(super) fn image_view(ui: &mut Ui, img: &ImageBody, st: &mut ResponseState) {
     );
     let max_side = ui.input(|i| i.max_texture_side);
     if img.pixels.size.iter().any(|&side| side > max_side) {
-        theme::hint(ui, "Too large to show here. Use “Save to file” to keep it.");
+        theme::hint(ui, t!("image-too-large"));
         return;
     }
     let key = Arc::as_ptr(&img.pixels) as usize;
@@ -142,7 +142,12 @@ pub(super) fn image_view(ui: &mut Ui, img: &ImageBody, st: &mut ResponseState) {
             let size = texture.size * scale;
             ui.vertical_centered(|ui| {
                 ui.add(egui::Image::from_texture(texture).fit_to_exact_size(size))
-                    .on_hover_text(format!("{w} × {h} px, shown at {:.0}%", scale * 100.0));
+                    .on_hover_text(t!(
+                        "image-scale",
+                        width = w,
+                        height = h,
+                        percent = format!("{:.0}", scale * 100.0)
+                    ));
             });
         });
 }

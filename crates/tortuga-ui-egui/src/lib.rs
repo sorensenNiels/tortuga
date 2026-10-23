@@ -11,6 +11,9 @@
 //! ui.ui(egui_ui);
 //! ```
 
+#[macro_use]
+mod i18n;
+
 mod components;
 mod environments;
 mod format;
@@ -24,7 +27,7 @@ mod variables;
 
 pub use host::{
     BoxTask, DraftConflict, Host, LocalState, MockHandle, OnMockHit, SavedDraft, SavedDrafts,
-    SavedSplit, SavedTab, SavedTabs, SavedWorkflowDraft, Workspace,
+    SavedSplit, SavedTab, SavedTabs, SavedWorkflowDraft, SecretsWarning, Workspace,
 };
 pub use shell::TortugaUi;
 
@@ -94,6 +97,8 @@ pub(crate) mod test_host {
         pub mock: std::rc::Rc<std::cell::RefCell<Option<StartedMock>>>,
         /// Look for a new version at start-up (R-SET-15); off, so other tests spawn nothing.
         pub checks_for_updates: bool,
+        /// The operating system's language (R-I18N-1).
+        pub os_language: Option<String>,
     }
 
     /// What [`TestHost::start_mock`] was given.
@@ -129,6 +134,9 @@ pub(crate) mod test_host {
         }
         fn checks_for_updates(&self) -> bool {
             self.checks_for_updates
+        }
+        fn os_language(&self) -> Option<String> {
+            self.os_language.clone()
         }
         fn start_mock(
             &self,

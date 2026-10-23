@@ -14,6 +14,31 @@ use crate::state::{AppState, ItemKey};
 /// Longest value shown next to a suggested name.
 const NOTE_BYTES: usize = 40;
 
+/// Where a variable's value comes from, to show after "From": "the environment “Staging”".
+fn source_text(source: &Source) -> String {
+    match source {
+        Source::Runtime => t!("var-source-runtime"),
+        Source::WorkspaceRuntime => t!("var-source-workspace-runtime"),
+        Source::Secret => t!("var-source-secret"),
+        Source::Environment(name) => t!("var-source-environment", name = name),
+        Source::WorkspaceEnvironment(name) => t!("var-source-workspace-environment", name = name),
+        Source::Folder { name, .. } => t!("var-source-folder", name = name),
+        Source::Project => t!("var-source-project"),
+        Source::Workspace => t!("var-source-workspace"),
+        Source::Dynamic => t!("var-source-dynamic"),
+    }
+}
+
+/// What the dynamic variable `name` makes, e.g. "a random UUID" (R-VAR-9).
+fn dynamic_text(name: &str) -> Option<String> {
+    Some(match dynamic::kind(name)? {
+        dynamic::Dynamic::Uuid => t!("dynamic-uuid"),
+        dynamic::Dynamic::Timestamp => t!("dynamic-timestamp"),
+        dynamic::Dynamic::IsoTimestamp => t!("dynamic-iso-timestamp"),
+        dynamic::Dynamic::RandomInt { min, max } => t!("dynamic-random-int", min = min, max = max),
+    })
+}
+
 impl AppState {
     /// What the request's fields can tell about its variables (R-VAR-5, R-VAR-9): the
     /// undefined ones, the value and source of each it uses (secrets masked, P6), and
@@ -26,7 +51,7 @@ impl AppState {
     ) -> VarHelp {
         let shown = |name: &str| -> Option<String> {
             if ctx.secrets.contains(name) {
-                return Some("secret, hidden".to_owned());
+                return Some(t!("variable-secret-hidden"));
             }
             ctx.variables.get(name).cloned()
         };
@@ -35,14 +60,14 @@ impl AppState {
             .filter_map(|name| {
                 let source = self.variable_source(key, &name)?;
                 let value = match source {
-                    Source::Dynamic => dynamic::describe(&name)?.to_owned(),
+                    Source::Dynamic => dynamic_text(&name)?,
                     _ => shown(&name)?,
                 };
                 Some((
                     name,
                     VarInfo {
                         value,
-                        from: Some(source.describe()),
+                        from: Some(source_text(&source)),
                     },
                 ))
             })
@@ -63,7 +88,7 @@ impl AppState {
             .chain(
                 dynamic::SUGGESTED
                     .iter()
-                    .map(|(n, what)| ((*n).to_owned(), (*what).to_owned())),
+                    .filter_map(|n| Some(((*n).to_owned(), dynamic_text(n)?))),
             )
             .collect();
         VarHelp {

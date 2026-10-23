@@ -17,6 +17,7 @@ tortuga-core.workspace = true
 tortuga-ui-egui.workspace = true
 eframe.workspace = true
 serde.workspace = true
+sys-locale.workspace = true
 
 # Desktop-only: async runtime for sending requests, settings on disk, native file dialogs.
 tokio = { workspace = true, optional = true }
@@ -39,6 +40,7 @@ rfd = { workspace = true, optional = true }
 # Web-only: run futures in the browser.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = { workspace = true, optional = true }
+sys-locale = { workspace = true, features = ["js"] }
 
 [build-dependencies]
 winresource.workspace = true

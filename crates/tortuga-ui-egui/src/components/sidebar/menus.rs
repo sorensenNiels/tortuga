@@ -19,38 +19,38 @@ use crate::theme;
 pub(super) fn add_menu(ui: &mut Ui, importers: &ImporterSettings) -> Option<SidebarAction> {
     let entries = [
         (
-            "New project…",
-            "Create a project in a folder of your choice",
+            t!("cmd-new-project"),
+            t!("add-new-project-hint"),
             SidebarAction::NewProject,
         ),
         (
-            "Add existing projects…",
-            "Find the projects in a folder or git repository",
+            t!("cmd-add-projects"),
+            t!("add-existing-hint"),
             SidebarAction::AddProjects,
         ),
         (
-            "Import OpenAPI…",
-            "Create a project from an OpenAPI 3 description (JSON or YAML)",
+            t!("cmd-import-openapi"),
+            t!("add-openapi-hint"),
             SidebarAction::Import(ImportKind::OpenApi),
         ),
         (
-            "Import Postman collection…",
-            "Create a project from a Postman collection (v2.0 or v2.1 JSON)",
+            t!("cmd-import-postman"),
+            t!("add-postman-hint"),
             SidebarAction::Import(ImportKind::Postman),
         ),
         (
-            "Import Insomnia export…",
-            "Create a project from an Insomnia export (v4 JSON or v5 YAML)",
+            t!("cmd-import-insomnia"),
+            t!("add-insomnia-hint"),
             SidebarAction::Import(ImportKind::Insomnia),
         ),
         (
-            "Import .http file…",
-            "Create a project from a .http file (VS Code REST Client, JetBrains HTTP Client)",
+            t!("cmd-import-http"),
+            t!("add-http-hint"),
             SidebarAction::Import(ImportKind::Http),
         ),
         (
-            "Import Bruno collection…",
-            "Create a project from a Bruno collection (the folder with bruno.json or opencollection.yml)",
+            t!("cmd-import-bruno"),
+            t!("add-bruno-hint"),
             SidebarAction::Import(ImportKind::Bruno),
         ),
     ];
@@ -100,80 +100,80 @@ pub(super) fn collection_menu(
         }
     };
     if !c.read_only {
-        item(ui, "🗋", "New request".into(), &|| {
+        item(ui, "🗋", t!("cmd-new-request"), &|| {
             MenuChoice::Action(SidebarAction::NewRequest {
                 root: root.clone(),
                 parent: PathBuf::new(),
             })
         });
-        item(ui, "🗀", "New folder".into(), &|| {
+        item(ui, "🗀", t!("menu-new-folder"), &|| {
             MenuChoice::Action(SidebarAction::NewFolder {
                 root: root.clone(),
                 parent: PathBuf::new(),
             })
         });
-        item(ui, "✏", "Rename".into(), &|| MenuChoice::Rename);
+        item(ui, "✏", t!("rename"), &|| MenuChoice::Rename);
     }
-    item(ui, "🌐", "Environments…".into(), &|| {
+    item(ui, "🌐", t!("workspace-environments"), &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
     });
     for kind in ENVIRONMENT_KINDS {
         if offers.environments(kind) && !c.read_only {
-            item(ui, "📥", environments_entry(kind).into(), &|| {
+            item(ui, "📥", environments_entry(kind), &|| {
                 MenuChoice::Action(SidebarAction::ImportEnvironments(root.clone(), kind))
             });
         }
     }
-    item(
-        ui,
-        "⚙",
-        "Defaults (headers, auth, requests)…".into(),
-        &|| MenuChoice::Action(SidebarAction::EditDefaults(root.clone())),
-    );
+    item(ui, "⚙", t!("menu-project-defaults"), &|| {
+        MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
+    });
     if offers.features.docs {
-        item(ui, "📖", "Description…".into(), &|| {
+        item(ui, "📖", t!("menu-description"), &|| {
             MenuChoice::Action(SidebarAction::ProjectDescription(root.clone()))
         });
     }
     if offers.features.workflows && !c.read_only {
-        item(ui, "🔀", "New workflow…".into(), &|| {
+        item(ui, "🔀", t!("cmd-new-workflow"), &|| {
             MenuChoice::Action(SidebarAction::NewWorkflow(root.clone()))
         });
     }
     match mock_port {
         // Turned off (R-SET-13); one that is running can still be stopped.
         None if !offers.features.mock => {}
-        None => item(ui, "▶", "Start mock server".into(), &|| {
+        None => item(ui, "▶", t!("cmd-start-mock"), &|| {
             MenuChoice::Action(SidebarAction::StartMock(root.clone()))
         }),
         Some(port) => {
-            item(ui, "🎭", format!("Mock server (port {port})…"), &|| {
+            item(ui, "🎭", t!("menu-mock-server", port = port), &|| {
                 MenuChoice::Action(SidebarAction::ShowMock(root.clone()))
             });
-            item(ui, "⏹", "Stop mock server".into(), &|| {
+            item(ui, "⏹", t!("cmd-stop-mock"), &|| {
                 MenuChoice::Action(SidebarAction::StopMock(root.clone()))
             });
         }
     }
-    item(ui, "🏷", "Runtime variables…".into(), &|| {
+    item(ui, "🏷", t!("cmd-runtime-variables"), &|| {
         MenuChoice::Action(SidebarAction::RuntimeVariables(root.clone()))
     });
-    item(ui, "🍪", format!("Cookies ({cookie_count})…"), &|| {
-        MenuChoice::Action(SidebarAction::ShowCookies(root.clone()))
-    });
-    item(ui, "🔄", "Reload from disk".into(), &|| {
+    item(
+        ui,
+        "🍪",
+        t!("menu-cookies", count = cookie_count),
+        &|| MenuChoice::Action(SidebarAction::ShowCookies(root.clone())),
+    );
+    item(ui, "🔄", t!("menu-reload"), &|| {
         MenuChoice::Action(SidebarAction::Reload(root.clone()))
     });
     // R-GIT-13: commit, pull and push happen outside the app.
     if offers.open_folders {
-        item(ui, "📂", "Open in file manager".into(), &|| {
+        item(ui, "📂", t!("menu-file-manager"), &|| {
             MenuChoice::Action(SidebarAction::OpenInFileManager(root.clone()))
         });
-        item(ui, "⌨", "Open in terminal".into(), &|| {
+        item(ui, "⌨", t!("menu-terminal"), &|| {
             MenuChoice::Action(SidebarAction::OpenInTerminal(root.clone()))
         });
     }
-    item(ui, "🗙", "Remove from workspace".into(), &|| {
+    item(ui, "🗙", t!("project-remove-from-workspace"), &|| {
         MenuChoice::Action(SidebarAction::Close(root.clone()))
     });
     choice
@@ -189,49 +189,49 @@ pub(super) fn item_menu(
     let act = |a: SidebarAction| Some(MenuChoice::Action(a));
     let mut choice = None;
     if is_folder {
-        if entry(ui, "🗋", "New request").clicked() {
+        if entry(ui, "🗋", &t!("cmd-new-request")).clicked() {
             choice = act(SidebarAction::NewRequest {
                 root: key.root.clone(),
                 parent: key.path.clone(),
             });
         }
-        if entry(ui, "🗀", "New folder").clicked() {
+        if entry(ui, "🗀", &t!("menu-new-folder")).clicked() {
             choice = act(SidebarAction::NewFolder {
                 root: key.root.clone(),
                 parent: key.path.clone(),
             });
         }
-        if entry(ui, "⚙", "Folder defaults…")
-            .on_hover_text("Headers, auth and variables every request in this folder inherits")
+        if entry(ui, "⚙", &t!("menu-folder-defaults"))
+            .on_hover_text(t!("menu-folder-defaults-hint"))
             .clicked()
         {
             choice = act(SidebarAction::EditFolderDefaults(key.clone()));
         }
         if docs
-            && entry(ui, "📖", "Description…")
-                .on_hover_text("What this folder holds, in Markdown")
+            && entry(ui, "📖", &t!("menu-description"))
+                .on_hover_text(t!("menu-folder-description-hint"))
                 .clicked()
         {
             choice = act(SidebarAction::FolderDescription(key.clone()));
         }
     }
-    if entry(ui, "✏", "Rename").clicked() {
+    if entry(ui, "✏", &t!("rename")).clicked() {
         choice = Some(MenuChoice::Rename);
     }
-    if entry(ui, "🗐", "Duplicate").clicked() {
+    if entry(ui, "🗐", &t!("menu-duplicate")).clicked() {
         choice = act(SidebarAction::Duplicate(key.clone()));
     }
-    if entry(ui, "⬆", "Move up").clicked() {
+    if entry(ui, "⬆", &t!("move-up")).clicked() {
         choice = act(SidebarAction::MoveBy(key.clone(), Direction::Up));
     }
-    if entry(ui, "⬇", "Move down").clicked() {
+    if entry(ui, "⬇", &t!("move-down")).clicked() {
         choice = act(SidebarAction::MoveBy(key.clone(), Direction::Down));
     }
-    if entry(ui, "↗", "Move to…").clicked() {
+    if entry(ui, "↗", &t!("menu-move-to")).clicked() {
         choice = act(SidebarAction::MoveTo(key.clone()));
     }
-    if entry(ui, "📋", "Copy to project…")
-        .on_hover_text("Copy into a folder of another project; this one stays as it is")
+    if entry(ui, "📋", &t!("menu-copy-to-project"))
+        .on_hover_text(t!("menu-copy-to-project-hint"))
         .clicked()
     {
         choice = act(SidebarAction::CopyTo(key.clone()));
@@ -240,7 +240,7 @@ pub(super) fn item_menu(
     let delete = entry_text(
         ui,
         RichText::new("🗑").color(danger),
-        RichText::new("Delete…").color(danger),
+        RichText::new(t!("delete-ellipsis")).color(danger),
     );
     if delete.clicked() {
         choice = act(SidebarAction::Delete(key.clone()));
@@ -270,7 +270,7 @@ pub(super) fn menu_button(
 ) -> Option<MenuChoice> {
     let (response, inner) =
         egui::containers::menu::MenuButton::from_button(theme::ghost_button("…")).ui(ui, menu);
-    response.on_hover_text("Actions");
+    response.on_hover_text(t!("menu-actions"));
     inner.and_then(|i| i.inner)
 }
 

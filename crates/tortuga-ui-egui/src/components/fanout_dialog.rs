@@ -32,7 +32,7 @@ pub fn fanout_dialog(ctx: &Context, request: &str, rows: &[FanoutRow]) -> Dialog
     resizable_dialog(
         ctx,
         "fanout",
-        "Every environment",
+        &t!("fanout-title"),
         egui::vec2(760.0, 460.0),
         egui::vec2(480.0, 260.0),
         |ui| {
@@ -51,7 +51,7 @@ pub fn fanout_dialog(ctx: &Context, request: &str, rows: &[FanoutRow]) -> Dialog
                 .auto_shrink([false, false])
                 .show(ui, |ui| table(ui, rows));
             ui.add_space(8.0);
-            if theme::button_row(ui, |ui| ui.button("Close").clicked()) {
+            if theme::button_row(ui, |ui| ui.button(t!("close")).clicked()) {
                 DialogResult::Close
             } else {
                 DialogResult::Open
@@ -80,13 +80,13 @@ fn table(ui: &mut Ui, rows: &[FanoutRow]) {
                     FanoutResult::Sending => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label(RichText::new("Sending…").color(p.muted));
+                            ui.label(RichText::new(t!("sending")).color(p.muted));
                         });
                         ui.label("");
                         ui.label("");
                     }
                     FanoutResult::Failed(why) => {
-                        ui.label(RichText::new("Failed").color(p.fail));
+                        ui.label(RichText::new(t!("failed")).color(p.fail));
                         ui.add(egui::Label::new(RichText::new(why).color(p.fail)).wrap());
                         ui.label("");
                     }
@@ -121,11 +121,11 @@ fn table(ui: &mut Ui, rows: &[FanoutRow]) {
 fn shape(ui: &mut Ui, row: &FanoutRow, baseline: Option<&str>) {
     let p = theme::palette(ui);
     if baseline == Some(row.environment.as_str()) {
-        ui.label(RichText::new("compared with this one").color(p.muted));
+        ui.label(RichText::new(t!("fanout-baseline")).color(p.muted));
         return;
     }
     if row.shape.is_empty() {
-        ui.label(RichText::new("same shape").color(p.muted));
+        ui.label(RichText::new(t!("fanout-same-shape")).color(p.muted));
         return;
     }
     ui.vertical(|ui| {

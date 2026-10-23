@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use tortuga_ui_egui::SecretsWarning;
 
 use tortuga_core::secrets::{SecretKey, SecretStore};
 use tortuga_core::{Error, Result};
@@ -16,34 +17,29 @@ const SERVICE: &str = "Tortuga";
 
 /// Opens the best available store. The second value is a warning to show when
 /// values have to be kept in a file instead of the OS credential store.
-pub fn open(fallback_path: Option<PathBuf>) -> (Box<dyn SecretStore>, Option<String>) {
+pub fn open(fallback_path: Option<PathBuf>) -> (Box<dyn SecretStore>, Option<SecretsWarning>) {
     let reason = match probe_keyring() {
         Ok(()) => return (Box::new(KeyringStore), None),
         Err(reason) => reason,
     };
     match fallback_path {
-        Some(path) => {
-            let warning = format!(
-                "No OS credential store is available ({reason}). Secret values are kept in {}, \
-                 readable only by your user account.",
-                path.display()
-            );
-            match FileStore::open(path) {
-                Ok(store) => (Box::new(store), Some(warning)),
-                Err(e) => (
-                    Box::new(tortuga_core::secrets::MemorySecretStore::default()),
-                    Some(format!(
-                        "{warning} That file could not be read ({e}), so secret values are only kept until the app closes."
-                    )),
-                ),
-            }
-        }
+        Some(path) => match FileStore::open(path.clone()) {
+            Ok(store) => (
+                Box::new(store),
+                Some(SecretsWarning::InFile { reason, path }),
+            ),
+            Err(error) => (
+                Box::new(tortuga_core::secrets::MemorySecretStore::default()),
+                Some(SecretsWarning::FileUnreadable {
+                    reason,
+                    path,
+                    error,
+                }),
+            ),
+        },
         None => (
             Box::new(tortuga_core::secrets::MemorySecretStore::default()),
-            Some(format!(
-                "No OS credential store is available ({reason}) and no app-data folder was found. \
-                 Secret values are only kept until the app closes."
-            )),
+            Some(SecretsWarning::NoFolder { reason }),
         ),
     }
 }

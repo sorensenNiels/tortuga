@@ -209,18 +209,12 @@ impl TortugaUi {
             self.check_for_updates_now(ctx);
         }
         if std::mem::take(&mut d.add_ca_requested)
-            && let Some(path) = self
-                .state
-                .host
-                .pick_any_file("Choose a CA certificate (PEM)")
+            && let Some(path) = self.state.host.pick_any_file(&t!("choose-ca-certificate"))
         {
             d.add_ca(path);
         }
         if std::mem::take(&mut d.choose_font_requested)
-            && let Some(path) = self
-                .state
-                .host
-                .pick_any_file("Choose a font for code (.ttf, .otf)")
+            && let Some(path) = self.state.host.pick_any_file(&t!("choose-code-font"))
         {
             d.set_code_font(path);
         }
@@ -305,9 +299,9 @@ impl TortugaUi {
                     crate::components::WorkspaceVarsDialog::new(&self.state),
                 ));
             }
-            (Some(Source::Dynamic), _) => self.state.inform(format!(
-                "{{{{{name}}}}} gets a new value every time it is sent."
-            )),
+            (Some(Source::Dynamic), _) => {
+                self.state.inform(t!("dynamic-variable-info", name = name));
+            }
             (Some(Source::WorkspaceEnvironment(env)), _) => {
                 self.modal = Some(Modal::Environments(
                     EnvironmentsDialog::for_workspace(&self.state).on_environment(&env),
@@ -325,9 +319,7 @@ impl TortugaUi {
                     root,
                 )));
             }
-            (_, None) => self.state.inform(
-                "The scratch request has no project: save it in one to define its variables.",
-            ),
+            (_, None) => self.state.inform(t!("scratch-no-variables")),
         }
     }
 
@@ -339,7 +331,7 @@ impl TortugaUi {
         }
         super::appearance::read_font(self.state.host.as_ref(), font)
             .err()
-            .map(|e| format!("The code font can't be used: {e}"))
+            .map(|e| t!("code-font-unusable", error = e))
     }
 
     /// Applies and saves the settings. Returns whether the dialog stays open.

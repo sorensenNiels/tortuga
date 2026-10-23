@@ -34,7 +34,7 @@ pub fn key_value_table(
             };
             ui.label("");
             theme::section_label(ui, name_hint);
-            theme::section_label(ui, "Value");
+            theme::section_label(ui, &t!("value"));
             ui.label("");
             ui.end_row();
             for (i, row) in rows.iter_mut().enumerate() {
@@ -75,24 +75,24 @@ fn row_ui(
     } else {
         changed |= ui
             .checkbox(&mut row.enabled, "")
-            .on_hover_text("Include")
+            .on_hover_text(t!("kv-include"))
             .changed();
     }
     // Ids by row index, so focus stays put when the blank row becomes a real one.
     let (hint, vars, width) = (cx.name_hint, cx.vars, cx.text_width);
     // Placeholders only show in empty fields; they also name the fields for screen readers.
     let name_hint = if is_blank {
-        format!("Add {}", hint.to_lowercase())
+        t!("kv-add", name = hint.to_lowercase())
     } else {
         hint.to_owned()
     };
-    let value_hint = "Value";
+    let value_hint = t!("value");
     changed |= cell(ui, ("name", i), &mut row.name, &name_hint, vars, width);
-    changed |= cell(ui, ("value", i), &mut row.value, value_hint, vars, width);
+    changed |= cell(ui, ("value", i), &mut row.value, &value_hint, vars, width);
     let remove = !is_blank
         && ui
             .add(theme::icon_button(ui, "🗙"))
-            .on_hover_text("Remove")
+            .on_hover_text(t!("remove"))
             .clicked();
     ui.end_row();
     (changed, remove)

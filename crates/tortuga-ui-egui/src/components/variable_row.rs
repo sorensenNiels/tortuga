@@ -10,8 +10,8 @@ const BUTTONS_WIDTH: f32 = 82.0;
 /// Hover texts of the 🔒 toggle, which say where the values go.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SecretHelp {
-    pub secret: &'static str,
-    pub shared: &'static str,
+    pub secret: fn() -> String,
+    pub shared: fn() -> String,
 }
 
 /// A variable's name, its 🔒 secret toggle and a remove button, `width` wide in all.
@@ -30,7 +30,7 @@ pub(super) fn name_cell(
             width - BUTTONS_WIDTH,
             TextEdit::singleline(name)
                 .id_salt(id)
-                .hint_text("name")
+                .hint_text(t!("variable-name-hint"))
                 .font(egui::TextStyle::Monospace),
         );
         let p = theme::palette(ui);
@@ -41,12 +41,16 @@ pub(super) fn name_cell(
         });
         let toggle = ui
             .add(egui::Button::selectable(*secret, lock).frame_when_inactive(false))
-            .on_hover_text(if *secret { help.secret } else { help.shared });
+            .on_hover_text(if *secret {
+                (help.secret)()
+            } else {
+                (help.shared)()
+            });
         if toggle.clicked() {
             *secret = !*secret;
         }
         ui.add(theme::icon_button(ui, "🗙"))
-            .on_hover_text("Remove this variable")
+            .on_hover_text(t!("variable-remove"))
             .clicked()
     })
     .inner

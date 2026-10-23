@@ -100,7 +100,7 @@ impl TortugaUi {
     pub(super) fn new_workflow_dialog(&mut self, root: PathBuf) {
         self.modal = Some(Modal::NewWorkflow(
             root,
-            NameDialog::new("New workflow", "Create", ""),
+            NameDialog::new(&t!("workflow-new-title"), &t!("create"), ""),
         ));
     }
 
@@ -120,7 +120,7 @@ impl TortugaUi {
             .unwrap_or_default();
         self.modal = Some(Modal::RenameWorkflow(
             key,
-            NameDialog::new("Rename workflow", "Rename", &name),
+            NameDialog::new(&t!("workflow-rename-title"), &t!("rename"), &name),
         ));
     }
 
@@ -147,9 +147,9 @@ impl TortugaUi {
             .map(|w| w.name)
             .unwrap_or_default();
         let dialog = ConfirmDialog {
-            title: "Delete workflow?".into(),
-            message: format!("“{name}” will be deleted from disk. Its requests stay."),
-            confirm_label: "Delete".into(),
+            title: t!("workflow-delete-title"),
+            message: t!("workflow-delete-message", name = name.as_str()),
+            confirm_label: t!("delete"),
         };
         self.modal = Some(Modal::DeleteWorkflow(key, dialog));
     }
@@ -291,10 +291,7 @@ impl TortugaUi {
                 continue;
             };
             let Some(saved) = self.saved_workflow(&key) else {
-                notes.push(format!(
-                    "The workflow “{}” was deleted, so its unsaved edits were dropped.",
-                    draft.name
-                ));
+                notes.push(t!("workflow-deleted-drafts-dropped", name = &draft.name));
                 continue;
             };
             if saved == draft {
@@ -429,10 +426,7 @@ impl TortugaUi {
                 }
             }
             WorkflowAction::ChooseData => {
-                if let Some(path) = self
-                    .state
-                    .host
-                    .pick_any_file("Choose a CSV or JSON data file")
+                if let Some(path) = self.state.host.pick_any_file(&t!("workflow-choose-data"))
                     && let Some(open) = self.workflows.editors.get_mut(key)
                 {
                     open.draft.data = Some(upload_path(&path, Some(&key.root)));
@@ -461,12 +455,17 @@ impl TortugaUi {
         };
         let name = draft.map_or_else(String::new, |d| d.name.clone());
         let dialog = ConfirmDialog {
-            title: format!("Run “{name}” against “{env}”?"),
-            message: format!(
-                "“{env}” is a protected environment, and these steps may change its data: {}.",
-                writes.join(", ")
+            title: t!(
+                "workflow-protected-title",
+                name = name.as_str(),
+                env = env.as_str()
             ),
-            confirm_label: "Run".into(),
+            message: t!(
+                "workflow-protected-message",
+                env = env.as_str(),
+                steps = writes.join(", ")
+            ),
+            confirm_label: t!("workflow-run"),
         };
         self.modal = Some(Modal::Protected(Guarded::RunWorkflow(key.clone()), dialog));
     }
@@ -493,8 +492,11 @@ impl TortugaUi {
                 match read {
                     Ok(rows) => rows,
                     Err(e) => {
-                        self.state
-                            .notify(format!("Could not read the data file {file}: {e}"));
+                        self.state.notify(t!(
+                            "workflow-data-unreadable",
+                            file = file.as_str(),
+                            error = e
+                        ));
                         return;
                     }
                 }
@@ -662,7 +664,7 @@ impl TortugaUi {
         let place = root
             .as_ref()
             .and_then(|r| self.state.collection(r))
-            .map_or_else(|| "Scratch request".to_owned(), |c| c.name().to_owned());
+            .map_or_else(|| t!("scratch-request"), |c| c.name().to_owned());
         self.modal = Some(Modal::RuntimeVars(RuntimeVarsDialog::new(root, &place)));
     }
 

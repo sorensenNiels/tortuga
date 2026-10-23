@@ -171,7 +171,7 @@ impl TortugaUi {
             }
         };
         let place = match key {
-            None => "Scratch request".to_owned(),
+            None => t!("scratch-request"),
             Some(k) => breadcrumb(&self.state, k)
                 .trim_end_matches(" /")
                 .replace(" / ", " › "),
@@ -249,17 +249,10 @@ impl TortugaUi {
             .collection(root)
             .map(|c| c.name().to_owned())
             .unwrap_or_default();
-        let message = if unsaved == 1 {
-            "1 of its requests has unsaved edits.".to_owned()
-        } else {
-            format!("{unsaved} of its requests have unsaved edits.")
-        };
         let dialog = ConfirmDialog {
-            title: format!("Close the tabs of “{name}”?"),
-            message: format!(
-                "{message} They are not lost: opening the request again shows them, until you save or revert."
-            ),
-            confirm_label: "Close tabs".into(),
+            title: t!("close-project-tabs-title", name = &name),
+            message: t!("close-project-tabs-message", count = unsaved),
+            confirm_label: t!("close-project-tabs"),
         };
         self.modal = Some(Modal::CloseProjectTabs(root.to_owned(), dialog));
     }

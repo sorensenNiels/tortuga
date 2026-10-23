@@ -12,7 +12,6 @@ use tortuga_core::import::EnvironmentImport;
 use tortuga_core::import::{Import, ImportKind};
 
 use super::{DialogResult, dialog};
-use crate::format::count;
 use crate::theme;
 
 /// The importers whose environment files can be imported (R-COL-20, R-COL-29).
@@ -20,30 +19,46 @@ pub const ENVIRONMENT_KINDS: [ImportKind; 3] =
     [ImportKind::Postman, ImportKind::Http, ImportKind::Bruno];
 
 /// The menu entry that imports environments of `kind` into a project.
-pub fn environments_entry(kind: ImportKind) -> &'static str {
+pub fn environments_entry(kind: ImportKind) -> String {
     match kind {
-        ImportKind::Postman => "Import Postman environments…",
-        ImportKind::Http => "Import HTTP environments…",
-        ImportKind::Bruno => "Import Bruno environments…",
+        ImportKind::Postman => t!("import-postman-environments"),
+        ImportKind::Http => t!("import-http-environments"),
+        ImportKind::Bruno => t!("import-bruno-environments"),
         // Their environments come with them only.
-        ImportKind::OpenApi | ImportKind::Insomnia => "Import environments…",
+        ImportKind::OpenApi | ImportKind::Insomnia => t!("import-environments"),
+    }
+}
+
+/// What files of `kind` are called, like "Postman collections" (R-COL-18).
+pub fn importer_name(kind: ImportKind) -> String {
+    match kind {
+        ImportKind::OpenApi => t!("importer-openapi"),
+        ImportKind::Postman => t!("importer-postman"),
+        ImportKind::Http => t!("importer-http"),
+        ImportKind::Bruno => t!("importer-bruno"),
+        ImportKind::Insomnia => t!("importer-insomnia"),
+    }
+}
+
+/// What a file of `kind` is called, like "Postman collection".
+pub fn kind_label(kind: ImportKind) -> String {
+    match kind {
+        ImportKind::OpenApi => t!("import-kind-openapi"),
+        ImportKind::Postman => t!("import-kind-postman"),
+        ImportKind::Http => t!("import-kind-http"),
+        ImportKind::Bruno => t!("import-kind-bruno"),
+        ImportKind::Insomnia => t!("import-kind-insomnia"),
     }
 }
 
 /// What "Add environment files…" takes for an import of `kind`.
-fn environments_hover(kind: ImportKind) -> &'static str {
+fn environments_hover(kind: ImportKind) -> String {
     match kind {
-        ImportKind::Postman => {
-            "Postman environments exported as JSON become this project's environments"
-        }
+        ImportKind::Postman => t!("import-environments-postman-hint"),
         ImportKind::Http | ImportKind::OpenApi | ImportKind::Insomnia => {
-            "http-client.env.json, http-client.private.env.json or a VS Code settings file with \
-             REST Client environments: they become this project's environments"
+            t!("import-environments-http-hint")
         }
-        ImportKind::Bruno => {
-            "Bruno environments (.bru files) from another collection become this project's \
-             environments too"
-        }
+        ImportKind::Bruno => t!("import-environments-bruno-hint"),
     }
 }
 
@@ -103,21 +118,15 @@ impl ImportDialog {
     fn source_line(&self) -> String {
         let files = file_names(&self.sources).join(", ");
         if self.import.kind == ImportKind::Bruno {
-            format!(
-                "From the folder {files} (Bruno collection). Tortuga creates a new project from \
-                 it; the collection itself is not changed."
-            )
+            t!("import-from-bruno-folder", files = files)
         } else if self.sources.len() == 1 {
-            format!(
-                "From {files} ({}). Tortuga creates a new project from it; the file itself is \
-                 not changed.",
-                self.import.kind.label()
+            t!(
+                "import-from-file",
+                files = files,
+                kind = kind_label(self.import.kind)
             )
         } else {
-            format!(
-                "From {files}. Tortuga creates a new project from them, with a folder per file; \
-                 the files themselves are not changed."
-            )
+            t!("import-from-files", files = files)
         }
     }
 
@@ -129,20 +138,20 @@ impl ImportDialog {
     ) -> (DialogResult<()>, Option<ImportAction>) {
         let mut action = None;
         let title = match self.import.kind {
-            ImportKind::OpenApi => "Import OpenAPI",
-            ImportKind::Postman => "Import Postman collection",
-            ImportKind::Http => "Import HTTP file",
-            ImportKind::Bruno => "Import Bruno collection",
-            ImportKind::Insomnia => "Import Insomnia export",
+            ImportKind::OpenApi => t!("import-title-openapi"),
+            ImportKind::Postman => t!("import-title-postman"),
+            ImportKind::Http => t!("import-title-http"),
+            ImportKind::Bruno => t!("import-title-bruno"),
+            ImportKind::Insomnia => t!("import-title-insomnia"),
         };
-        let result = dialog(ctx, "import", title, 560.0, true, |ui| {
+        let result = dialog(ctx, "import", &title, 560.0, true, |ui| {
             theme::hint(ui, self.source_line());
             ui.add_space(8.0);
             self.summary(ui);
             if ENVIRONMENT_KINDS.contains(&self.import.kind)
                 && target.can_pick_folders
                 && ui
-                    .button("Add environment files…")
+                    .button(t!("import-add-environment-files"))
                     .on_hover_text(environments_hover(self.import.kind))
                     .clicked()
             {
@@ -150,9 +159,9 @@ impl ImportDialog {
             }
 
             ui.add_space(12.0);
-            theme::section_label(ui, "Project folder");
+            theme::section_label(ui, &t!("import-project-folder"));
             ui.horizontal(|ui| {
-                if target.can_pick_folders && ui.button("Choose…").clicked() {
+                if target.can_pick_folders && ui.button(t!("choose")).clicked() {
                     action = Some(ImportAction::ChooseFolder);
                 }
                 let full = self.dir.display().to_string();
@@ -160,16 +169,13 @@ impl ImportDialog {
                     .on_hover_text(full);
             });
             if target.taken {
-                theme::error(
-                    ui,
-                    "That folder already is a Tortuga project: choose another one.",
-                );
+                theme::error(ui, t!("import-folder-taken"));
             } else if let Some(repo) = target.repository {
                 theme::hint(
                     ui,
-                    format!(
-                        "Inside the git repository at {}: commit the project with your code.",
-                        repo.display()
+                    t!(
+                        "import-inside-repository",
+                        path = repo.display().to_string()
                     ),
                 );
             }
@@ -178,7 +184,7 @@ impl ImportDialog {
                 ui.add_space(12.0);
                 theme::section_label(
                     ui,
-                    &format!("Not imported as written ({})", self.import.warnings.len()),
+                    &t!("import-not-as-written", count = self.import.warnings.len()),
                 );
                 egui::ScrollArea::vertical()
                     .max_height(160.0)
@@ -193,9 +199,9 @@ impl ImportDialog {
             ui.add_space(16.0);
             theme::button_row(ui, |ui| {
                 let import = ui
-                    .add_enabled(!target.taken, theme::primary_button(ui, "Import"))
+                    .add_enabled(!target.taken, theme::primary_button(ui, t!("import")))
                     .clicked();
-                let cancel = ui.button("Cancel").clicked();
+                let cancel = ui.button(t!("cancel")).clicked();
                 if import {
                     DialogResult::Done(())
                 } else if cancel {
@@ -216,12 +222,12 @@ impl ImportDialog {
             .filter(|i| matches!(i, NewItem::Folder { .. }))
             .count();
         let requests = if folders == 0 {
-            count(import.requests, "request")
+            t!("import-requests", count = import.requests)
         } else {
-            format!(
-                "{} in {}",
-                count(import.requests, "request"),
-                count(folders, "folder")
+            t!(
+                "import-requests-in-folders",
+                count = import.requests,
+                folders = folders
             )
         };
         let environments = import
@@ -231,12 +237,12 @@ impl ImportDialog {
             .collect::<Vec<_>>()
             .join(", ");
         let secrets = if import.manifest.secrets.is_empty() {
-            "None".to_owned()
+            t!("none")
         } else {
             import.manifest.secrets.join(", ")
         };
         let environments = if environments.is_empty() {
-            "None".to_owned()
+            t!("none")
         } else {
             environments
         };
@@ -249,13 +255,17 @@ impl ImportDialog {
                     ui.label(value);
                     ui.end_row();
                 };
-                row(ui, "Project", &import.manifest.name);
-                row(ui, "Requests", &requests);
-                row(ui, "Environments", &environments);
+                row(ui, &t!("project"), &import.manifest.name);
+                row(ui, &t!("import-row-requests"), &requests);
+                row(ui, &t!("import-row-environments"), &environments);
                 if !self.environment_files.is_empty() {
-                    row(ui, "Environment files", &self.environment_files.join(", "));
+                    row(
+                        ui,
+                        &t!("import-row-environment-files"),
+                        &self.environment_files.join(", "),
+                    );
                 }
-                row(ui, "Secret variables", &secrets);
+                row(ui, &t!("import-row-secret-variables"), &secrets);
             });
         if let Some(hint) = secrets_hint(import) {
             theme::hint(ui, hint);
@@ -272,18 +282,14 @@ fn secrets_hint(import: &Import) -> Option<String> {
         .filter(|s| import.has_secret_value(s))
         .count();
     let missing = secrets.len() - found;
-    let kept = "they are kept on this computer, not in the project files";
     match (found, missing) {
         (0, 0) => None,
-        (0, _) => Some(
-            "Secret values stay on this computer: fill them in under Environments… after the \
-             import."
-                .to_owned(),
-        ),
-        (_, 0) => Some(format!("Values for these were found in the file: {kept}.")),
-        (_, missing) => Some(format!(
-            "Values for {found} of these were found in the file: {kept}. Fill in the other \
-             {missing} under Environments… after the import."
+        (0, _) => Some(t!("import-secrets-fill-in")),
+        (_, 0) => Some(t!("import-secrets-found")),
+        (_, missing) => Some(t!(
+            "import-secrets-some-found",
+            found = found,
+            missing = missing
         )),
     }
 }
@@ -303,21 +309,18 @@ pub struct EnvironmentImportDialog {
 impl EnvironmentImportDialog {
     /// Done means "import".
     pub fn show(&self, ctx: &Context) -> DialogResult<()> {
-        let title = environments_entry(self.kind).trim_end_matches('…');
+        let entry = environments_entry(self.kind);
+        let title = entry.trim_end_matches('…');
         dialog(ctx, "import-environments", title, 480.0, true, |ui| {
             theme::hint(
                 ui,
-                format!(
-                    "From {}. Base URLs go to the project's servers; secret values stay on \
-                         this computer.",
-                    self.sources.join(", ")
-                ),
+                t!("import-environments-from", files = self.sources.join(", ")),
             );
             ui.add_space(8.0);
             let preview = &self.preview;
             let list = |names: &[String]| {
                 if names.is_empty() {
-                    "None".to_owned()
+                    t!("none")
                 } else {
                     names.join(", ")
                 }
@@ -338,29 +341,22 @@ impl EnvironmentImportDialog {
                         ui.label(value);
                         ui.end_row();
                     };
-                    row(ui, "Project", &self.project);
-                    row(ui, "Adds", &list(&preview.added));
-                    row(ui, "Updates", &list(&preview.updated));
-                    row(ui, "Secret values", &list(&secrets));
+                    row(ui, &t!("project"), &self.project);
+                    row(ui, &t!("import-row-adds"), &list(&preview.added));
+                    row(ui, &t!("import-row-updates"), &list(&preview.updated));
+                    row(ui, &t!("import-row-secret-values"), &list(&secrets));
                 });
             if !preview.updated.is_empty() {
-                theme::hint(
-                    ui,
-                    "Environments that are updated keep what the files don't set.",
-                );
+                theme::hint(ui, t!("import-environments-updated-keep"));
             }
             if !secrets.is_empty() {
-                theme::hint(
-                    ui,
-                    "These were found in the files: they are kept on this computer, not in \
-                         the project files.",
-                );
+                theme::hint(ui, t!("import-environments-secrets-found"));
             }
             if !preview.warnings.is_empty() {
                 ui.add_space(12.0);
                 theme::section_label(
                     ui,
-                    &format!("Not imported as written ({})", preview.warnings.len()),
+                    &t!("import-not-as-written", count = preview.warnings.len()),
                 );
                 egui::ScrollArea::vertical()
                     .max_height(160.0)
@@ -373,8 +369,8 @@ impl EnvironmentImportDialog {
             }
             ui.add_space(16.0);
             theme::button_row(ui, |ui| {
-                let import = ui.add(theme::primary_button(ui, "Import")).clicked();
-                let cancel = ui.button("Cancel").clicked();
+                let import = ui.add(theme::primary_button(ui, t!("import"))).clicked();
+                let cancel = ui.button(t!("cancel")).clicked();
                 if import {
                     DialogResult::Done(())
                 } else if cancel {

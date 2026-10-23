@@ -34,7 +34,7 @@ pub(super) fn cookies_tab(
         .auto_shrink(false)
         .show(ui, |ui| {
             if cookies.cookies.is_empty() {
-                theme::hint(ui, "This response set no cookies.");
+                theme::hint(ui, t!("cookies-none-set"));
             } else {
                 cookie_grid(ui, &cookies.cookies, now_ms, offset_minutes);
             }
@@ -42,7 +42,8 @@ pub(super) fn cookies_tab(
             for value in &cookies.unreadable {
                 ui.add(
                     Label::new(
-                        RichText::new(format!("Could not read Set-Cookie: {value}")).color(p.fail),
+                        RichText::new(t!("cookies-unreadable", value = value.as_str()))
+                            .color(p.fail),
                     )
                     .wrap(),
                 );
@@ -51,12 +52,11 @@ pub(super) fn cookies_tab(
             match tab {
                 CookiesTab::Project => {
                     ui.horizontal_wrapped(|ui| {
-                        theme::hint(
-                            ui,
-                            "Stored in the project's cookie jar unless their domain or path \
-                             does not match the request.",
-                        );
-                        if ui.add(theme::ghost_button("Open the jar…")).clicked() {
+                        theme::hint(ui, t!("cookies-stored-in-jar"));
+                        if ui
+                            .add(theme::ghost_button(t!("cookies-open-jar")))
+                            .clicked()
+                        {
                             action = Some(ResponseAction::ShowCookieJar);
                         }
                     });
@@ -79,8 +79,14 @@ fn cookie_grid(ui: &mut Ui, cookies: &[SetCookie], now_ms: u64, offset_minutes: 
         .spacing([16.0, 6.0])
         .striped(true)
         .show(ui, |ui| {
-            for heading in ["Name", "Value", "Domain and path", "Expires", ""] {
-                theme::section_label(ui, heading);
+            for heading in [
+                t!("name"),
+                t!("value"),
+                t!("cookies-domain-path"),
+                t!("cookies-expires"),
+                String::new(),
+            ] {
+                theme::section_label(ui, &heading);
             }
             ui.end_row();
             for c in cookies {
@@ -105,28 +111,28 @@ fn place(c: &SetCookie) -> (String, String) {
             let domain = domain.trim_start_matches('.');
             (
                 format!("*.{domain}{path}"),
-                format!("Sent to {domain} and its subdomains{}", under(c)),
+                t!("cookies-sent-to-domain", domain = domain, under = under(c)),
             )
         }
         None => (
-            format!("This host{path}"),
-            format!("Sent only to the host that answered{}", under(c)),
+            format!("{}{path}", t!("cookies-this-host")),
+            t!("cookies-sent-to-host", under = under(c)),
         ),
     }
 }
 
 fn under(c: &SetCookie) -> String {
     match c.path.as_deref() {
-        Some(path) => format!(", for paths under {path}"),
-        None => ", for paths under the request's folder".into(),
+        Some(path) => t!("cookies-under-path", path = path),
+        None => t!("cookies-under-request-folder"),
     }
 }
 
 fn expiry(e: Expiry, now_ms: u64, offset_minutes: i32) -> String {
     match e {
-        Expiry::Session => "Session".into(),
-        Expiry::MaxAge(secs) if secs <= 0 => "Removes it".into(),
-        Expiry::At(ms) if ms <= now_ms => "Removes it".into(),
+        Expiry::Session => t!("cookies-session"),
+        Expiry::MaxAge(secs) if secs <= 0 => t!("cookies-removes-it"),
+        Expiry::At(ms) if ms <= now_ms => t!("cookies-removes-it"),
         Expiry::MaxAge(secs) => {
             // Browsers keep a cookie at most 400 days (RFC 6265bis); this also keeps the
             // date in range.

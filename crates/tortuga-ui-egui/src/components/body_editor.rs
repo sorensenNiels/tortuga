@@ -17,14 +17,16 @@ enum Kind {
 }
 
 impl Kind {
-    const ALL: [(Self, &'static str); 6] = [
-        (Self::None, "None"),
-        (Self::Text, "Text"),
-        (Self::Json, "JSON"),
-        (Self::Xml, "XML"),
-        (Self::Form, "Form URL-encoded"),
-        (Self::Multipart, "Multipart"),
-    ];
+    fn all() -> [(Self, String); 6] {
+        [
+            (Self::None, t!("none")),
+            (Self::Text, t!("body-text")),
+            (Self::Json, "JSON".to_owned()),
+            (Self::Xml, "XML".to_owned()),
+            (Self::Form, t!("body-form")),
+            (Self::Multipart, "Multipart".to_owned()),
+        ]
+    }
 
     fn of(body: &RequestBody) -> Self {
         match body {
@@ -134,7 +136,7 @@ pub fn body_editor(
         ui,
         |ui| {
             let mut chosen = kind;
-            for (k, label) in Kind::ALL {
+            for (k, label) in Kind::all() {
                 ui.radio_value(&mut chosen, k, label);
             }
             chosen
@@ -142,8 +144,11 @@ pub fn body_editor(
         |ui| {
             kind.formats()
                 && ui
-                    .add_enabled(error.is_none(), egui::Button::new("Beautify").small())
-                    .on_hover_text("Indent the body; it must be valid first")
+                    .add_enabled(
+                        error.is_none(),
+                        egui::Button::new(t!("script-beautify")).small(),
+                    )
+                    .on_hover_text(t!("body-beautify-hint"))
                     .clicked()
         },
     );
@@ -155,12 +160,12 @@ pub fn body_editor(
     }
 
     match kind {
-        Kind::None => theme::hint(ui, "This request has no body."),
+        Kind::None => theme::hint(ui, t!("body-none")),
         Kind::Text | Kind::Json | Kind::Xml => {
             let hint = match kind {
-                Kind::Json => "{\n  \"key\": \"value\"\n}",
-                Kind::Xml => "<order>\n  <id>{{id}}</id>\n</order>",
-                Kind::None | Kind::Text | Kind::Form | Kind::Multipart => "Request body",
+                Kind::Json => "{\n  \"key\": \"value\"\n}".to_owned(),
+                Kind::Xml => "<order>\n  <id>{{id}}</id>\n</order>".to_owned(),
+                Kind::None | Kind::Text | Kind::Form | Kind::Multipart => t!("body-hint"),
             };
             let id = ui.make_persistent_id("body-text");
             let edit = var_edit(
@@ -185,7 +190,7 @@ pub fn body_editor(
             }
         }
         Kind::Form => {
-            if key_value_table(ui, "body-form", &mut drafts.form, "Field", help) {
+            if key_value_table(ui, "body-form", &mut drafts.form, &t!("body-field"), help) {
                 request.body = drafts.body(Kind::Form);
             }
         }
@@ -207,17 +212,9 @@ fn multipart_hints(ui: &mut Ui, parts: &[FormPart]) {
         .iter()
         .any(|p| p.enabled && p.file && std::path::Path::new(p.value.trim()).is_absolute());
     if full_paths {
-        theme::warning(
-            ui,
-            "A file outside the project keeps its full path: the request only works on this computer.",
-        );
+        theme::warning(ui, t!("body-full-path-warning"));
     }
-    theme::hint(
-        ui,
-        "Files are read when sending. A file inside the project is saved relative to the project \
-         folder, so teammates can send the request too. The Content-Type with the boundary is set \
-         automatically.",
-    );
+    theme::hint(ui, t!("body-multipart-hint"));
 }
 
 /// The parts of a multipart body, with a blank row at the end that becomes a part when
@@ -241,11 +238,11 @@ fn parts_table(
         .spacing([6.0, 4.0])
         .show(ui, |ui| {
             ui.label("");
-            theme::section_label(ui, "Part");
+            theme::section_label(ui, &t!("body-part"));
             ui.label("");
-            theme::section_label(ui, "Value or file");
+            theme::section_label(ui, &t!("body-value-or-file"));
             ui.label("");
-            theme::section_label(ui, "Content type");
+            theme::section_label(ui, &t!("body-content-type"));
             ui.label("");
             ui.end_row();
             for (i, part) in parts
@@ -259,32 +256,36 @@ fn parts_table(
                 } else {
                     changed |= ui
                         .checkbox(&mut part.enabled, "")
-                        .on_hover_text("Include")
+                        .on_hover_text(t!("kv-include"))
                         .changed();
                 }
-                let name_hint = if is_blank { "Add part" } else { "Part" };
+                let name_hint = part_name_hint(is_blank);
                 changed |= cell(
                     ui,
                     ("part-name", i),
                     &mut part.name,
-                    name_hint,
+                    &name_hint,
                     help,
                     widths[0],
                 );
                 changed |= kind_picker(ui, i, part);
-                let value_hint = if part.file { "path/to/file" } else { "Value" };
+                let value_hint = if part.file {
+                    t!("body-file-path-hint")
+                } else {
+                    t!("value")
+                };
                 changed |= cell(
                     ui,
                     ("part-value", i),
                     &mut part.value,
-                    value_hint,
+                    &value_hint,
                     help,
                     widths[1],
                 );
                 if part.file && can_pick_files && !is_blank {
                     if ui
-                        .small_button("Choose…")
-                        .on_hover_text("Pick the file to upload")
+                        .small_button(t!("choose"))
+                        .on_hover_text(t!("body-pick-file"))
                         .clicked()
                     {
                         choose = Some(i);
@@ -297,7 +298,7 @@ fn parts_table(
                     ui,
                     ("part-type", i),
                     &mut content_type,
-                    "auto",
+                    &t!("body-auto"),
                     help,
                     widths[2],
                 ) {
@@ -307,7 +308,7 @@ fn parts_table(
                 if !is_blank
                     && ui
                         .add(theme::icon_button(ui, "🗙"))
-                        .on_hover_text("Remove")
+                        .on_hover_text(t!("remove"))
                         .clicked()
                 {
                     remove = Some(i);
@@ -326,18 +327,31 @@ fn parts_table(
     (changed, choose)
 }
 
+/// The placeholder of a part's name: "Add part" in the blank row.
+fn part_name_hint(is_blank: bool) -> String {
+    if is_blank {
+        t!("body-add-part")
+    } else {
+        t!("body-part")
+    }
+}
+
 /// Text or File.
 fn kind_picker(ui: &mut Ui, i: usize, part: &mut FormPart) -> bool {
     let before = part.file;
     ComboBox::from_id_salt(("part-kind", i))
-        .selected_text(if part.file { "File" } else { "Text" })
+        .selected_text(if part.file {
+            t!("body-file")
+        } else {
+            t!("body-text")
+        })
         .width(60.0)
         .show_ui(ui, |ui| {
-            ui.selectable_value(&mut part.file, false, "Text");
-            ui.selectable_value(&mut part.file, true, "File");
+            ui.selectable_value(&mut part.file, false, t!("body-text"));
+            ui.selectable_value(&mut part.file, true, t!("body-file"));
         })
         .response
-        .on_hover_text("A text value, or a file to upload");
+        .on_hover_text(t!("body-kind-hint"));
     part.file != before
 }
 

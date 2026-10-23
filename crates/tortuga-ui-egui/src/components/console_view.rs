@@ -36,24 +36,26 @@ pub fn console_view(ui: &mut Ui, entries: &[(ScriptKind, ConsoleEntry)]) {
             if n > 0 {
                 ui.add_space(6.0);
             }
-            theme::section_label(ui, script_name(*kind));
+            theme::section_label(ui, &script_name(*kind));
         }
         ui.push_id(n, |ui| entry_row(ui, entry));
     }
 }
 
-fn script_name(kind: ScriptKind) -> &'static str {
+fn script_name(kind: ScriptKind) -> String {
     match kind {
-        ScriptKind::PreRequest => "Pre-request script",
-        ScriptKind::Tests => "Tests",
-        ScriptKind::StepTests => "Step tests",
+        ScriptKind::PreRequest => t!("console-pre-request"),
+        ScriptKind::Tests => t!("tests"),
+        ScriptKind::StepTests => t!("console-step-tests"),
     }
 }
 
 /// "line 3", muted, in a column of its own so the entries line up.
 fn line_label(ui: &mut Ui, line: Option<u32>) {
     let p = theme::palette(ui);
-    let text = line.map(|l| format!("line {l}")).unwrap_or_default();
+    let text = line
+        .map(|l| t!("console-line", line = l))
+        .unwrap_or_default();
     ui.add_sized(
         [52.0, ui.spacing().interact_size.y],
         Label::new(RichText::new(text).small().color(p.muted)),
@@ -104,20 +106,12 @@ fn entry_row(ui: &mut Ui, entry: &ConsoleEntry) {
             });
         }
         ConsoleEntry::Break { line, values } => {
-            let title = format!(
-                "⏺ Breakpoint, line {line} — {} {}",
-                values.len(),
-                if values.len() == 1 {
-                    "variable"
-                } else {
-                    "variables"
-                }
-            );
+            let title = t!("console-breakpoint", line = *line, count = values.len());
             CollapsingHeader::new(RichText::new(title).color(p.fail))
                 .id_salt("break")
                 .show(ui, |ui| {
                     if values.is_empty() {
-                        theme::hint(ui, "No variables of the script are in scope here.");
+                        theme::hint(ui, t!("console-no-variables"));
                     }
                     for (i, (name, value)) in values.iter().enumerate() {
                         ui.push_id(i, |ui| value_tree(ui, name, value));
@@ -168,8 +162,8 @@ fn short(v: &Value) -> String {
         return s;
     }
     match v {
-        Value::Array(items) => format!("[…] {} items", items.len()),
-        Value::Object(map) => format!("{{…}} {} keys", map.len()),
+        Value::Array(items) => t!("console-array", count = items.len()),
+        Value::Object(map) => t!("console-object", count = map.len()),
         other => format::truncate(&other.to_string(), MAX_TEXT).0.to_owned(),
     }
 }
@@ -231,7 +225,7 @@ mod tests {
         assert_eq!(short(&json!({"$type": "date", "value": "Tue"})), "Tue");
         assert_eq!(short(&json!("ü😀")), "\"ü😀\"");
         assert_eq!(short(&json!([1, 2])), "[…] 2 items");
-        assert_eq!(short(&json!({"a": 1})), "{…} 1 keys");
+        assert_eq!(short(&json!({"a": 1})), "{…} 1 key");
         // An object of the user's that happens to have a `$type` key stays an object.
         assert!(is_container(&json!({"$type": "x", "a": 1, "b": 2})));
     }
@@ -281,7 +275,7 @@ mod tests {
         h.get_by_label("line 4");
         h.get_by_label("⏺ Breakpoint, line 6 — 1 variable").click();
         h.run();
-        h.get_by_label("body: {…} 1 keys");
+        h.get_by_label("body: {…} 1 key");
         h.get_by_label("TypeError: x");
     }
 }

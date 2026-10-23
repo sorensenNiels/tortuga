@@ -19,7 +19,7 @@ pub(super) fn missing_row(ui: &mut Ui, project: &ProjectRef, reason: &str, tree:
     let atoms = [
         Atom::from(RichText::new("⚠").color(p.muted)),
         Atom::from(RichText::new(name).color(p.muted)),
-        Atom::from(RichText::new("missing").small().color(p.muted)),
+        Atom::from(RichText::new(t!("project-missing")).small().color(p.muted)),
         Atom::grow(),
     ];
     let path = project.path.clone();
@@ -27,8 +27,8 @@ pub(super) fn missing_row(ui: &mut Ui, project: &ProjectRef, reason: &str, tree:
     let menu = |ui: &mut Ui| {
         let mut choice = None;
         if ui
-            .button("Locate…")
-            .on_hover_text("Pick the folder where the project is now")
+            .button(t!("project-locate"))
+            .on_hover_text(t!("project-locate-hint"))
             .clicked()
         {
             choice = Some(MenuChoice::Action(SidebarAction::LocateMissing(
@@ -37,13 +37,13 @@ pub(super) fn missing_row(ui: &mut Ui, project: &ProjectRef, reason: &str, tree:
         }
         if let Some(remote) = &remote
             && ui
-                .button("Copy clone URL")
+                .button(t!("project-copy-clone-url"))
                 .on_hover_text(remote.as_str())
                 .clicked()
         {
             ui.ctx().copy_text(remote.clone());
         }
-        if ui.button("Remove from workspace").clicked() {
+        if ui.button(t!("project-remove-from-workspace")).clicked() {
             choice = Some(MenuChoice::Action(SidebarAction::RemoveMissing(
                 path.clone(),
             )));
@@ -53,7 +53,10 @@ pub(super) fn missing_row(ui: &mut Ui, project: &ProjectRef, reason: &str, tree:
     let (row, from_button) = tree_row(ui, 0, false, atoms, |ui| menu_button(ui, menu));
     let mut hover = format!("{}\n{reason}", project.path.display());
     if let Some(remote) = &project.remote {
-        hover = format!("{hover}\nClone it from {remote}, then use Locate…");
+        hover = format!(
+            "{hover}\n{}",
+            t!("project-clone-hint", remote = remote.as_str())
+        );
     }
     let row = row.on_hover_text(hover);
     let choice = from_button.or_else(|| context_menu(&row, menu));
@@ -80,14 +83,14 @@ pub(super) fn broken_row(
         !read_only
             && ui
                 .add(theme::icon_button(ui, "🗙"))
-                .on_hover_text("Delete this file")
+                .on_hover_text(t!("broken-file-delete"))
                 .clicked()
     });
     if row.on_hover_text(&b.error).clicked() {
-        tree.actions.push(SidebarAction::ShowError(format!(
-            "Could not read {}: {}. Fix the file in an editor, then use “Reload from disk”.",
-            b.path.display(),
-            b.error
+        tree.actions.push(SidebarAction::ShowError(t!(
+            "broken-file-error",
+            path = b.path.display().to_string(),
+            error = &b.error
         )));
     }
     if delete {

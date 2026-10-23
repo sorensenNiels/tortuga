@@ -65,7 +65,7 @@ pub(super) fn row_menu(
     lines: Option<&[Option<Point>]>,
 ) -> Option<ResponseAction> {
     let Some(lines) = lines else {
-        theme::hint(ui, "Reading the JSON…");
+        theme::hint(ui, t!("json-menu-reading"));
         return None;
     };
     // Wrapped rows are parts of a line: count the line breaks before this one.
@@ -73,7 +73,7 @@ pub(super) fn row_menu(
         .get(..range.start)
         .map_or(0, |t| t.matches('\n').count());
     let Some(point) = lines.get(line).and_then(Option::as_ref) else {
-        theme::hint(ui, "Right-click a line with a value.");
+        theme::hint(ui, t!("json-menu-right-click"));
         return None;
     };
     menu(ui, point)
@@ -86,7 +86,7 @@ fn menu(ui: &mut Ui, point: &Point) -> Option<ResponseAction> {
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
     ui.label(RichText::new(point.display()).monospace().color(p.muted));
     ui.separator();
-    ui.menu_button("Add test", |ui| {
+    ui.menu_button(t!("json-menu-add-test"), |ui| {
         for (label, code) in point.tests() {
             if ui.button(label).clicked() {
                 action = Some(ResponseAction::AddTest(code));
@@ -96,8 +96,12 @@ fn menu(ui: &mut Ui, point: &Point) -> Option<ResponseAction> {
     if !point.path.is_empty() {
         let name = point.variable_name();
         if ui
-            .button(format!("Capture into “{name}”"))
-            .on_hover_text(format!("Adds the capture {} = {}", name, point.json_path()))
+            .button(t!("json-menu-capture-into", name = &name))
+            .on_hover_text(t!(
+                "json-menu-capture-hint",
+                name = &name,
+                path = point.json_path()
+            ))
             .clicked()
         {
             action = Some(ResponseAction::AddCapture {
@@ -106,7 +110,7 @@ fn menu(ui: &mut Ui, point: &Point) -> Option<ResponseAction> {
             });
         }
         if ui
-            .button("Copy path")
+            .button(t!("json-menu-copy-path"))
             .on_hover_text(point.json_path())
             .clicked()
         {

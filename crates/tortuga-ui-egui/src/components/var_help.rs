@@ -397,16 +397,16 @@ fn hover_card(ui: &mut Ui, name: &str, help: &VarHelp) {
             shown.to_owned()
         };
         ui.label(RichText::new(shown).monospace());
-        ui.label(RichText::new(format!("From {from}")).color(p.muted));
+        ui.label(RichText::new(t!("var-from", from = from.as_str())).color(p.muted));
         ui.label(
-            RichText::new("Ctrl+click to open where it is defined")
+            RichText::new(t!("var-ctrl-click-open"))
                 .small()
                 .color(p.muted),
         );
     } else {
-        ui.label(RichText::new("Not defined").color(p.fail));
+        ui.label(RichText::new(t!("var-not-defined")).color(p.fail));
         ui.label(
-            RichText::new("Ctrl+click to define it in the project's environments")
+            RichText::new(t!("var-ctrl-click-define"))
                 .small()
                 .color(p.muted),
         );

@@ -57,17 +57,6 @@ impl ImportKind {
         }
     }
 
-    /// The importer's name in settings, e.g. "Postman collections".
-    pub fn importer_name(self) -> &'static str {
-        match self {
-            Self::OpenApi => "OpenAPI descriptions",
-            Self::Postman => "Postman collections",
-            Self::Http => ".http files",
-            Self::Bruno => "Bruno collections",
-            Self::Insomnia => "Insomnia exports",
-        }
-    }
-
     /// What a file of this kind is called, e.g. "Postman collection".
     pub fn label(self) -> &'static str {
         match self {

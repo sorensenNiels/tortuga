@@ -4,7 +4,7 @@
 use egui::{Event, Key, KeyboardShortcut, Modifiers, RichText, Ui};
 use tortuga_core::settings::{KeyScheme, ScriptCommand, ScriptEditorSettings};
 
-use crate::components::script_keys::{key_label, key_text, parse};
+use crate::components::script_keys::{command_name, key_label, key_text, parse};
 use crate::theme;
 
 /// Where a recorded key goes.
@@ -53,21 +53,13 @@ impl ScriptEditorTab {
             }
             .map(|note| (command, note));
         }
-        ui.checkbox(&mut settings.close_pairs, "Close brackets and quotes");
+        ui.checkbox(&mut settings.close_pairs, t!("settings-close-pairs"));
         ui.indent("close-pairs", |ui| {
-            theme::hint(
-                ui,
-                "Typing ( [ { or a quote puts in its partner, or wraps the selection in the \
-                 pair; a closing one next to the cursor is stepped over.",
-            );
+            theme::hint(ui, t!("settings-close-pairs-hint"));
         });
         ui.add_space(10.0);
-        theme::section_label(ui, "Keys");
-        theme::hint(
-            ui,
-            "Click a key and press another to change it; Escape cancels. In a script field \
-             these keys win over the app's own. Ctrl is Cmd on macOS.",
-        );
+        theme::section_label(ui, &t!("settings-keys"));
+        theme::hint(ui, t!("settings-keys-hint"));
         ui.add_space(4.0);
         self.scheme_choice(ui, settings);
         ui.add_space(4.0);
@@ -76,7 +68,7 @@ impl ScriptEditorTab {
             .spacing([16.0, 6.0])
             .show(ui, |ui| {
                 for command in ScriptCommand::ALL {
-                    ui.label(command.name());
+                    ui.label(command_name(command));
                     ui.horizontal_wrapped(|ui| self.keys_row(ui, settings, command, mac));
                     ui.end_row();
                     if let Some((_, note)) = self.note.as_ref().filter(|(c, _)| *c == command) {
@@ -95,10 +87,10 @@ impl ScriptEditorTab {
     fn scheme_choice(&mut self, ui: &mut Ui, settings: &mut ScriptEditorSettings) {
         let changed = ScriptCommand::ALL.into_iter().any(|c| settings.changed(c));
         ui.horizontal(|ui| {
-            let label = ui.label("Keys like");
+            let label = ui.label(t!("settings-keys-like"));
             let mut chosen = settings.scheme;
             let shown = if changed {
-                format!("{} (changed)", settings.scheme.name())
+                t!("settings-scheme-changed", scheme = settings.scheme.name())
             } else {
                 settings.scheme.name().to_owned()
             };
@@ -116,15 +108,15 @@ impl ScriptEditorTab {
             }
             if changed
                 && ui
-                    .add(theme::ghost_button("Reset all"))
-                    .on_hover_text("Back to this scheme's keys for every command")
+                    .add(theme::ghost_button(t!("settings-reset-all")))
+                    .on_hover_text(t!("settings-reset-all-hint"))
                     .clicked()
             {
                 self.use_scheme(settings, settings.scheme);
             }
         });
         if changed {
-            theme::hint(ui, "Choosing a scheme replaces the keys you changed.");
+            theme::hint(ui, t!("settings-scheme-replaces"));
         }
     }
 
@@ -149,43 +141,46 @@ impl ScriptEditorTab {
         let mut remove = None;
         for (n, text) in keys.iter().enumerate() {
             let shown = if recording(Slot::Replace(n)) {
-                "Press a key…".to_owned()
+                t!("settings-press-key")
             } else {
-                parse(text).map_or_else(|| format!("{text} (unknown)"), |k| key_label(k, mac))
+                parse(text).map_or_else(
+                    || t!("settings-key-unknown", key = text.as_str()),
+                    |k| key_label(k, mac),
+                )
             };
             let button = egui::Button::new(RichText::new(shown).monospace())
                 .selected(recording(Slot::Replace(n)));
             if ui
                 .add(button)
-                .on_hover_text("Click, then press the new key")
+                .on_hover_text(t!("settings-key-change-hint"))
                 .clicked()
             {
                 self.start(command, Slot::Replace(n));
             }
             if ui
                 .add(theme::icon_button(ui, "🗙"))
-                .on_hover_text("Remove this key")
+                .on_hover_text(t!("settings-key-remove"))
                 .clicked()
             {
                 remove = Some(n);
             }
         }
         let add = if recording(Slot::Add) {
-            "Press a key…"
+            t!("settings-press-key")
         } else {
-            "+"
+            "+".to_owned()
         };
         if ui
             .add(egui::Button::new(add).selected(recording(Slot::Add)))
-            .on_hover_text("Add a key")
+            .on_hover_text(t!("settings-key-add"))
             .clicked()
         {
             self.start(command, Slot::Add);
         }
         if settings.changed(command)
             && ui
-                .add(theme::ghost_button("Reset"))
-                .on_hover_text("Back to the scheme's keys")
+                .add(theme::ghost_button(t!("reset")))
+                .on_hover_text(t!("settings-key-reset-hint"))
                 .clicked()
         {
             settings.set_keys(command, settings.usual_keys(command));
@@ -250,8 +245,9 @@ fn record(
         .strip_prefix('F')
         .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
     if !(key.modifiers.command || key.modifiers.alt || function_key) {
-        return Some(Note::Refused(format!(
-            "{label} needs Ctrl or Alt with it, or the key would no longer type."
+        return Some(Note::Refused(t!(
+            "settings-key-needs-modifier",
+            key = label.as_str()
         )));
     }
     let same = |k: &String| parse(k).is_some_and(|k| key_text(k) == text);
@@ -260,9 +256,10 @@ fn record(
         .find(|&c| settings.keys(c).iter().any(same));
     match taken {
         Some(other) if other != command => {
-            return Some(Note::Refused(format!(
-                "{label} is already “{}”.",
-                other.name()
+            return Some(Note::Refused(t!(
+                "settings-key-taken",
+                key = label.as_str(),
+                command = command_name(other)
             )));
         }
         Some(_) => return None,
@@ -278,8 +275,10 @@ fn record(
         .into_iter()
         .find(|(k, _)| key_text(*k) == text)
         .map(|(_, does)| {
-            Note::Elsewhere(format!(
-                "Outside script fields, {label} still does “{does}”."
+            Note::Elsewhere(t!(
+                "settings-key-elsewhere",
+                key = label.as_str(),
+                does = does
             ))
         })
 }

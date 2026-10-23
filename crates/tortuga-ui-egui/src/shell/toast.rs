@@ -48,7 +48,7 @@ impl TortugaUi {
                     })
                     .response
                     .interact(Sense::click())
-                    .on_hover_text("Click to dismiss")
+                    .on_hover_text(t!("toast-dismiss"))
                     .clicked()
             })
             .inner;

@@ -70,7 +70,6 @@ Open before the first release (v1):
 | macOS and Windows | R-P-3, R-HTTP-8 | Run the app on macOS at all, and use it beyond start-up on Windows; system proxy settings on both. |
 | OS credential store | R-LOC-2 | Check Keychain, Credential Manager and Secret Service (only the file fallback is verified). |
 | No telemetry | R-P-4 | Confirm with a network monitor. |
-| Signing | D17 | Decide whether v1 installers are signed. |
 | CLI archives | R-CLI-4 | Run the Release workflow and check the archives on each OS (only the Linux one was built locally). |
 
 Next: **Phase 4 — Reach**, picked by demand.
@@ -90,6 +89,7 @@ R-MOCK-8, D43 to D47). Still open:
 - GraphQL, WebSockets, Server-Sent Events, gRPC (IDEA-25).
 - Client certificates / mTLS (IDEA-20).
 - Code snippets for other languages (IDEA-22).
+- The UI in English and Danish (R-I18N-1 to R-I18N-3, D64); more languages when someone offers to keep one up to date.
 - Web version (IDEA-11): the code keeps compiling for wasm, but nothing is built for it until a team asks (D6).
 - In-app commit/pull/push (IDEA-21) — only if working outside the app proves to be a real pain point.
 
@@ -185,6 +185,9 @@ Requirements still open: not built yet, or implemented but not yet verified ever
 | R-HTTP-8 | Settings: follow redirects (on/off), verify TLS certificates (on/off, with a visible warning when off), proxy from system settings. |
 | R-LOC-2 | Secret values are stored in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service). If none is available, they fall back to a file in the app-data directory readable only by the current user, and the app shows a warning. |
 | R-NF-4 | Installable packages: `.msi` (Windows), `.dmg` (macOS), `.deb` and `.AppImage` (Linux). |
+| R-I18N-1 | **The UI in the user's language: English or Danish.** By default the language follows the OS (English when the OS language is neither); Settings → Appearance can choose one. An app setting, never in project files. *(IDEA-94, D64)* |
+| R-I18N-2 | Every text of the app's own UI is translated: menus, buttons, labels, tooltips, hints, dialogs and notices. English is the source and the fallback for any missing text. Project files, their keys and `{{variables}}`, the script API, HTTP, `tortuga-cli` output, and messages that come from the engine (errors, import warnings, test results) stay English (IDEA-95). |
+| R-I18N-3 | Sizes, durations and dates follow the language: in Danish `1,5 KB`, `1,23 s`, `tors. 14. okt.`, "I dag", "I går". |
 | R-CLI-4 | Each release has a `tortuga-cli` archive per OS next to the installers, for CI: the binary with the README and licences, `.zip` on Windows, `.tar.gz` elsewhere. *(IDEA-43)* |
 
 ## 7. Ideas
@@ -200,7 +203,7 @@ Agreed as worth doing, not scheduled yet.
 |---|---|---|
 | IDEA-8 | "Compare" option when a file changed on disk while it had unsaved edits. | Extends R-GIT-11. |
 | IDEA-11 | Web version of the app. | The architecture already keeps this possible (R-P-3). |
-| IDEA-14 | Signed installers: Apple Developer ID signing and notarization for the `.dmg`, Authenticode for the `.msi`. | Removes the "unidentified developer" and SmartScreen warnings. Needs paid certificates; see D17. |
+| IDEA-14 | Signed installers: Apple Developer ID signing and notarization for the `.dmg`, Authenticode for the `.msi`. | Removes the "unidentified developer" and SmartScreen warnings. Needs paid certificates; decided after v1 (D17). |
 | IDEA-15 | In-app updates: download and install a new version from the app. | The check is R-SET-15. Needs signed update files (IDEA-14), and must not fight the `.deb` (apt updates it). |
 | IDEA-44 | A container image of `tortuga-cli` for CI. | The Release workflow attaches CLI archives (R-CLI-4); an image needs a registry to publish to. |
 
@@ -217,6 +220,7 @@ Not decided. Needs a real user need before it moves up.
 | IDEA-54 | Dynamic mock answers: templates that read the incoming request (`{{request.path.id}}`, `{{request.body.$.name}}`, a timestamp, a random id), or a response script in the script engine. | Static examples first (D46, R-MOCK-3). |
 | IDEA-55 | Stateful mocks: a `POST` that later `GET`s return, reset on restart. | Turns the mock into a fake backend; only if static examples prove too little. |
 | IDEA-57 | Fault injection in the mock: drop the connection, answer slowly, return 5xx for a share of calls. | `delay_ms` (R-MOCK-3) covers slow answers. |
+| IDEA-95 | Translate the engine's messages too: errors, import warnings, test and contract-check results, which stay English with R-I18N-2. | They are built in `tortuga-core` as English text; translating them means returning structured messages the UI words. |
 | IDEA-90 | **Find shared workspaces.** When "Add existing projects" (R-WS-3) finds a `*.tortuga-workspace.toml` in the chosen folder or repository, offer to open that workspace (R-WS-5) instead of adding its projects one by one; a project opened on its own whose repository has a workspace file that lists it gets a quiet hint with "Open workspace". | Today each teammate opens a committed workspace file once by hand ("Open workspace file…"), so a workspace in the repo is easy to miss. |
 
 ### UI and settings
@@ -257,7 +261,7 @@ R-SET-13; and IDEA-81 to IDEA-85 became R-VAR-9, R-HIST-5, R-SRV-10, R-HIST-4 an
 | D15 | When are workspaces built? | **Before M7**, so the first release ships the final names (2026-10-17). | After the release, in Phase 2. |
 
 | D16 | How are the installers built (R-NF-4)? | **cargo-packager**: one tool and one config for `.msi`, `.dmg`, `.deb` and `.AppImage`, run by a release workflow on each OS (2026-10-17). | cargo-dist (no `.dmg`, `.deb` or `.AppImage`); one tool per format (cargo-wix, cargo-bundle, cargo-deb, appimagetool). |
-| D17 | Are the v1 installers signed? | **Open.** Recommended: release v1 unsigned with instructions to open it anyway, and sign later (IDEA-14). | Sign from the first release (Apple Developer Program, about USD 99 a year, plus a Windows code-signing certificate); sign only the macOS build. |
+| D17 | Are the v1 installers signed? | **No: v1 ships unsigned**, with instructions to open it anyway; signing (IDEA-14) is decided after v1 is out (2026-10-23). | Sign from the first release (Apple Developer Program, about USD 99 a year, plus a Windows code-signing certificate); sign only the macOS build. |
 
 | D18 | Which syntax does the JSON response filter use (R-HTTP-13)? | **A JSONPath subset**, implemented in `tortuga-core` (2026-10-17). | jq-style (`.items[].name`); text search only. |
 | D19 | What does pasting a `curl` command into a saved request do (R-HTTP-11)? | **It fills the current request** as unsaved edits; Revert undoes it (2026-10-17). | Always fill the scratch request. |
@@ -310,6 +314,7 @@ R-SET-13; and IDEA-81 to IDEA-85 became R-VAR-9, R-HIST-5, R-SRV-10, R-HIST-4 an
 | D62 | How do environments work across a workspace's projects (R-WS-9)? Replaces D14. | **One list, kept by the workspace; projects only fill in values** (2026-10-22). Name, colour and protection are set once; values every project shares live with the workspace (server URLs by server name), each project's own values in its files and win. One dialog edits it all. Keeping environments per project (D14) meant creating and renaming each in every project, which teams found hard to follow. Two kinds of environment (the workspace's, plus a project's own of the same name or only in it, with "Move to workspace") was built and found too hard to explain. | Per project, kept in step from a project × environment table with a fallback per environment; workspace and project environments side by side with "Move to workspace"; environments only in the workspace file (a project no longer runs on its own in CI, and every service's URL lives in one file). |
 | D58 | How are several `.http` files and their environment files imported (R-COL-29)? | **Several files are one new project with a folder per file** (D34 still holds: never into an existing project), named after their folder; **environment files are found next to the `.http` files** as the JetBrains client finds them, besides being picked, and go in like Postman's (D49): into the new project, or into an existing one from its menu; `$shared` values are copied into each environment (2026-10-21). | A project per file; `$shared` as project variables; only environment files picked by hand. |
 | D63 | How does the app tell that a new version is available (R-SET-15)? Changes R-P-4. | **A check at start-up, on by default, that can be turned off, plus "Check now" in Settings → About**; the source is GitHub's latest published release; the result is a quiet link in the top bar, never a pop-up (P1) (2026-10-23). Contacting GitHub on its own is the one exception to "only the hosts you send requests to"; it sends nothing but the request. | Only a button the user clicks (R-P-4 unchanged); opt-in (off by default); package managers only (winget, Homebrew, apt); in-app installing (IDEA-15, needs signing). |
+| D64 | How are UI strings translated (IDEA-94)? | **Project Fluent** (`fluent-bundle`), one `.ftl` file per language embedded in the binary, looked up by message ID through one function in `tortuga-ui-egui`; plurals and grammar are handled by translators in the file, and it is pure Rust, so the web build keeps working (D6). Strings move over area by area, with a test that every ID in the code exists in the English file (2026-10-23). | `rust-i18n` (YAML/TOML keys, a macro; simpler, weaker plurals); gettext `.po` files (familiar to translators, C tooling or less maintained Rust crates); English text as the key (no IDs, but every wording change breaks the translations). |
 
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
@@ -322,4 +327,4 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
   how it was verified there.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-25` · `R-CK-7` · `R-COL-39` · `R-WS-11` · `R-VAR-10` · `R-SRV-11` · `R-GIT-15` · `R-HIST-6` · `R-LOC-3` · `R-NF-5` · `IDEA-94` · `D64` · `R-TEST-19` · `R-FLOW-7` · `R-CLI-5` · `R-SET-17` · `R-MOCK-9`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-25` · `R-CK-7` · `R-COL-39` · `R-WS-11` · `R-VAR-10` · `R-SRV-11` · `R-GIT-15` · `R-HIST-6` · `R-LOC-3` · `R-NF-5` · `IDEA-96` · `D65` · `R-TEST-19` · `R-FLOW-7` · `R-CLI-5` · `R-SET-17` · `R-MOCK-9` · `R-I18N-4`.

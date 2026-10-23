@@ -6,7 +6,7 @@ use eframe::web_sys;
 use tortuga_core::AppSettings;
 use tortuga_core::secrets::{MemorySecretStore, SecretStore};
 use tortuga_core::storage::{Storage, UnsupportedStorage};
-use tortuga_ui_egui::{BoxTask, Host, LocalState, TortugaUi};
+use tortuga_ui_egui::{BoxTask, Host, LocalState, SecretsWarning, TortugaUi};
 
 use crate::App;
 
@@ -50,12 +50,16 @@ impl Host for WebHost {
         &self.secrets
     }
 
-    fn secrets_warning(&self) -> Option<&str> {
-        Some("The web version keeps secret values only until the page is closed.")
+    fn secrets_warning(&self) -> Option<&SecretsWarning> {
+        Some(&SecretsWarning::PageOnly)
     }
 
     fn spawn(&self, task: BoxTask) {
         wasm_bindgen_futures::spawn_local(task);
+    }
+
+    fn os_language(&self) -> Option<String> {
+        sys_locale::get_locale()
     }
 
     fn load_settings(&self) -> Result<AppSettings, String> {

@@ -15,7 +15,7 @@ use web_time::{SystemTime, UNIX_EPOCH};
 
 /// What a dynamic variable makes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Dynamic {
+pub enum Dynamic {
     Uuid,
     Timestamp,
     IsoTimestamp,
@@ -26,24 +26,19 @@ enum Dynamic {
     },
 }
 
-/// The dynamic variables to suggest after `{{` (R-VAR-9), with what each makes.
-pub const SUGGESTED: [(&str, &str); 6] = [
-    ("$guid", "a random UUID"),
-    ("$uuid", "a random UUID"),
-    ("$timestamp", "the time in seconds since 1970"),
-    ("$isoTimestamp", "the time in ISO 8601, UTC"),
-    ("$randomInt", "a whole number from 0 to 1000"),
-    ("$random.uuid", "a random UUID"),
+/// The dynamic variables to suggest after `{{` (R-VAR-9).
+pub const SUGGESTED: [&str; 6] = [
+    "$guid",
+    "$uuid",
+    "$timestamp",
+    "$isoTimestamp",
+    "$randomInt",
+    "$random.uuid",
 ];
 
-/// What the dynamic variable `name` makes, e.g. "a random UUID" (R-VAR-9).
-pub fn describe(name: &str) -> Option<&'static str> {
-    Some(match parse(name)? {
-        Dynamic::Uuid => "a random UUID",
-        Dynamic::Timestamp => "the time in seconds since 1970",
-        Dynamic::IsoTimestamp => "the time in ISO 8601, UTC",
-        Dynamic::RandomInt { .. } => "a random whole number",
-    })
+/// What the dynamic variable `name` makes, for the UI to describe (R-VAR-9).
+pub fn kind(name: &str) -> Option<Dynamic> {
+    parse(name)
 }
 
 /// Whether `name` (as written between `{{` and `}}`, trimmed) is a dynamic variable.

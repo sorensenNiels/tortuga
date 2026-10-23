@@ -17,69 +17,67 @@ impl TortugaUi {
         let (response, inner) =
             egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
                 let mut action = None;
-                theme::section_label(ui, "Workspaces");
+                theme::section_label(ui, &t!("workspaces"));
                 for (i, ws) in local.workspaces.iter().enumerate() {
                     let mut button = ui.add(egui::Button::selectable(
                         i == local.active_workspace,
                         &ws.name,
                     ));
                     if let Some(file) = &ws.file {
-                        button = button.on_hover_text(format!("Saved in {}", file.display()));
+                        button = button.on_hover_text(t!(
+                            "workspace-saved-in",
+                            file = file.display().to_string()
+                        ));
                     }
                     if button.clicked() {
                         action = Some(WorkspaceAction::Switch(i));
                     }
                 }
                 ui.separator();
-                if ui.button("New workspace…").clicked() {
+                if ui.button(t!("workspace-new")).clicked() {
                     action = Some(WorkspaceAction::New);
                 }
-                if ui.button("Rename…").clicked() {
+                if ui.button(t!("rename-ellipsis")).clicked() {
                     action = Some(WorkspaceAction::Rename);
                 }
                 if ui
-                    .button("Environments…")
-                    .on_hover_text(
-                        "Environments every project in this workspace has, such as Staging",
-                    )
+                    .button(t!("workspace-environments"))
+                    .on_hover_text(t!("workspace-environments-hint"))
                     .clicked()
                 {
                     action = Some(WorkspaceAction::Environments);
                 }
                 if ui
-                    .button("Variables…")
-                    .on_hover_text("Variables every project in this workspace can use")
+                    .button(t!("workspace-variables"))
+                    .on_hover_text(t!("workspace-variables-hint"))
                     .clicked()
                 {
                     action = Some(WorkspaceAction::Variables);
                 }
                 if ui
-                    .button("Defaults…")
-                    .on_hover_text(
-                        "Headers, auth, timeout, redirects and cookies every project in this \
-                         workspace inherits",
-                    )
+                    .button(t!("workspace-defaults"))
+                    .on_hover_text(t!("workspace-defaults-hint"))
                     .clicked()
                 {
                     action = Some(WorkspaceAction::Defaults);
                 }
                 if self.state.host.can_save_files() {
                     let hover = match &current.file {
-                        Some(file) => format!(
-                            "Kept in sync with {}. Choose another file to move it.",
-                            file.display()
-                        ),
-                        None => {
-                            "Write the workspace to a file you can commit, so teammates can open it"
-                                .into()
+                        Some(file) => {
+                            t!("workspace-file-synced", file = file.display().to_string())
                         }
+                        None => t!("workspace-save-as-file-hint"),
                     };
-                    if ui.button("Save as file…").on_hover_text(hover).clicked() {
+                    if ui
+                        .button(t!("workspace-save-as-file"))
+                        .on_hover_text(hover)
+                        .clicked()
+                    {
                         action = Some(WorkspaceAction::SaveAsFile);
                     }
                     if ui
-                        .button("Open workspace file…")
-                        .on_hover_text("Open a workspace a teammate saved as a file")
+                        .button(t!("workspace-open-file"))
+                        .on_hover_text(t!("workspace-open-file-hint"))
                         .clicked()
                     {
                         action = Some(WorkspaceAction::OpenFile);
@@ -89,16 +87,16 @@ impl TortugaUi {
                 if ui
                     .add_enabled(
                         local.workspaces.len() > 1,
-                        egui::Button::new(RichText::new("Remove workspace…").color(danger)),
+                        egui::Button::new(RichText::new(t!("workspace-remove")).color(danger)),
                     )
-                    .on_disabled_hover_text("There is always at least one workspace")
+                    .on_disabled_hover_text(t!("workspace-remove-last"))
                     .clicked()
                 {
                     action = Some(WorkspaceAction::Remove);
                 }
                 action
             });
-        response.on_hover_text("Switch workspace");
+        response.on_hover_text(t!("workspace-switch"));
         inner.and_then(|i| i.inner)
     }
 
@@ -109,16 +107,16 @@ impl TortugaUi {
             }),
             WorkspaceAction::New => {
                 self.modal = Some(Modal::NewWorkspace(NameDialog::new(
-                    "New workspace",
-                    "Create",
+                    &t!("workspace-new-title"),
+                    &t!("create"),
                     "",
                 )));
             }
             WorkspaceAction::Rename => {
                 let name = self.state.workspace().name.clone();
                 self.modal = Some(Modal::RenameWorkspace(NameDialog::new(
-                    "Rename workspace",
-                    "Rename",
+                    &t!("workspace-rename-title"),
+                    &t!("rename"),
                     &name,
                 )));
             }
@@ -137,18 +135,22 @@ impl TortugaUi {
             }
             WorkspaceAction::SaveAsFile => {
                 let name = tortuga_core::workspace::file_name(&self.state.workspace().name);
-                if let Some(file) = self.state.host.pick_save_path("Save workspace as", &name) {
+                if let Some(file) = self
+                    .state
+                    .host
+                    .pick_save_path(&t!("workspace-save-as-title"), &name)
+                {
                     match self.state.save_workspace_as(&file) {
                         Ok(()) => self
                             .state
-                            .inform(format!("Saved the workspace in {}.", file.display())),
+                            .inform(t!("workspace-saved", file = file.display().to_string())),
                         Err(e) => self.state.notify(e),
                     }
                 }
             }
             WorkspaceAction::OpenFile => {
                 if let Some(file) = self.state.host.pick_file(
-                    "Open a workspace file",
+                    &t!("workspace-open-file-title"),
                     tortuga_core::workspace::WORKSPACE_FILE_SUFFIX,
                 ) {
                     let mut result = Ok(());
@@ -161,11 +163,9 @@ impl TortugaUi {
             WorkspaceAction::Remove => {
                 let name = self.state.workspace().name.clone();
                 self.modal = Some(Modal::RemoveWorkspace(ConfirmDialog {
-                    title: "Remove workspace?".into(),
-                    message: format!(
-                        "“{name}” is removed from this machine. Its projects and files stay where they are."
-                    ),
-                    confirm_label: "Remove".into(),
+                    title: t!("workspace-remove-title"),
+                    message: t!("workspace-remove-message", name = name.as_str()),
+                    confirm_label: t!("remove"),
                 }));
             }
         }
@@ -197,11 +197,11 @@ impl TortugaUi {
         }
         let names = self.state.environment_names();
         let p = theme::palette(ui);
-        ui.label(RichText::new("Environment").color(p.muted));
+        ui.label(RichText::new(t!("environment")).color(p.muted));
         // The mock's environment, while a mock server runs (R-MOCK-4, D45).
         let mock = mock_label(&self.state.mocks.ports());
         let edit = if names.is_empty() && mock.is_none() {
-            ui.button("Add environments…").clicked()
+            ui.button(t!("workspace-add-environments")).clicked()
         } else {
             let in_mock = self.state.mocks.in_use();
             let shown = if in_mock {
@@ -234,21 +234,19 @@ impl TortugaUi {
                         ui.separator();
                         pick_mock = ui
                             .selectable_label(in_mock, label)
-                            .on_hover_text(
-                                "Sends the requests of projects with a running mock server to it",
-                            )
+                            .on_hover_text(t!("workspace-mock-environment-hint"))
                             .clicked();
                     }
                 })
                 .response
-                .on_hover_text(PICKER_HELP);
+                .on_hover_text(t!("workspace-environment-picker-hint"));
             if let Some(name) = picked {
                 self.state.set_workspace_environment(&name);
             } else if pick_mock {
                 self.state.use_mock_environment();
             }
             ui.add(theme::ghost_button("✏"))
-                .on_hover_text("Edit the environments and each project's values")
+                .on_hover_text(t!("workspace-edit-environments-hint"))
                 .clicked()
         };
         if edit {
@@ -259,13 +257,11 @@ impl TortugaUi {
     }
 }
 
-const PICKER_HELP: &str = "Switches every project in the workspace to this environment";
-
 /// "Mock (port 4010)", or "Mock (2 servers)"; `None` when no mock server runs.
 fn mock_label(ports: &[u16]) -> Option<String> {
     match ports {
         [] => None,
-        [port] => Some(format!("Mock (port {port})")),
-        more => Some(format!("Mock ({} servers)", more.len())),
+        [port] => Some(t!("mock-label-port", port = *port)),
+        more => Some(t!("mock-label-servers", count = more.len())),
     }
 }

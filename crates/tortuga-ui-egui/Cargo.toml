@@ -12,14 +12,17 @@ publish = false
 tortuga-core.workspace = true
 egui.workspace = true
 egui_commonmark.workspace = true
+fluent-bundle.workspace = true
 futures-util.workspace = true
 image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+unic-langid.workspace = true
 
 [dev-dependencies]
 url.workspace = true
 egui_kittest.workspace = true
+fluent-syntax.workspace = true
 tempfile.workspace = true
 
 [lints]

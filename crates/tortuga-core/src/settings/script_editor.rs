@@ -54,22 +54,6 @@ impl ScriptCommand {
         }
     }
 
-    /// What Settings and the menu call it.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::ToggleComment => "Comment lines out or in",
-            Self::BlockComment => "Block comment",
-            Self::MoveLinesUp => "Move lines up",
-            Self::MoveLinesDown => "Move lines down",
-            Self::CopyLinesUp => "Copy lines up",
-            Self::CopyLinesDown => "Copy lines down",
-            Self::DeleteLines => "Delete lines",
-            Self::IndentLines => "Indent lines",
-            Self::OutdentLines => "Outdent lines",
-            Self::Beautify => "Beautify",
-        }
-    }
-
     /// Its usual keys in `scheme`. VS Code's get Ctrl+' for comments too, for keyboards
     /// where `/` needs Shift. Indenting keeps Ctrl+] and Ctrl+[ in every scheme, as
     /// those keys have no other use in a script field (Tab and Shift+Tab always work).

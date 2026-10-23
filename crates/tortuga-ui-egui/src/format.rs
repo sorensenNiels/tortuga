@@ -2,6 +2,11 @@
 
 use std::time::Duration;
 
+use tortuga_core::settings::Level;
+use tortuga_core::vars::Origin;
+
+use crate::i18n;
+
 /// Largest body shown in the viewer; bigger bodies are truncated (R-NF-2).
 pub const MAX_DISPLAY_BYTES: usize = 2 * 1024 * 1024;
 
@@ -12,9 +17,9 @@ pub fn size(bytes: usize) -> String {
     if b < KB {
         format!("{bytes} B")
     } else if b < KB * KB {
-        format!("{:.1} KB", b / KB)
+        format!("{} KB", i18n::decimal(b / KB, 1))
     } else {
-        format!("{:.1} MB", b / (KB * KB))
+        format!("{} MB", i18n::decimal(b / (KB * KB), 1))
     }
 }
 
@@ -22,7 +27,7 @@ pub fn elapsed(d: Duration) -> String {
     if d < Duration::from_secs(1) {
         format!("{} ms", d.as_millis())
     } else {
-        format!("{:.2} s", d.as_secs_f64())
+        format!("{} s", i18n::decimal(d.as_secs_f64(), 2))
     }
 }
 
@@ -33,6 +38,24 @@ pub fn sentence(text: &str) -> String {
         .next()
         .map(|c| c.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
+}
+
+/// Where a default header or auth comes from: "the project", "folder “Users”".
+pub fn origin(origin: &Origin) -> String {
+    match origin {
+        Origin::Project => t!("level-project"),
+        Origin::Workspace => t!("level-workspace"),
+        Origin::Folder(name) => t!("level-folder", name = name),
+    }
+}
+
+/// Where a setting comes from (D39): "the project", "the workspace", "the app's settings".
+pub fn level(level: Level) -> String {
+    match level {
+        Level::Project => t!("level-project"),
+        Level::Workspace => t!("level-workspace"),
+        Level::App => t!("level-app"),
+    }
 }
 
 /// Cuts `text` to at most `max` bytes on a char boundary. Returns whether it was cut.
@@ -88,38 +111,61 @@ fn civil(days: i64) -> (i64, u32, u32) {
 }
 
 /// "Today", "Yesterday", or a date like "Mon 13 Oct" (with the year when it isn't this
-/// year), in local time (R-HIST-2).
+/// year), in local time (R-HIST-2) and the UI's language (R-I18N-3).
 pub fn day_label(ms: u64, now_ms: u64, offset_minutes: i32) -> String {
-    const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
     let (day, today) = (
         local_days(ms, offset_minutes),
         local_days(now_ms, offset_minutes),
     );
     match today - day {
-        0 => return "Today".into(),
-        1 => return "Yesterday".into(),
+        0 => return t!("date-today"),
+        1 => return t!("date-yesterday"),
         _ => {}
     }
     let (year, month, date) = civil(day);
-    // 1970-01-01 was a Thursday.
-    let weekday = WEEKDAYS[usize::try_from((day + 3).rem_euclid(7)).unwrap_or(0)];
-    let month = MONTHS[(month as usize).saturating_sub(1).min(11)];
+    let month = month_name(month);
     if year == civil(today).0 {
-        format!("{weekday} {date} {month}")
+        // 1970-01-01 was a Thursday.
+        let weekday = weekday_name((day + 3).rem_euclid(7));
+        t!(
+            "date-this-year",
+            weekday = weekday,
+            day = date,
+            month = month
+        )
     } else {
-        format!("{date} {month} {year}")
+        t!("date-other-year", day = date, month = month, year = year)
     }
 }
 
-/// "1 step", "2 steps".
-pub fn count(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("{n} {noun}")
-    } else {
-        format!("{n} {noun}s")
+/// The short name of a weekday, 0 being Monday.
+fn weekday_name(weekday: i64) -> String {
+    match weekday {
+        0 => t!("weekday-mon"),
+        1 => t!("weekday-tue"),
+        2 => t!("weekday-wed"),
+        3 => t!("weekday-thu"),
+        4 => t!("weekday-fri"),
+        5 => t!("weekday-sat"),
+        _ => t!("weekday-sun"),
+    }
+}
+
+/// The short name of a month, 1 being January.
+fn month_name(month: u32) -> String {
+    match month {
+        1 => t!("month-jan"),
+        2 => t!("month-feb"),
+        3 => t!("month-mar"),
+        4 => t!("month-apr"),
+        5 => t!("month-may"),
+        6 => t!("month-jun"),
+        7 => t!("month-jul"),
+        8 => t!("month-aug"),
+        9 => t!("month-sep"),
+        10 => t!("month-oct"),
+        11 => t!("month-nov"),
+        _ => t!("month-dec"),
     }
 }
 
@@ -152,12 +198,20 @@ mod tests {
         assert_eq!(size(1023), "1023 B");
         assert_eq!(size(1536), "1.5 KB");
         assert_eq!(size(5 * 1024 * 1024), "5.0 MB");
+        // R-I18N-3
+        crate::i18n::set(tortuga_core::settings::Language::Danish);
+        assert_eq!(size(1536), "1,5 KB");
+        crate::i18n::set(tortuga_core::settings::Language::English);
     }
 
     #[test]
     fn durations() {
         assert_eq!(elapsed(Duration::from_millis(42)), "42 ms");
         assert_eq!(elapsed(Duration::from_millis(1234)), "1.23 s");
+        // R-I18N-3
+        crate::i18n::set(tortuga_core::settings::Language::Danish);
+        assert_eq!(elapsed(Duration::from_millis(1234)), "1,23 s");
+        crate::i18n::set(tortuga_core::settings::Language::English);
     }
 
     #[test]
@@ -187,6 +241,12 @@ mod tests {
         assert_eq!(day_label(now - 300 * 86_400_000, now, 0), "21 Dec 2025");
         // 23:30 local the day before is yesterday, though it is the same UTC day.
         assert_eq!(day_label(now, now + 60_000 * 60, -13 * 60), "Yesterday");
+        crate::i18n::set(tortuga_core::settings::Language::Danish);
+        assert_eq!(day_label(now, now, 120), "I dag");
+        assert_eq!(day_label(now - 86_400_000, now, 120), "I går");
+        assert_eq!(day_label(now - 3 * 86_400_000, now, 120), "ons. 14. okt.");
+        assert_eq!(day_label(now - 300 * 86_400_000, now, 0), "21. dec. 2025");
+        crate::i18n::set(tortuga_core::settings::Language::English);
         assert_eq!(civil(0), (1970, 1, 1));
         assert_eq!(civil(-1), (1969, 12, 31));
     }

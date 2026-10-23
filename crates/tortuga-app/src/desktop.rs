@@ -9,7 +9,9 @@ use tortuga_core::AppSettings;
 use tortuga_core::history::{self, HistoryStore};
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
-use tortuga_ui_egui::{BoxTask, Host, LocalState, MockHandle, OnMockHit, TortugaUi};
+use tortuga_ui_egui::{
+    BoxTask, Host, LocalState, MockHandle, OnMockHit, SecretsWarning, TortugaUi,
+};
 
 use crate::{App, dialogs, discover, folders, git, local_store, secret_store, watch};
 
@@ -151,7 +153,7 @@ impl eframe::App for StartupTimer {
 struct DesktopHost {
     runtime: tokio::runtime::Runtime,
     secrets: Box<dyn SecretStore>,
-    secrets_warning: Option<String>,
+    secrets_warning: Option<SecretsWarning>,
     watchers: watch::Watchers,
     /// One history write at a time, so two sends can't both rewrite an index.
     history_lock: Arc<std::sync::Mutex<()>>,
@@ -166,8 +168,8 @@ impl Host for DesktopHost {
         self.secrets.as_ref()
     }
 
-    fn secrets_warning(&self) -> Option<&str> {
-        self.secrets_warning.as_deref()
+    fn secrets_warning(&self) -> Option<&SecretsWarning> {
+        self.secrets_warning.as_ref()
     }
 
     fn load_cookies(&self, root: &std::path::Path) -> Result<Option<String>, String> {
@@ -246,6 +248,10 @@ impl Host for DesktopHost {
 
     fn checks_for_updates(&self) -> bool {
         true
+    }
+
+    fn os_language(&self) -> Option<String> {
+        sys_locale::get_locale()
     }
 
     fn start_mock(
@@ -415,8 +421,13 @@ impl Host for DesktopHost {
         true
     }
 
-    fn save_file(&self, suggested_name: &str, contents: &[u8]) -> Option<Result<PathBuf, String>> {
-        let path = dialogs::save_path("Save response body", suggested_name)?;
+    fn save_file(
+        &self,
+        title: &str,
+        suggested_name: &str,
+        contents: &[u8],
+    ) -> Option<Result<PathBuf, String>> {
+        let path = dialogs::save_path(title, suggested_name)?;
         Some(
             std::fs::write(&path, contents)
                 .map(|()| path)

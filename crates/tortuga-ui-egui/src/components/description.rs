@@ -9,9 +9,6 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
 use crate::theme;
 
-const MARKDOWN_HINT: &str =
-    "Markdown: # heading, **bold**, *italic*, - list, `code`, ```code block```, [link](https://…)";
-
 /// Shows `text` rendered, or a text editor for it while `editing`, at most
 /// `max_height` high. Read-only projects get no Edit button. With `draft`, an empty
 /// description offers "Draft from request", which fills in what `draft` returns and
@@ -31,16 +28,14 @@ pub fn description_editor(
     let draft = draft.filter(|_| text.trim().is_empty() && !*editing);
     if !read_only {
         ui.horizontal(|ui| {
-            let label = if *editing { "Done" } else { "Edit" };
+            let label = if *editing { t!("done") } else { t!("edit") };
             if ui.add(theme::ghost_button(label)).clicked() {
                 *editing = !*editing;
             }
             if let Some(draft) = draft
                 && ui
-                    .add(theme::ghost_button("Draft from request"))
-                    .on_hover_text(
-                        "Start from what the request sends and its examples, then fill in the rest",
-                    )
+                    .add(theme::ghost_button(t!("description-draft")))
+                    .on_hover_text(t!("description-draft-hint"))
                     .clicked()
             {
                 *text = draft();
@@ -50,8 +45,12 @@ pub fn description_editor(
             if *editing {
                 let muted = theme::palette(ui).muted;
                 hint = Some(
-                    ui.label(egui::RichText::new(MARKDOWN_HINT).small().color(muted))
-                        .id,
+                    ui.label(
+                        egui::RichText::new(t!("description-markdown-hint"))
+                            .small()
+                            .color(muted),
+                    )
+                    .id,
                 );
             }
         });
@@ -77,14 +76,11 @@ pub fn description_editor(
                 theme::hint(
                     ui,
                     if read_only {
-                        "No description."
+                        t!("description-none")
                     } else if draft.is_some() {
-                        "No description yet. Click Edit to write one in Markdown, or Draft from \
-                         request to start from what it sends: it is saved in the file and shared \
-                         through git."
+                        t!("description-none-yet-draft")
                     } else {
-                        "No description yet. Click Edit to write one in Markdown: it is saved in \
-                         the file and shared through git."
+                        t!("description-none-yet")
                     },
                 );
             } else {

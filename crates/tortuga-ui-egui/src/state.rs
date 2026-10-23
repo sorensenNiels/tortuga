@@ -126,11 +126,15 @@ fn make_client(
     for path in &settings.ca_certificates {
         let read = match host.file_reader() {
             Some(reader) => (reader.0)(path).map_err(|e| e.to_string()),
-            None => Err("files can't be read here".to_owned()),
+            None => Err(t!("files-unreadable-here")),
         };
         match read {
             Ok(pem) => files.push((path.clone(), pem)),
-            Err(e) => problems.push(format!("CA certificate {}: {e}", path.display())),
+            Err(e) => problems.push(t!(
+                "ca-certificate-problem",
+                path = path.display().to_string(),
+                error = e
+            )),
         }
     }
     let (client, bad) =
@@ -226,7 +230,7 @@ impl AppState {
         let trim = size > 0 && size != self.settings.history.size;
         self.settings = settings.clone();
         if trim && let Err(e) = self.host.trim_history(size) {
-            self.notify(format!("Could not trim the history: {e}"));
+            self.notify(t!("history-trim-failed", error = e));
         }
         self.host.save_settings(settings)
     }
@@ -288,7 +292,7 @@ impl AppState {
                 // A saved edit or a `git pull` changes the mock's next answer (R-MOCK-2).
                 self.refresh_mock(root);
             }
-            Err(e) => self.notify(format!("Could not reload the project: {e}")),
+            Err(e) => self.notify(t!("project-reload-failed", error = e.to_string())),
         }
     }
 
@@ -326,7 +330,7 @@ impl AppState {
         let collection = Collection::open(self.storage(), root)?;
         match SecretValues::load(&collection, self.host.secrets()) {
             Ok(values) => drop(self.secrets.insert(root.to_owned(), values)),
-            Err(e) => self.notify(format!("Could not read secret values: {e}")),
+            Err(e) => self.notify(t!("secrets-read-failed", error = e.to_string())),
         }
         let (jar, problem) = load_jar(self.host.as_ref(), root);
         if let Some(problem) = problem {
@@ -387,7 +391,7 @@ impl AppState {
                         .collect();
                     ws.projects = projects;
                 }
-                Err(e) => self.notify(format!("Could not read the workspace file: {e}")),
+                Err(e) => self.notify(t!("workspace-file-read-failed", error = e)),
             }
         }
         self.load_workspace_secrets();
@@ -507,9 +511,13 @@ impl AppState {
         if self.storage().read_to_string(file).ok().as_deref() == Some(text.as_str()) {
             return Ok(()); // unchanged: leave the file (and git) alone
         }
-        self.storage()
-            .write(file, &text)
-            .map_err(|e| format!("Could not save the workspace file {}: {e}", file.display()))
+        self.storage().write(file, &text).map_err(|e| {
+            t!(
+                "workspace-file-save-failed",
+                file = file.display().to_string(),
+                error = e.to_string()
+            )
+        })
     }
 
     /// Saves local state and the workspace file after the workspace changed.
@@ -555,7 +563,7 @@ impl AppState {
         self.workspace_secrets = values;
         self.workspace_env_secrets = env_values;
         if let Some(e) = problem {
-            self.notify(format!("Could not read secret values: {e}"));
+            self.notify(t!("secrets-read-failed", error = e.to_string()));
         }
     }
 
@@ -764,9 +772,7 @@ impl AppState {
             }
         };
         if let Err(e) = self.host.watch(root, Box::new(on_change)) {
-            self.notify(format!(
-                "Changes on disk won't show automatically (use \u{201c}Reload from disk\u{201d}): {e}"
-            ));
+            self.notify(t!("watch-failed", error = e));
         }
         self.refresh_git(root);
     }
@@ -809,7 +815,7 @@ impl AppState {
                 Ok(None) => drop(self.git.remove(&root)),
                 Err(e) => {
                     self.git.remove(&root);
-                    self.notify(format!("Could not read the git status: {e}"));
+                    self.notify(t!("git-status-failed", error = e));
                 }
             }
             if self.live.git_again.remove(&root) && self.collection(&root).is_some() {
@@ -862,7 +868,7 @@ impl AppState {
             .map_err(|e| e.to_string())
             .and_then(|json| self.host.save_cookies(root, &json));
         if let Err(e) = saved {
-            self.notify(format!("Could not save cookies: {e}"));
+            self.notify(t!("cookies-save-failed", error = e));
         }
     }
 
@@ -935,7 +941,7 @@ fn load_jar(host: &dyn Host, root: &Path) -> (CookieJar, Option<String>) {
         },
         Err(e) => (
             CookieJar::default(),
-            Some(format!("Could not read saved cookies: {e}")),
+            Some(t!("cookies-read-failed", error = e)),
         ),
     }
 }
@@ -1041,7 +1047,7 @@ pub(crate) mod tests {
         };
         let saved = std::rc::Rc::clone(&host.local);
         let mut state = AppState::new(Box::new(host));
-        assert_eq!(state.workspace().name, LocalState::DEFAULT_WORKSPACE);
+        assert_eq!(state.workspace().name, LocalState::default_workspace());
         assert_eq!(roots(&state), std::slice::from_ref(&a));
         state.remember_selection(Some(&ItemKey::new(&a, request.clone())));
 
@@ -1264,7 +1270,7 @@ pub(crate) mod tests {
         });
         let ctx_a = state.context(Some(&a));
         assert_eq!(ctx_a.settings.timeout_ms, Some(9_000));
-        assert_eq!(ctx_a.auth_origin, "the workspace");
+        assert_eq!(ctx_a.auth_origin, tortuga_core::vars::Origin::Workspace);
         assert_eq!(ctx_a.headers, [KeyValue::new("X-Tenant", "acme")]);
         let ctx_b = state.context(Some(&b));
         assert_eq!(ctx_b.settings.timeout_ms, Some(1_000), "B's own");
@@ -1273,7 +1279,7 @@ pub(crate) mod tests {
             Some(false),
             "the workspace's"
         );
-        assert_eq!(ctx_b.auth_origin, "the project");
+        assert_eq!(ctx_b.auth_origin, tortuga_core::vars::Origin::Project);
         let scratch = state.context(None);
         assert!(
             scratch.headers.is_empty() && scratch.auth.is_none(),

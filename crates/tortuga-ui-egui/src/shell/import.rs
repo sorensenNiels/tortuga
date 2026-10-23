@@ -14,7 +14,7 @@ use tortuga_core::{bruno, http_file, postman};
 use super::{Modal, TortugaUi};
 use crate::components::{
     DialogResult, EnvironmentImportDialog, EnvironmentsDialog, ImportAction, ImportDialog,
-    ImportTarget, file_names,
+    ImportTarget, file_names, importer_name, kind_label,
 };
 
 /// The JetBrains HTTP Client's environment files, found next to `.http` files and
@@ -22,17 +22,15 @@ use crate::components::{
 const HTTP_ENVIRONMENT_FILES: [&str; 2] = ["http-client.env.json", "http-client.private.env.json"];
 
 /// The file picker's title and extensions for environment files of `kind`.
-fn pick_environments(kind: ImportKind) -> (&'static str, &'static [&'static str]) {
+fn pick_environments(kind: ImportKind) -> (String, &'static [&'static str]) {
     match kind {
         ImportKind::Http | ImportKind::OpenApi | ImportKind::Insomnia => (
-            "Choose HTTP Client environment files, or VS Code settings with REST Client \
-             environments",
+            t!("import-pick-http-environments"),
             &["json", "code-workspace"],
         ),
-        ImportKind::Postman => ("Choose Postman environments (exported as JSON)", &["json"]),
+        ImportKind::Postman => (t!("import-pick-postman-environments"), &["json"]),
         ImportKind::Bruno => (
-            "Choose Bruno environments (the .bru or .yml files in a collection's environments \
-             folder)",
+            t!("import-pick-bruno-environments"),
             &["bru", "yml", "yaml"],
         ),
     }
@@ -94,7 +92,13 @@ fn read_environments(
                 };
                 parsed.map_err(|e| tortuga_core::error::message(&e))
             })
-            .map_err(|e| format!("Could not import {}: {e}", path.display()))?;
+            .map_err(|e| {
+                t!(
+                    "import-failed-file",
+                    file = path.display().to_string(),
+                    error = e
+                )
+            })?;
         out.extend(read);
     }
     Ok(out)
@@ -185,10 +189,10 @@ fn allowed(importers: &ImporterSettings, import: Import) -> Result<Import, Strin
     if importers.enabled(import.kind) {
         Ok(import)
     } else {
-        Err(format!(
-            "it is a {}, and importing {} is turned off in Settings",
-            import.kind.label(),
-            import.kind.importer_name()
+        Err(t!(
+            "import-turned-off",
+            kind = kind_label(import.kind),
+            importer = importer_name(import.kind)
         ))
     }
 }
@@ -201,32 +205,29 @@ impl TortugaUi {
             ImportKind::OpenApi => self
                 .state
                 .host
-                .pick_any_file("Choose an OpenAPI description (JSON or YAML)")
+                .pick_any_file(&t!("import-pick-openapi"))
                 .into_iter()
                 .collect(),
             ImportKind::Postman => self
                 .state
                 .host
-                .pick_any_file("Choose a Postman collection (exported as JSON)")
+                .pick_any_file(&t!("import-pick-postman"))
                 .into_iter()
                 .collect(),
             ImportKind::Http => self.state.host.pick_any_files(
-                "Choose .http files (REST Client or JetBrains HTTP Client), and their \
-                 environment files",
+                &t!("import-pick-http"),
                 &["http", "rest", "json", "code-workspace"],
             ),
             ImportKind::Insomnia => self
                 .state
                 .host
-                .pick_any_file("Choose an Insomnia export (v4 JSON or v5 YAML)")
+                .pick_any_file(&t!("import-pick-insomnia"))
                 .into_iter()
                 .collect(),
             ImportKind::Bruno => self
                 .state
                 .host
-                .pick_folder(
-                    "Choose a Bruno collection (the folder with bruno.json or opencollection.yml)",
-                )
+                .pick_folder(&t!("import-pick-bruno"))
                 .into_iter()
                 .collect(),
         };
@@ -263,7 +264,8 @@ impl TortugaUi {
                     [one] => one.display().to_string(),
                     _ => file_names(&files).join(", "),
                 };
-                self.state.notify(format!("Could not import {what}: {e}"));
+                self.state
+                    .notify(t!("import-failed-file", file = what, error = e));
                 return;
             }
         };
@@ -310,7 +312,7 @@ impl TortugaUi {
                 if let Some(dir) = self
                     .state
                     .host
-                    .pick_folder("Choose or create a folder for the project")
+                    .pick_folder(&t!("import-pick-project-folder"))
                 {
                     open.dialog.dir = dir;
                     self.check_import_folder(open);
@@ -318,7 +320,7 @@ impl TortugaUi {
             }
             Some(ImportAction::AddEnvironments) => {
                 let (title, extensions) = pick_environments(open.read.kind);
-                let paths = self.state.host.pick_any_files(title, extensions);
+                let paths = self.state.host.pick_any_files(&title, extensions);
                 self.add_environment_files(open, &paths);
             }
             None => {}
@@ -339,9 +341,9 @@ impl TortugaUi {
         let dir = &dialog.dir;
         let import = &dialog.import;
         if let Err(e) = import::create_project(self.state.storage(), dir, &dialog.import) {
-            self.state.notify(format!(
-                "Could not import: {}",
-                tortuga_core::error::message(&e)
+            self.state.notify(t!(
+                "import-failed",
+                error = tortuga_core::error::message(&e)
             ));
             return;
         }
@@ -364,7 +366,7 @@ impl TortugaUi {
             .state
             .collection(dir)
             .map_or_else(String::new, |c| c.name().to_owned());
-        self.state.inform(format!("Imported “{name}”."));
+        self.state.inform(t!("import-done", name = name.as_str()));
         let missing = import
             .manifest
             .secrets
@@ -393,8 +395,7 @@ impl TortugaUi {
         let mut values = self.state.secrets.get(root).cloned().unwrap_or_default();
         values.values.extend(found);
         if let Err(e) = self.state.save_secrets(root, values) {
-            self.state
-                .notify(format!("Could not keep the secret values: {e}"));
+            self.state.notify(t!("import-secrets-not-kept", error = e));
         }
     }
 
@@ -418,7 +419,7 @@ impl TortugaUi {
     /// at `root` changes (R-COL-20, R-COL-29).
     pub(super) fn import_environments(&mut self, root: PathBuf, kind: ImportKind) {
         let (title, extensions) = pick_environments(kind);
-        let paths = self.state.host.pick_any_files(title, extensions);
+        let paths = self.state.host.pick_any_files(&title, extensions);
         if !paths.is_empty() {
             self.review_environments(root, kind, &paths);
         }

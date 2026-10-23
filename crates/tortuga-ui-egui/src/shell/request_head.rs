@@ -27,13 +27,13 @@ impl TortugaUi {
             egui::Sides::new().height(HEAD_HEIGHT).show(
                 ui,
                 |ui| {
-                    ui.label(RichText::new("Scratch request").color(p.muted));
-                    ui.label(theme::semibold("Untitled request").size(TITLE_SIZE));
+                    ui.label(RichText::new(t!("scratch-request")).color(p.muted));
+                    ui.label(theme::semibold(t!("untitled-request")).size(TITLE_SIZE));
                 },
                 |ui| {
                     if ui
-                        .button("Save to project…")
-                        .on_hover_text("Save (Ctrl+S)")
+                        .button(t!("save-to-project"))
+                        .on_hover_text(t!("save-shortcut"))
                         .clicked()
                     {
                         self.save();
@@ -69,21 +69,21 @@ impl TortugaUi {
                         .clip_text(false)
                         .desired_width(24.0),
                 )
-                .on_hover_text("Request name");
+                .on_hover_text(t!("request-name"));
                 if current_dirty {
-                    theme::badge(ui, "Unsaved", p.redirect)
-                        .on_hover_text("This request has changes that are not saved");
+                    theme::badge(ui, t!("unsaved"), p.redirect)
+                        .on_hover_text(t!("request-unsaved-hint"));
                 }
             },
             |ui| {
                 let save = ui
                     .add_enabled(
                         current_dirty && !read_only,
-                        theme::primary_button(ui, "Save"),
+                        theme::primary_button(ui, t!("save")),
                     )
-                    .on_hover_text("Save (Ctrl+S)")
+                    .on_hover_text(t!("save-shortcut"))
                     .clicked();
-                let revert = current_dirty && ui.button("Revert").clicked();
+                let revert = current_dirty && ui.button(t!("revert")).clicked();
                 let copy = copy_curl_button(ui, copied_at);
                 (save, revert, copy)
             },
@@ -108,7 +108,8 @@ impl TortugaUi {
         match tortuga_core::curl::command(&self.current, &ctx, &self.state.settings.client) {
             Err(e) => {
                 self.copied_at = None;
-                self.state.notify(format!("Could not copy as curl: {e}"));
+                self.state
+                    .notify(t!("curl-copy-failed", error = e.to_string()));
             }
             Ok(command) if command.masked.is_none() => {
                 egui_ctx.copy_text(command.full);
@@ -126,8 +127,7 @@ impl TortugaUi {
         let pasted = match import::parse(text) {
             Ok(pasted) => pasted,
             Err(e) => {
-                self.state
-                    .notify(format!("Could not read the curl command: {e}"));
+                self.state.notify(t!("curl-read-failed", error = e));
                 return;
             }
         };
@@ -142,10 +142,8 @@ impl TortugaUi {
         self.load(request);
         self.response = response;
         if !pasted.ignored.is_empty() {
-            self.state.inform(format!(
-                "Filled in from the curl command. Not used: {}.",
-                pasted.ignored.join("; ")
-            ));
+            self.state
+                .inform(t!("curl-filled-in", ignored = pasted.ignored.join("; ")));
         }
     }
 }
@@ -159,9 +157,13 @@ fn copy_curl_button(ui: &mut Ui, copied_at: Option<f64>) -> bool {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs_f64(FEEDBACK_SECONDS));
     }
-    let label = if copied { "Copied" } else { "Copy as curl" };
+    let label = if copied {
+        t!("copied")
+    } else {
+        t!("copy-as-curl")
+    };
     ui.add(theme::ghost_button(label))
-        .on_hover_text("Copy this request as a curl command, with variables filled in")
+        .on_hover_text(t!("copy-as-curl-hint"))
         .clicked()
 }
 

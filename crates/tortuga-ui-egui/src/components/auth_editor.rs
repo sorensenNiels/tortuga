@@ -1,4 +1,5 @@
 use egui::{Grid, RichText, Ui};
+use tortuga_core::vars::Origin;
 use tortuga_core::{Auth, vars};
 
 use super::{FieldWidth, Lines, VarHelp, var_edit};
@@ -45,16 +46,22 @@ impl Kind {
 /// Short description of an auth, e.g. "Bearer token {{token}}".
 pub fn describe(auth: &Auth) -> String {
     match auth {
-        Auth::None => "no auth".to_owned(),
-        Auth::Basic { username, .. } if username.is_empty() => "Basic auth".to_owned(),
-        Auth::Basic { username, .. } => format!("Basic auth as {username}"),
-        Auth::Bearer { token } if vars::names(token).is_empty() => "Bearer token".to_owned(),
-        Auth::Bearer { token } => format!("Bearer token {token}"),
-        Auth::Header { name, .. } if name.trim().is_empty() => "a header".to_owned(),
+        Auth::None => t!("auth-describe-none"),
+        Auth::Basic { username, .. } if username.is_empty() => t!("auth-describe-basic"),
+        Auth::Basic { username, .. } => t!("auth-describe-basic-as", username = username),
+        Auth::Bearer { token } if vars::names(token).is_empty() => t!("auth-describe-bearer"),
+        Auth::Bearer { token } => t!("auth-describe-bearer-token", token = token),
+        Auth::Header { name, .. } if name.trim().is_empty() => t!("auth-describe-a-header"),
         Auth::Header { name, value } if vars::names(value).is_empty() => {
-            format!("the header {}", name.trim())
+            t!("auth-describe-header", name = name.trim())
         }
-        Auth::Header { name, value } => format!("the header {}: {value}", name.trim()),
+        Auth::Header { name, value } => {
+            t!(
+                "auth-describe-header-value",
+                name = name.trim(),
+                value = value
+            )
+        }
     }
 }
 
@@ -73,15 +80,15 @@ pub fn request_auth(
     ui: &mut Ui,
     auth: &mut Option<Auth>,
     inherited: Option<&Auth>,
-    origin: &str,
+    origin: &Origin,
     help: &VarHelp,
 ) -> Option<EditDefaults> {
-    let from_project = origin == "the project";
+    let from = crate::format::origin(origin);
     let inherit = inherited.map(|_| {
-        if from_project {
-            "Inherit from project".to_owned()
+        if *origin == Origin::Project {
+            t!("auth-inherit-project")
         } else {
-            format!("Inherit from {origin}")
+            t!("auth-inherit-from", origin = from.as_str())
         }
     });
     kind_picker(ui, auth, inherit.as_deref());
@@ -92,31 +99,31 @@ pub fn request_auth(
         (None, Some(inherited)) => {
             theme::hint(
                 ui,
-                format!(
-                    "This request uses the auth of {origin}: {}.",
-                    describe(inherited)
+                t!(
+                    "auth-uses-inherited",
+                    origin = from.as_str(),
+                    auth = describe(inherited)
                 ),
             );
-            if from_project {
-                edit_defaults = ui
-                    .button("Edit project defaults…")
-                    .clicked()
-                    .then_some(EditDefaults::Project);
-            } else if origin == "the workspace" {
-                edit_defaults = ui
-                    .button("Edit workspace defaults…")
-                    .clicked()
-                    .then_some(EditDefaults::Workspace);
-            } else {
-                theme::hint(
-                    ui,
-                    "Change it with “Folder defaults…” in that folder's menu.",
-                );
+            match origin {
+                Origin::Project => {
+                    edit_defaults = ui
+                        .button(t!("edit-project-defaults"))
+                        .clicked()
+                        .then_some(EditDefaults::Project);
+                }
+                Origin::Workspace => {
+                    edit_defaults = ui
+                        .button(t!("edit-workspace-defaults"))
+                        .clicked()
+                        .then_some(EditDefaults::Workspace);
+                }
+                Origin::Folder(_) => theme::hint(ui, t!("auth-change-in-folder")),
             }
         }
-        (None, None) => theme::hint(ui, "This request sends no authentication."),
+        (None, None) => theme::hint(ui, t!("auth-none-sent")),
         (Some(a), _) => {
-            auth_fields(ui, "request-auth", a, help, "request file");
+            auth_fields(ui, "request-auth", a, help, &t!("auth-saved-in-request"));
         }
     }
     edit_defaults
@@ -135,10 +142,10 @@ pub fn kind_picker(ui: &mut Ui, auth: &mut Option<Auth>, inherit: Option<&str>) 
         if let Some(label) = inherit {
             ui.radio_value(&mut chosen, Kind::Inherit, label);
         }
-        ui.radio_value(&mut chosen, Kind::None, "No auth");
-        ui.radio_value(&mut chosen, Kind::Basic, "Basic");
-        ui.radio_value(&mut chosen, Kind::Bearer, "Bearer token");
-        ui.radio_value(&mut chosen, Kind::Header, "Header");
+        ui.radio_value(&mut chosen, Kind::None, t!("auth-kind-none"));
+        ui.radio_value(&mut chosen, Kind::Basic, t!("auth-kind-basic"));
+        ui.radio_value(&mut chosen, Kind::Bearer, t!("auth-kind-bearer"));
+        ui.radio_value(&mut chosen, Kind::Header, t!("header"));
     });
     if chosen != current {
         *auth = chosen.empty();
@@ -156,14 +163,22 @@ pub fn auth_fields(ui: &mut Ui, id: &str, auth: &mut Auth, help: &VarHelp, saved
         .spacing([12.0, 8.0])
         .show(ui, |ui| match auth {
             Auth::None => {
-                theme::hint(ui, "No Authorization header is added.");
+                theme::hint(ui, t!("auth-no-header-added"));
                 ui.end_row();
             }
             Auth::Basic { username, password } => {
-                changed |= field(ui, "Username", (id, "user"), username, help, width, false);
                 changed |= field(
                     ui,
-                    "Password",
+                    &t!("auth-username"),
+                    (id, "user"),
+                    username,
+                    help,
+                    width,
+                    false,
+                );
+                changed |= field(
+                    ui,
+                    &t!("auth-password"),
                     (id, "password"),
                     password,
                     help,
@@ -173,12 +188,20 @@ pub fn auth_fields(ui: &mut Ui, id: &str, auth: &mut Auth, help: &VarHelp, saved
                 credential = Some(password.clone());
             }
             Auth::Bearer { token } => {
-                changed |= field(ui, "Token", (id, "token"), token, help, width, true);
+                changed |= field(
+                    ui,
+                    &t!("auth-token"),
+                    (id, "token"),
+                    token,
+                    help,
+                    width,
+                    true,
+                );
                 credential = Some(token.clone());
             }
             Auth::Header { name, value } => {
-                changed |= field(ui, "Header", (id, "name"), name, help, width, false);
-                changed |= field(ui, "Value", (id, "value"), value, help, width, true);
+                changed |= field(ui, &t!("header"), (id, "name"), name, help, width, false);
+                changed |= field(ui, &t!("value"), (id, "value"), value, help, width, true);
                 credential = Some(value.clone());
             }
         });
@@ -186,20 +209,14 @@ pub fn auth_fields(ui: &mut Ui, id: &str, auth: &mut Auth, help: &VarHelp, saved
         && looks_like_plain_credential(&value)
     {
         ui.add_space(6.0);
-        theme::callout(
-            ui,
-            format!(
-                "This value is saved in the {saved_in} and shared through git. Use a secret variable \
-                 instead, e.g. {{{{token}}}} — mark it secret (🔒) in Environments to keep it on this machine."
-            ),
-        );
+        theme::callout(ui, t!("auth-plain-credential", saved_in = saved_in));
     }
     match auth.header() {
         Some((name, _)) => {
-            theme::hint(ui, format!("A {name} header added by hand replaces this."));
+            theme::hint(ui, t!("auth-header-replaces", name = name));
         }
         None if matches!(auth, Auth::Header { .. }) => {
-            theme::hint(ui, "No header is added until it has a name.");
+            theme::hint(ui, t!("auth-header-needs-name"));
         }
         None => {}
     }

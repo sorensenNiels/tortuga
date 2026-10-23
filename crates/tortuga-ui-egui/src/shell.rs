@@ -36,6 +36,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use egui::{CentralPanel, Frame, Margin, Panel, RichText, Ui};
 use futures_util::future::AbortHandle;
 use tortuga_core::script::Breakpoints;
+use tortuga_core::vars::Origin;
 use tortuga_core::{Request, vars};
 
 use crate::components::script_keys;
@@ -379,14 +380,11 @@ impl TortugaUi {
             Panel::top("tls-warning").frame(frame).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("⚠").color(p.warning_text));
-                    ui.label(
-                        RichText::new(
-                            "TLS certificate verification is off. Responses could come from an impostor server.",
-                        )
-                        .color(p.warning_text),
-                    );
-                    if ui.link("Change in settings").clicked() {
-                        self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(&self.state.settings))));
+                    ui.label(RichText::new(t!("tls-off-warning")).color(p.warning_text));
+                    if ui.link(t!("tls-off-change")).clicked() {
+                        self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(
+                            &self.state.settings,
+                        ))));
                     }
                 });
             });
@@ -402,7 +400,7 @@ impl TortugaUi {
                     |ui| {
                         if ui
                             .add(theme::icon_button(ui, "🗙"))
-                            .on_hover_text("Dismiss")
+                            .on_hover_text(t!("dismiss"))
                             .clicked()
                         {
                             self.state.notice = None;
@@ -456,12 +454,13 @@ impl TortugaUi {
             )
             .show(ui, |ui| {
                 if self.state.host.keeps_history() {
+                    let (projects, history) = (t!("sidebar-projects"), t!("history"));
                     theme::tabs(
                         ui,
                         &mut self.sidebar_view,
                         &[
-                            (SidebarView::Projects, "Projects", None),
-                            (SidebarView::History, "History", None),
+                            (SidebarView::Projects, projects.as_str(), None),
+                            (SidebarView::History, history.as_str(), None),
                         ],
                     );
                     ui.add_space(8.0);
@@ -549,7 +548,10 @@ impl TortugaUi {
             self.editor.focus_url();
         }
         if environment {
-            self.modal = Some(Modal::Palette(Palette::commands_matching("Environment: ")));
+            self.modal = Some(Modal::Palette(Palette::commands_matching(&t!(
+                "cmd-environment",
+                name = ""
+            ))));
         }
         self.tab_shortcuts(ui);
     }
@@ -581,9 +583,9 @@ impl TortugaUi {
         ui.horizontal(|ui| {
             let p = theme::palette(ui);
             let hint = if self.state.sidebar_hidden() {
-                "Show the sidebar (Ctrl+B)"
+                t!("sidebar-show-hint")
             } else {
-                "Hide the sidebar (Ctrl+B)"
+                t!("sidebar-hide-hint")
             };
             if ui
                 .add(theme::icon_button(ui, "☰"))
@@ -610,9 +612,9 @@ impl TortugaUi {
                 // Only the icon; the name is on hover and for screen readers.
                 let settings = ui
                     .add(theme::ghost_button(RichText::new("⚙").size(16.0)))
-                    .on_hover_text("Settings");
+                    .on_hover_text(t!("settings"));
                 settings.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, "Settings")
+                    egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, t!("settings"))
                 });
                 if settings.clicked() {
                     self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(
@@ -621,12 +623,12 @@ impl TortugaUi {
                 }
                 self.update_link(ui);
                 let go_to = (
-                    "Go to request…",
+                    t!("go-to-request"),
                     RichText::new("  Ctrl+P").small().color(p.muted),
                 );
                 if ui
                     .add(egui::Button::new(go_to))
-                    .on_hover_text("Quick open (Ctrl+P). Ctrl+K lists every command.")
+                    .on_hover_text(t!("go-to-request-hint"))
                     .clicked()
                 {
                     self.modal = Some(Modal::Palette(Palette::requests()));
@@ -655,9 +657,9 @@ impl TortugaUi {
         ui.add_space(4.0);
 
         let collection_auth = root.as_ref().map(|_| ctx.auth.clone().unwrap_or_default());
-        let inherited_headers: Vec<(tortuga_core::KeyValue, String)> = ctx
+        let inherited_headers: Vec<(tortuga_core::KeyValue, Origin)> = ctx
             .inherited_headers_with_origins(&self.current)
-            .map(|(h, origin)| (h.clone(), origin.to_owned()))
+            .map(|(h, origin)| (h.clone(), origin.clone()))
             .collect();
         let cookie_count = self.state.cookie_jar(root.as_deref()).len();
         let sending = self.sending() == Some(&key);
@@ -763,7 +765,7 @@ impl TortugaUi {
     /// "Choose…" for a multipart file: inside the project the path is kept relative to
     /// it, so it works for teammates too (R-HTTP-15, D21).
     fn choose_upload(&mut self, root: Option<&Path>, index: usize) {
-        let Some(path) = self.state.host.pick_any_file("Choose a file to upload") else {
+        let Some(path) = self.state.host.pick_any_file(&t!("choose-upload-file")) else {
             return;
         };
         let value = upload_path(&path, root);

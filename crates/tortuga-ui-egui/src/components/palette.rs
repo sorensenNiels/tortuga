@@ -163,9 +163,9 @@ impl Palette {
             .show(ctx, |ui| {
                 ui.set_width(width);
                 let hint = if self.shows_commands() {
-                    "Type a command"
+                    t!("palette-command-hint")
                 } else {
-                    "Search requests by name, folder, project or URL. Type > for commands"
+                    t!("palette-search-hint")
                 };
                 let edit = ui.add(
                     TextEdit::singleline(&mut self.query)
@@ -183,9 +183,9 @@ impl Palette {
                     theme::hint(
                         ui,
                         if self.shows_commands() {
-                            "No command matches."
+                            t!("palette-no-command")
                         } else {
-                            "No request matches."
+                            t!("palette-no-request")
                         },
                     );
                 }
@@ -211,10 +211,7 @@ impl Palette {
                             }
                         }
                         if total > shown.len() {
-                            theme::hint(
-                                ui,
-                                format!("{} more: type to narrow the list.", total - shown.len()),
-                            );
+                            theme::hint(ui, t!("palette-more", count = total - shown.len()));
                         }
                     });
             });

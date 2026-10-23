@@ -27,11 +27,13 @@ impl TortugaUi {
         match protected {
             Some(env) if !method.is_safe() => {
                 let dialog = ConfirmDialog {
-                    title: format!("Send {} to “{env}”?", method.as_str()),
-                    message: format!(
-                        "“{env}” is a protected environment: this request may change its data."
+                    title: t!(
+                        "protected-send-title",
+                        method = method.as_str(),
+                        env = env.as_str()
                     ),
-                    confirm_label: "Send".into(),
+                    message: t!("protected-send-message", env = env.as_str()),
+                    confirm_label: t!("send"),
                 };
                 self.modal = Some(Modal::Protected(Guarded::Send, dialog));
             }

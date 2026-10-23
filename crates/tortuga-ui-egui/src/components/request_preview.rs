@@ -47,12 +47,12 @@ pub(super) fn preview_line(ui: &mut Ui, open: &mut bool, server: ServerLine<'_>)
             );
         }
     }
-    atoms.push(RichText::new("Preview").small().color(p.muted).into());
+    atoms.push(RichText::new(t!("preview")).small().color(p.muted).into());
     let atoms: egui::Atoms<'_> = atoms.into_iter().collect();
     let hint = if *open {
-        "Hide the request as it will be sent (Esc)"
+        t!("preview-hide")
     } else {
-        "Show the request as it will be sent: variables filled in, secrets masked"
+        t!("preview-show")
     };
     if ui
         .add(Button::new(atoms).frame(false).gap(6.0))
@@ -101,10 +101,10 @@ fn request_preview(ui: &mut Ui, preview: Option<&Result<Request, String>>) {
         ui.add(mono(&url));
     });
     ui.add_space(8.0);
-    theme::section_label(ui, "Headers");
+    theme::section_label(ui, &t!("headers"));
     let active: Vec<&KeyValue> = request.headers.iter().filter(|h| h.is_active()).collect();
     if active.is_empty() {
-        theme::hint(ui, "No headers.");
+        theme::hint(ui, t!("preview-no-headers"));
     }
     for h in active {
         // Basic credentials are readable here (and secrets stay masked); they are base64 when sent.
@@ -138,7 +138,12 @@ fn request_preview(ui: &mut Ui, preview: Option<&Result<Request, String>>) {
                         .map(|c| format!(" ({c})"))
                         .unwrap_or_default();
                     if p.file {
-                        format!("{}: file {}{ct}", p.name, p.value)
+                        t!(
+                            "preview-form-file",
+                            name = &p.name,
+                            file = &p.value,
+                            content_type = ct.as_str()
+                        )
                     } else {
                         format!("{}: {}{ct}", p.name, p.value)
                     }
@@ -149,11 +154,11 @@ fn request_preview(ui: &mut Ui, preview: Option<&Result<Request, String>>) {
     };
     if let Some(body) = body {
         ui.add_space(8.0);
-        theme::section_label(ui, "Body");
+        theme::section_label(ui, &t!("body"));
         let (shown, cut) = crate::format::truncate(&body, PREVIEW_BODY_BYTES);
         ui.add(mono(shown));
         if cut {
-            theme::hint(ui, "The body is longer; only the start is shown.");
+            theme::hint(ui, t!("preview-body-cut"));
         }
     }
     ui.add_space(8.0);

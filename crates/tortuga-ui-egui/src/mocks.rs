@@ -107,7 +107,7 @@ impl AppState {
                 .filter(|p| !self.mocks.ports().contains(p))
                 .collect(),
         };
-        let mut problem = String::from("no port to try");
+        let mut problem = t!("mock-no-port");
         for port in ports {
             let tx = self.mocks.tx.clone();
             let wake = self.waker();
@@ -224,7 +224,7 @@ impl AppState {
     fn mock_api(&self, root: &Path) -> Result<MockApi, String> {
         let c = self
             .collection(root)
-            .ok_or_else(|| "The project is not open.".to_owned())?;
+            .ok_or_else(|| t!("mock-project-not-open"))?;
         match self.effective_environment(root) {
             Some(env) => {
                 let id = env.id.clone();

@@ -12,7 +12,7 @@ use egui::{ComboBox, Context, TextEdit, Ui};
 use tortuga_core::import::ImportKind;
 use tortuga_core::settings::{
     Appearance, Density, EditingSettings, Feature, FeatureSettings, HistorySettings,
-    ImporterSettings, RequestLayout, Theme, UpdateSettings,
+    ImporterSettings, Language, RequestLayout, Theme, UpdateSettings,
 };
 use tortuga_core::update::Release;
 use tortuga_core::{AppSettings, ClientSettings, ProxyMode, check_proxy_url};
@@ -123,19 +123,23 @@ impl SettingsDialog {
         can_pick_files: bool,
         update: &UpdateStatus,
     ) -> DialogResult<AppSettings> {
-        super::dialog(ctx, "settings", "Settings", 560.0, true, |ui| {
+        super::dialog(ctx, "settings", &t!("settings"), 560.0, true, |ui| {
             theme::tabs(
                 ui,
                 &mut self.tab,
                 &[
-                    (SettingsTab::Requests, "Requests", None),
-                    (SettingsTab::Appearance, "Appearance", None),
-                    (SettingsTab::Editing, "Editing", None),
-                    (SettingsTab::ScriptEditor, "Script editor", None),
-                    (SettingsTab::Features, "Features", None),
-                    (SettingsTab::History, "History", None),
-                    (SettingsTab::Importers, "Importers", None),
-                    (SettingsTab::About, "About", None),
+                    (SettingsTab::Requests, t!("import-row-requests"), None),
+                    (SettingsTab::Appearance, t!("settings-appearance"), None),
+                    (SettingsTab::Editing, t!("settings-editing"), None),
+                    (
+                        SettingsTab::ScriptEditor,
+                        t!("settings-script-editor"),
+                        None,
+                    ),
+                    (SettingsTab::Features, t!("settings-features"), None),
+                    (SettingsTab::History, t!("history"), None),
+                    (SettingsTab::Importers, t!("settings-importers"), None),
+                    (SettingsTab::About, t!("settings-about"), None),
                 ],
             );
             // Long tabs scroll, so Save stays on screen in a small window.
@@ -154,10 +158,10 @@ impl SettingsDialog {
             if let Some(e) = &proxy_problem
                 && self.tab != SettingsTab::Requests
             {
-                theme::error(ui, format!("Requests tab: {e}."));
+                theme::error(ui, t!("settings-requests-tab-error", error = e.to_string()));
             }
             let valid = proxy_problem.is_none();
-            let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Save"), valid);
+            let (cancel, confirm) = actions(ui, theme::primary_button(ui, t!("save")), valid);
             finish(cancel, confirm.then(|| self.draft.clone()))
         })
     }
@@ -202,19 +206,16 @@ fn request_settings(
     timeout_text: &mut String,
     hosts_text: &mut String,
 ) {
-    ui.checkbox(&mut d.follow_redirects, "Follow redirects");
-    ui.checkbox(&mut d.send_cookies, "Send and store cookies");
-    ui.checkbox(&mut d.verify_tls, "Verify TLS certificates");
+    ui.checkbox(&mut d.follow_redirects, t!("defaults-follow-redirects"));
+    ui.checkbox(&mut d.send_cookies, t!("defaults-cookies"));
+    ui.checkbox(&mut d.verify_tls, t!("settings-verify-tls"));
     if d.verify_tls {
         insecure_hosts(ui, d, hosts_text);
     } else {
-        theme::warning(
-            ui,
-            "Turning this off lets anyone between you and the server read and change your traffic. Only use it for local test servers.",
-        );
+        theme::warning(ui, t!("settings-verify-tls-off"));
     }
     ui.horizontal(|ui| {
-        let label = ui.label("Default timeout (ms)");
+        let label = ui.label(t!("settings-default-timeout"));
         if ui
             .add(TextEdit::singleline(timeout_text).desired_width(120.0))
             .labelled_by(label.id)
@@ -224,17 +225,13 @@ fn request_settings(
             d.default_timeout_ms = ms;
         }
     });
-    theme::hint(
-        ui,
-        "Workspaces and projects can set their own timeout, redirects and cookies (their \
-         “Defaults…”).",
-    );
+    theme::hint(ui, t!("settings-requests-hint"));
 }
 
 /// Hosts whose certificates are not verified, on this machine only (R-SET-3).
 fn insecure_hosts(ui: &mut Ui, d: &mut ClientSettings, text: &mut String) {
     ui.indent("insecure-hosts", |ui| {
-        let label = ui.label("Don't verify certificates of these hosts:");
+        let label = ui.label(t!("settings-insecure-hosts"));
         let edit = TextEdit::multiline(text)
             .id_salt("insecure-hosts")
             .font(egui::TextStyle::Monospace)
@@ -244,17 +241,9 @@ fn insecure_hosts(ui: &mut Ui, d: &mut ClientSettings, text: &mut String) {
         if ui.add(edit).labelled_by(label.id).changed() {
             d.insecure_hosts = lines(text);
         }
-        theme::hint(
-            ui,
-            "One per line; *.example.test covers its subdomains. Only for test servers with \
-             self-signed certificates. Kept on this computer: shared files can't turn \
-             verification off.",
-        );
+        theme::hint(ui, t!("settings-insecure-hosts-hint"));
         if !d.insecure_hosts.is_empty() {
-            theme::warning(
-                ui,
-                "Traffic to these hosts could be read and changed by anyone in between.",
-            );
+            theme::warning(ui, t!("settings-insecure-hosts-warning"));
         }
     });
 }
@@ -270,21 +259,15 @@ fn lines(text: &str) -> Vec<String> {
 
 /// Which proxy requests go through (R-HTTP-20, D54).
 fn proxy_settings(ui: &mut Ui, d: &mut ClientSettings, no_proxy_text: &mut String) {
-    theme::section_label(ui, "Proxy");
+    theme::section_label(ui, &t!("settings-proxy"));
     ui.horizontal(|ui| {
-        ui.radio_value(&mut d.proxy, ProxyMode::System, "From the system");
-        ui.radio_value(&mut d.proxy, ProxyMode::None, "None");
-        ui.radio_value(&mut d.proxy, ProxyMode::Manual, "Manual");
+        ui.radio_value(&mut d.proxy, ProxyMode::System, t!("settings-proxy-system"));
+        ui.radio_value(&mut d.proxy, ProxyMode::None, t!("none"));
+        ui.radio_value(&mut d.proxy, ProxyMode::Manual, t!("settings-proxy-manual"));
     });
     match d.proxy {
-        ProxyMode::System => theme::hint(
-            ui,
-            "The operating system's proxy settings, or HTTP_PROXY, HTTPS_PROXY and NO_PROXY.",
-        ),
-        ProxyMode::None => theme::hint(
-            ui,
-            "Requests go straight to the server, whatever the system's settings say.",
-        ),
+        ProxyMode::System => theme::hint(ui, t!("settings-proxy-system-hint")),
+        ProxyMode::None => theme::hint(ui, t!("settings-proxy-none-hint")),
         ProxyMode::Manual => manual_proxy(ui, d, no_proxy_text),
     }
 }
@@ -293,7 +276,7 @@ fn proxy_settings(ui: &mut Ui, d: &mut ClientSettings, no_proxy_text: &mut Strin
 fn manual_proxy(ui: &mut Ui, d: &mut ClientSettings, no_proxy_text: &mut String) {
     ui.indent("manual-proxy", |ui| {
         ui.horizontal(|ui| {
-            let label = ui.label("Proxy URL");
+            let label = ui.label(t!("settings-proxy-url"));
             ui.add(
                 TextEdit::singleline(&mut d.proxy_url)
                     .id_salt("proxy-url")
@@ -305,7 +288,7 @@ fn manual_proxy(ui: &mut Ui, d: &mut ClientSettings, no_proxy_text: &mut String)
         if let Err(e) = check_proxy_url(&d.proxy_url) {
             theme::error(ui, tortuga_core::error::message(&e));
         }
-        let label = ui.label("Don't use it for these hosts:");
+        let label = ui.label(t!("settings-no-proxy"));
         let edit = TextEdit::multiline(no_proxy_text)
             .id_salt("no-proxy")
             .font(egui::TextStyle::Monospace)
@@ -315,25 +298,20 @@ fn manual_proxy(ui: &mut Ui, d: &mut ClientSettings, no_proxy_text: &mut String)
         if ui.add(edit).labelled_by(label.id).changed() {
             d.no_proxy = lines(no_proxy_text);
         }
-        theme::hint(
-            ui,
-            "One per line; example.com and *.example.com both cover its subdomains, and \
-             10.0.0.0/8 a network. For mitmproxy, Charles or Fiddler, or a company proxy. \
-             A user name or password in the URL is not supported. Kept on this computer.",
-        );
+        theme::hint(ui, t!("settings-no-proxy-hint"));
     });
 }
 
 /// PEM files trusted besides the system's certificates (R-HTTP-16). Returns whether
 /// "Add…" was clicked.
 fn ca_certificates(ui: &mut Ui, files: &mut Vec<PathBuf>, can_pick_files: bool) -> bool {
-    theme::section_label(ui, "CA certificates");
+    theme::section_label(ui, &t!("settings-ca-certificates"));
     let mut remove = None;
     for (i, path) in files.iter().enumerate() {
         ui.horizontal(|ui| {
             if ui
                 .add(theme::icon_button(ui, "🗙"))
-                .on_hover_text("Stop trusting it")
+                .on_hover_text(t!("settings-ca-remove"))
                 .clicked()
             {
                 remove = Some(i);
@@ -345,12 +323,8 @@ fn ca_certificates(ui: &mut Ui, files: &mut Vec<PathBuf>, can_pick_files: bool) 
     if let Some(i) = remove {
         files.remove(i);
     }
-    let add = can_pick_files && ui.button("Add…").clicked();
-    theme::hint(
-        ui,
-        "PEM files whose certificates are trusted besides the system's, e.g. your company's CA \
-         for internal APIs. Kept on this computer only.",
-    );
+    let add = can_pick_files && ui.button(t!("settings-add")).clicked();
+    theme::hint(ui, t!("settings-ca-hint"));
     add
 }
 
@@ -362,14 +336,26 @@ fn appearance_settings(ui: &mut Ui, a: &mut Appearance, can_pick_files: bool) ->
         .num_columns(2)
         .spacing([16.0, 10.0])
         .show(ui, |ui| {
-            ui.label("Theme");
+            ui.label(t!("settings-theme"));
             ui.horizontal(|ui| {
-                ui.radio_value(&mut a.theme, Theme::System, "Like the system");
-                ui.radio_value(&mut a.theme, Theme::Light, "Light");
-                ui.radio_value(&mut a.theme, Theme::Dark, "Dark");
+                ui.radio_value(&mut a.theme, Theme::System, t!("settings-like-system"));
+                ui.radio_value(&mut a.theme, Theme::Light, t!("settings-theme-light"));
+                ui.radio_value(&mut a.theme, Theme::Dark, t!("settings-theme-dark"));
             });
             ui.end_row();
-            let label = ui.label("Text size");
+            // R-I18N-1: each language by its own name, so it can be found in any.
+            ui.label(t!("settings-language"));
+            ui.horizontal(|ui| {
+                ui.radio_value(
+                    &mut a.language,
+                    Language::System,
+                    t!("settings-like-system"),
+                );
+                ui.radio_value(&mut a.language, Language::English, "English");
+                ui.radio_value(&mut a.language, Language::Danish, "Dansk");
+            });
+            ui.end_row();
+            let label = ui.label(t!("settings-text-size"));
             percent_choice(
                 ui,
                 "text-size",
@@ -378,27 +364,43 @@ fn appearance_settings(ui: &mut Ui, a: &mut Appearance, can_pick_files: bool) ->
             )
             .labelled_by(label.id);
             ui.end_row();
-            ui.label("Response");
+            ui.label(t!("response"));
             ui.horizontal(|ui| {
-                ui.radio_value(&mut a.layout, RequestLayout::Stacked, "Below the request");
-                ui.radio_value(&mut a.layout, RequestLayout::SideBySide, "Beside it");
+                ui.radio_value(
+                    &mut a.layout,
+                    RequestLayout::Stacked,
+                    t!("settings-layout-below"),
+                );
+                ui.radio_value(
+                    &mut a.layout,
+                    RequestLayout::SideBySide,
+                    t!("settings-layout-beside"),
+                );
                 ui.radio_value(
                     &mut a.layout,
                     RequestLayout::Automatic,
-                    "Beside it when wide",
+                    t!("settings-layout-automatic"),
                 );
             });
             ui.end_row();
-            ui.label("Density");
+            ui.label(t!("settings-density"));
             ui.horizontal(|ui| {
-                ui.radio_value(&mut a.density, Density::Comfortable, "Comfortable");
-                ui.radio_value(&mut a.density, Density::Compact, "Compact");
+                ui.radio_value(
+                    &mut a.density,
+                    Density::Comfortable,
+                    t!("settings-density-comfortable"),
+                );
+                ui.radio_value(
+                    &mut a.density,
+                    Density::Compact,
+                    t!("settings-density-compact"),
+                );
             });
             ui.end_row();
-            ui.label("Code font");
+            ui.label(t!("settings-code-font"));
             choose_font = code_font(ui, &mut a.code_font, can_pick_files);
             ui.end_row();
-            let label = ui.label("Code size");
+            let label = ui.label(t!("settings-code-size"));
             percent_choice(
                 ui,
                 "code-size",
@@ -408,13 +410,9 @@ fn appearance_settings(ui: &mut Ui, a: &mut Appearance, can_pick_files: bool) ->
             .labelled_by(label.id);
             ui.end_row();
         });
-    theme::hint(
-        ui,
-        "Ctrl+= and Ctrl+- change the text size too; Ctrl+0 resets it. The code font and \
-         size are for bodies, scripts and URLs, relative to the text size.",
-    );
+    theme::hint(ui, t!("settings-appearance-hint"));
     ui.add_space(8.0);
-    ui.checkbox(&mut a.wrap_lines, "Wrap long lines in responses");
+    ui.checkbox(&mut a.wrap_lines, t!("settings-wrap-lines"));
     choose_font
 }
 
@@ -449,11 +447,11 @@ fn code_font(ui: &mut Ui, font: &mut Option<PathBuf>, can_pick_files: bool) -> b
                     .on_hover_text(path.display().to_string());
             }
             None => {
-                ui.label("JetBrains Mono (bundled)");
+                ui.label(t!("settings-code-font-bundled"));
             }
         }
-        let choose = can_pick_files && ui.button("Choose…").clicked();
-        if font.is_some() && ui.button("Use the bundled one").clicked() {
+        let choose = can_pick_files && ui.button(t!("choose")).clicked();
+        if font.is_some() && ui.button(t!("settings-code-font-reset")).clicked() {
             *font = None;
         }
         choose
@@ -463,42 +461,26 @@ fn code_font(ui: &mut Ui, font: &mut Option<PathBuf>, can_pick_files: bool) -> b
 
 /// How requests open and are saved (R-SET-9, R-SET-11).
 fn editing_settings(ui: &mut Ui, e: &mut EditingSettings) {
-    ui.checkbox(&mut e.preview_tab, "Open requests in a preview tab");
+    ui.checkbox(&mut e.preview_tab, t!("settings-preview-tab"));
     ui.indent("preview-tab", |ui| {
-        theme::hint(
-            ui,
-            "A single click shows a request in the preview tab (its title in italics), which \
-             the next single click replaces; editing it or double-clicking keeps it. Off: \
-             every request you open gets a tab that stays.",
-        );
+        theme::hint(ui, t!("settings-preview-tab-hint"));
     });
     ui.add_space(6.0);
-    ui.checkbox(&mut e.auto_save, "Save automatically");
+    ui.checkbox(&mut e.auto_save, t!("settings-auto-save"));
     ui.indent("auto-save", |ui| {
-        theme::hint(
-            ui,
-            "Edits to requests and workflows are saved a second after you stop typing, and \
-             when you open something else or close the app. Not while a file changed on disk \
-             under your edits (the banner asks first), and never the scratch request. Git is \
-             your undo.",
-        );
+        theme::hint(ui, t!("settings-auto-save-hint"));
     });
 }
 
 /// Which features are shown (R-SET-13).
 fn feature_settings(ui: &mut Ui, features: &mut FeatureSettings) {
-    theme::hint(
-        ui,
-        "Turn off what you don't use to keep the app simple. Nothing is deleted: a request \
-         that already uses a feature still shows it, and a mock server that runs can still \
-         be stopped.",
-    );
+    theme::hint(ui, t!("settings-features-hint"));
     ui.add_space(6.0);
     for feature in Feature::ALL {
         let mut on = features.enabled(feature);
         if ui
-            .checkbox(&mut on, feature.name())
-            .on_hover_text(format!("Off hides {}.", feature.hides()))
+            .checkbox(&mut on, feature_name(feature))
+            .on_hover_text(feature_hides(feature))
             .changed()
         {
             features.set_enabled(feature, on);
@@ -506,13 +488,30 @@ fn feature_settings(ui: &mut Ui, features: &mut FeatureSettings) {
     }
 }
 
+/// What Settings calls `feature` (R-SET-13).
+fn feature_name(feature: Feature) -> String {
+    match feature {
+        Feature::Scripts => t!("feature-scripts"),
+        Feature::Examples => t!("feature-examples"),
+        Feature::Workflows => t!("feature-workflows"),
+        Feature::Docs => t!("feature-docs"),
+    }
+}
+
+/// What turning `feature` off hides.
+fn feature_hides(feature: Feature) -> String {
+    match feature {
+        Feature::Scripts => t!("feature-scripts-hides"),
+        Feature::Examples => t!("feature-examples-hides"),
+        Feature::Workflows => t!("feature-workflows-hides"),
+        Feature::Docs => t!("feature-docs-hides"),
+    }
+}
+
 /// How many sent requests are kept per project, or none (R-SET-6).
 fn history_settings(ui: &mut Ui, h: &mut HistorySettings, text: &mut String) {
     let mut on = h.on();
-    if ui
-        .checkbox(&mut on, "Keep a history of sent requests")
-        .changed()
-    {
+    if ui.checkbox(&mut on, t!("settings-history-on")).changed() {
         h.size = if on {
             text.trim()
                 .parse()
@@ -525,7 +524,7 @@ fn history_settings(ui: &mut Ui, h: &mut HistorySettings, text: &mut String) {
     }
     if on {
         ui.horizontal(|ui| {
-            let label = ui.label("Entries per project");
+            let label = ui.label(t!("settings-history-size"));
             if ui
                 .add(TextEdit::singleline(text).desired_width(80.0))
                 .labelled_by(label.id)
@@ -535,13 +534,9 @@ fn history_settings(ui: &mut Ui, h: &mut HistorySettings, text: &mut String) {
                 h.size = n;
             }
         });
-        theme::hint(ui, "Lowering it removes the oldest entries when you save.");
+        theme::hint(ui, t!("settings-history-lower"));
     } else {
-        theme::hint(
-            ui,
-            "Nothing more is recorded. History that is already there stays until you clear it \
-             in the History view.",
-        );
+        theme::hint(ui, t!("settings-history-off"));
     }
 }
 
@@ -564,7 +559,7 @@ fn about(ui: &mut Ui) {
         ui.label(theme::semibold("🐢").size(28.0).color(p.accent));
         ui.vertical(|ui| {
             ui.label(theme::semibold("Tortuga").size(18.0));
-            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+            ui.label(t!("about-version", version = env!("CARGO_PKG_VERSION")));
         });
     });
     ui.add_space(8.0);
@@ -579,34 +574,37 @@ fn about(ui: &mut Ui) {
             };
             row(
                 ui,
-                "Built for",
+                &t!("about-built-for"),
                 format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
             );
             row(
                 ui,
-                "Project files",
-                format!(
-                    "format {}; newer ones open read-only",
-                    tortuga_core::format::FORMAT_VERSION
+                &t!("about-project-files"),
+                t!(
+                    "about-project-format",
+                    format = tortuga_core::format::FORMAT_VERSION
                 ),
             );
             row(
                 ui,
-                "Workspace files",
-                format!("format {}", tortuga_core::workspace::WORKSPACE_FORMAT),
+                &t!("about-workspace-files"),
+                t!(
+                    "about-format",
+                    format = tortuga_core::workspace::WORKSPACE_FORMAT
+                ),
             );
             row(
                 ui,
-                "Licence",
-                env!("CARGO_PKG_LICENSE").replace(" OR ", " or "),
+                &t!("about-licence"),
+                env!("CARGO_PKG_LICENSE").replace(" OR ", &t!("or-separator")),
             );
-            ui.label(egui::RichText::new("Source").color(p.muted));
+            ui.label(egui::RichText::new(t!("about-source")).color(p.muted));
             ui.hyperlink(REPOSITORY);
             ui.end_row();
         });
     ui.add_space(8.0);
     if ui
-        .button("Copy version information")
+        .button(t!("about-copy-version"))
         .on_hover_text(version_info())
         .clicked()
     {
@@ -617,38 +615,31 @@ fn about(ui: &mut Ui) {
 /// Looking for a new version (R-SET-15, D63). Returns whether "Check now" was clicked.
 fn updates(ui: &mut Ui, settings: &mut UpdateSettings, status: &UpdateStatus) -> bool {
     if *status == UpdateStatus::Unsupported {
-        theme::hint(
-            ui,
-            "Tortuga sends nothing on its own: no telemetry, no update checks. It only \
-             contacts the servers your requests go to.",
-        );
+        theme::hint(ui, t!("updates-unsupported"));
         return false;
     }
-    theme::section_label(ui, "Updates");
-    ui.checkbox(
-        &mut settings.check_at_start,
-        "Look for a new version when the app starts",
-    );
+    theme::section_label(ui, &t!("updates"));
+    ui.checkbox(&mut settings.check_at_start, t!("updates-check-at-start"));
     let check = ui
         .horizontal(|ui| {
             let check = ui
                 .add_enabled(
                     *status != UpdateStatus::Checking,
-                    egui::Button::new("Check now"),
+                    egui::Button::new(t!("updates-check-now")),
                 )
                 .clicked();
             match status {
                 UpdateStatus::NotChecked | UpdateStatus::Unsupported | UpdateStatus::Failed(_) => {}
                 UpdateStatus::Checking => {
                     ui.spinner();
-                    ui.label("Checking…");
+                    ui.label(t!("updates-checking"));
                 }
                 UpdateStatus::UpToDate => {
-                    ui.label("You have the latest version.");
+                    ui.label(t!("updates-up-to-date"));
                 }
                 UpdateStatus::Available(release) => {
                     ui.hyperlink_to(
-                        format!("Tortuga {} is available", release.version),
+                        t!("update-available", version = &release.version),
                         &release.page,
                     );
                 }
@@ -659,12 +650,7 @@ fn updates(ui: &mut Ui, settings: &mut UpdateSettings, status: &UpdateStatus) ->
     if let UpdateStatus::Failed(e) = status {
         theme::error(ui, e);
     }
-    theme::hint(
-        ui,
-        "Asks GitHub for the latest published release; nothing about you or your projects is \
-         sent. Tortuga has no telemetry, and otherwise only contacts the servers your \
-         requests go to.",
-    );
+    theme::hint(ui, t!("updates-hint"));
     check
 }
 
@@ -673,15 +659,11 @@ const REPOSITORY: &str = "https://github.com/sorensenNiels/tortuga";
 
 /// Which importers "+ Add" and the command palette offer (R-COL-18).
 fn importer_settings(ui: &mut Ui, importers: &mut ImporterSettings) {
-    theme::hint(
-        ui,
-        "Turn off the importers you don't use; they disappear from “+ Add” and the command \
-         palette. Projects you imported earlier are not affected.",
-    );
+    theme::hint(ui, t!("settings-importers-hint"));
     ui.add_space(6.0);
     for kind in ImportKind::ALL {
         let mut on = importers.enabled(kind);
-        if ui.checkbox(&mut on, kind.importer_name()).changed() {
+        if ui.checkbox(&mut on, super::importer_name(kind)).changed() {
             importers.set_enabled(kind, on);
         }
     }
@@ -727,6 +709,22 @@ mod tests {
             h.run();
         }
         result
+    }
+
+    /// R-I18N-1: a language is chosen on the Appearance tab, by its own name.
+    #[test]
+    fn language_is_chosen_in_settings() {
+        use tortuga_core::settings::Language;
+
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        let saved = saved(&mut dialog, |h| {
+            h.get_by_label("Appearance").click();
+            h.run();
+            h.get_by_label("Dansk").click();
+            h.run();
+        })
+        .expect("saved");
+        assert_eq!(saved.appearance.language, Language::Danish);
     }
 
     /// R-HTTP-16: CA certificates are listed, added and removed in the settings.

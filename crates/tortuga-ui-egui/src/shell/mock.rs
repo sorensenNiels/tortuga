@@ -23,11 +23,9 @@ impl TortugaUi {
             Ok(port) => {
                 let name = self.project_name(root);
                 self.state
-                    .inform(format!("The mock server of “{name}” runs on port {port}."));
+                    .inform(t!("mock-started", name = name.as_str(), port = port));
             }
-            Err(e) => self
-                .state
-                .notify(format!("Could not start the mock server: {e}")),
+            Err(e) => self.state.notify(t!("mock-start-failed", error = e)),
         }
     }
 
@@ -35,8 +33,7 @@ impl TortugaUi {
     pub(super) fn stop_mock(&mut self, root: &Path) {
         self.state.stop_mock(root);
         let name = self.project_name(root);
-        self.state
-            .inform(format!("The mock server of “{name}” stopped."));
+        self.state.inform(t!("mock-stopped", name = name.as_str()));
     }
 
     fn project_name(&self, root: &Path) -> String {
@@ -84,8 +81,7 @@ impl TortugaUi {
             Some(MockAction::Stop) => self.stop_mock(&root),
             Some(MockAction::SetPort(port)) => {
                 if let Err(e) = self.state.set_mock_port(&root, port) {
-                    self.state
-                        .notify(format!("Could not start the mock server: {e}"));
+                    self.state.notify(t!("mock-start-failed", error = e));
                 }
             }
             Some(MockAction::ClearLog) => self.state.mocks.clear_hits(&root),

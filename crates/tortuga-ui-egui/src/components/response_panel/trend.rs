@@ -1,8 +1,6 @@
 //! A request's trend (R-HIST-4): its last sends from history as small bars in the
 //! response line, as tall as they took, failures in red, so "it got slower" shows.
 
-use std::fmt::Write as _;
-
 use egui::{Rect, Sense, Ui, vec2};
 
 use crate::{format, theme};
@@ -92,12 +90,12 @@ fn summary(points: &[TrendPoint]) -> String {
     let times = points.iter().filter_map(|t| t.elapsed_ms);
     let (fastest, slowest) = (times.clone().min(), times.max());
     let failed = points.iter().filter(|t| t.failed()).count();
-    let mut text = format!("Last {} sends", points.len());
+    let mut text = t!("trend-last-sends", count = points.len());
     if let (Some(a), Some(b)) = (fastest, slowest) {
-        let _ = write!(text, ": {} to {}", ms(a), ms(b));
+        text.push_str(&t!("trend-range", fastest = ms(a), slowest = ms(b)));
     }
     if failed > 0 {
-        let _ = write!(text, ", {failed} failed");
+        text.push_str(&t!("trend-failed", count = failed));
     }
     text
 }
@@ -111,7 +109,7 @@ fn describe(point: &TrendPoint, now_ms: u64, offset_minutes: i32) -> String {
     );
     let status = point
         .status
-        .map_or_else(|| "no response".to_owned(), |s| s.to_string());
+        .map_or_else(|| t!("trend-no-response"), |s| s.to_string());
     match point.elapsed_ms {
         Some(t) => format!("{when} · {status} · {}", ms(t)),
         None => format!("{when} · {status}"),

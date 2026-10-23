@@ -56,9 +56,57 @@ impl SavedSplit {
     }
 }
 
+/// Why secret values are not in the OS credential store (R-LOC-2). `reason` is what
+/// the store answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretsWarning {
+    /// Kept in the file at `path` instead, readable only by the user.
+    InFile { reason: String, path: PathBuf },
+    /// The file could not be read either: kept until the app closes.
+    FileUnreadable {
+        reason: String,
+        path: PathBuf,
+        error: String,
+    },
+    /// No app-data folder for a file: kept until the app closes.
+    NoFolder { reason: String },
+    /// The web version: kept until the page is closed.
+    PageOnly,
+}
+
+impl SecretsWarning {
+    /// The warning in the UI's language.
+    pub fn text(&self) -> String {
+        match self {
+            Self::InFile { reason, path } => t!(
+                "secrets-in-file",
+                reason = reason,
+                path = path.display().to_string()
+            ),
+            Self::FileUnreadable {
+                reason,
+                path,
+                error,
+            } => format!(
+                "{} {}",
+                t!(
+                    "secrets-in-file",
+                    reason = reason,
+                    path = path.display().to_string()
+                ),
+                t!("secrets-file-unreadable", error = error)
+            ),
+            Self::NoFolder { reason } => t!("secrets-no-folder", reason = reason),
+            Self::PageOnly => t!("secrets-page-only"),
+        }
+    }
+}
+
 impl LocalState {
-    /// Name of the workspace that always exists (R-WS-1).
-    pub const DEFAULT_WORKSPACE: &str = "My workspace";
+    /// Name of the workspace that always exists (R-WS-1), in the UI's language.
+    pub fn default_workspace() -> String {
+        t!("default-workspace")
+    }
 
     /// Makes sure there is a workspace and that the active index is valid. State saved
     /// before workspaces existed becomes the first workspace.
@@ -72,7 +120,7 @@ impl LocalState {
         self.active_environments.clear();
         if self.workspaces.is_empty() {
             self.workspaces.push(Workspace {
-                name: Self::DEFAULT_WORKSPACE.into(),
+                name: Self::default_workspace(),
                 projects,
                 ..Workspace::default()
             });
@@ -268,8 +316,8 @@ pub trait Host {
     /// Where secret variable values are kept on this machine (R-VAR-3, R-LOC-2).
     fn secrets(&self) -> &dyn SecretStore;
 
-    /// Set when secrets can't go to the OS credential store, e.g. "kept in a file instead" (R-LOC-2).
-    fn secrets_warning(&self) -> Option<&str> {
+    /// Set when secrets can't go to the OS credential store (R-LOC-2).
+    fn secrets_warning(&self) -> Option<&SecretsWarning> {
         None
     }
 
@@ -315,7 +363,7 @@ pub trait Host {
 
     /// Makes `dir` a new git repository (R-WS-7).
     fn init_git(&self, _dir: &Path) -> Result<(), String> {
-        Err("Not available here.".into())
+        Err(t!("not-available-here"))
     }
 
     /// Looks for projects (folders with `tortuga.toml`) in `dir` and below, skipping
@@ -325,7 +373,7 @@ pub trait Host {
         _dir: &Path,
         done: Box<dyn FnOnce(Result<Vec<PathBuf>, String>) + Send>,
     ) {
-        done(Err("Not available here.".into()));
+        done(Err(t!("not-available-here")));
     }
 
     /// Whether the collection folder can be opened in the file manager and a terminal (R-GIT-13).
@@ -334,11 +382,11 @@ pub trait Host {
     }
 
     fn open_in_file_manager(&self, _path: &Path) -> Result<(), String> {
-        Err("Not available here.".into())
+        Err(t!("not-available-here"))
     }
 
     fn open_in_terminal(&self, _path: &Path) -> Result<(), String> {
-        Err("Not available here.".into())
+        Err(t!("not-available-here"))
     }
 
     /// The local history of a project (`None`: the scratch request), newest first (R-HIST-1).
@@ -348,7 +396,7 @@ pub trait Host {
 
     /// One history entry, in full.
     fn history_entry(&self, _root: Option<&Path>, _id: &str) -> Result<history::Entry, String> {
-        Err("History is not kept here.".into())
+        Err(t!("history-not-kept-here"))
     }
 
     /// Removes the oldest entries beyond `keep` from every project's history (R-SET-6).
@@ -406,7 +454,7 @@ pub trait Host {
         _api: std::sync::Arc<std::sync::RwLock<tortuga_core::mock::MockApi>>,
         _on_hit: OnMockHit,
     ) -> Result<MockHandle, String> {
-        Err("The mock server needs the desktop app.".into())
+        Err(t!("mock-needs-desktop"))
     }
 
     /// Runs `task` in the background. The UI cancels it by dropping it (it is abortable).
@@ -415,6 +463,12 @@ pub trait Host {
     /// Whether the app looks for a new version here (R-SET-15): not in the web version.
     fn checks_for_updates(&self) -> bool {
         false
+    }
+
+    /// The operating system's language, like `da-DK`, for the UI's default language
+    /// (R-I18N-1); `None` when it isn't known.
+    fn os_language(&self) -> Option<String> {
+        None
     }
 
     /// Global settings (R-HTTP-8); missing settings give the defaults.
@@ -460,9 +514,11 @@ pub trait Host {
         false
     }
 
-    /// Asks where to save `contents` and writes them. `None` if the user cancelled.
+    /// Asks where to save `contents`, with `title` on the dialog, and writes them. `None`
+    /// if the user cancelled.
     fn save_file(
         &self,
+        _title: &str,
         _suggested_name: &str,
         _contents: &[u8],
     ) -> Option<Result<PathBuf, String>> {

@@ -7,6 +7,22 @@ use std::sync::Arc;
 use egui::{Context, Id, InputState, Key, KeyboardShortcut, ModifierNames, Modifiers};
 use tortuga_core::settings::{ScriptCommand, ScriptEditorSettings};
 
+/// What Settings and the menu call `command`.
+pub fn command_name(command: ScriptCommand) -> String {
+    match command {
+        ScriptCommand::ToggleComment => t!("command-toggle-comment"),
+        ScriptCommand::BlockComment => t!("command-block-comment"),
+        ScriptCommand::MoveLinesUp => t!("command-move-lines-up"),
+        ScriptCommand::MoveLinesDown => t!("command-move-lines-down"),
+        ScriptCommand::CopyLinesUp => t!("command-copy-lines-up"),
+        ScriptCommand::CopyLinesDown => t!("command-copy-lines-down"),
+        ScriptCommand::DeleteLines => t!("command-delete-lines"),
+        ScriptCommand::IndentLines => t!("command-indent-lines"),
+        ScriptCommand::OutdentLines => t!("command-outdent-lines"),
+        ScriptCommand::Beautify => t!("script-beautify"),
+    }
+}
+
 /// The keys in use and whether brackets are paired.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptKeys {
@@ -174,13 +190,13 @@ pub fn key_label(shortcut: KeyboardShortcut, mac: bool) -> String {
     if !text.is_empty() {
         text.push('+');
     }
-    text.push_str(match shortcut.logical_key {
-        Key::ArrowUp => "Up",
-        Key::ArrowDown => "Down",
-        Key::ArrowLeft => "Left",
-        Key::ArrowRight => "Right",
-        Key::Quote => "'",
-        key => key.symbol_or_name(),
+    text.push_str(&match shortcut.logical_key {
+        Key::ArrowUp => t!("key-up"),
+        Key::ArrowDown => t!("key-down"),
+        Key::ArrowLeft => t!("key-left"),
+        Key::ArrowRight => t!("key-right"),
+        Key::Quote => "'".to_owned(),
+        key => key.symbol_or_name().to_owned(),
     });
     text
 }
@@ -191,7 +207,7 @@ pub fn keys_label(keys: &ScriptKeys, command: ScriptCommand, mac: bool) -> Strin
         .into_iter()
         .map(|k| key_label(k, mac))
         .collect::<Vec<_>>()
-        .join(" or ")
+        .join(&t!("or-separator"))
 }
 
 #[cfg(test)]

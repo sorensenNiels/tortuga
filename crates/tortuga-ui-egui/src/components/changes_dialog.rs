@@ -24,7 +24,7 @@ impl ChangesDialog {
         resizable_dialog(
             ctx,
             "changes",
-            "What changed",
+            &t!("changes-title"),
             egui::vec2(720.0, 520.0),
             egui::vec2(480.0, 300.0),
             |ui| {
@@ -36,7 +36,7 @@ impl ChangesDialog {
                     .auto_shrink([false, false])
                     .show(ui, |ui| comparison(ui, &self.comparison));
                 ui.add_space(8.0);
-                if theme::button_row(ui, |ui| ui.button("Close").clicked()) {
+                if theme::button_row(ui, |ui| ui.button(t!("close")).clicked()) {
                     DialogResult::Close
                 } else {
                     DialogResult::Open
@@ -49,43 +49,45 @@ impl ChangesDialog {
 fn comparison(ui: &mut Ui, c: &Comparison) {
     let p = theme::palette(ui);
     if c.count() == 0 {
-        ui.label("Nothing changed: the same status, headers and body.");
+        ui.label(t!("changes-nothing"));
     }
     if let Some((before, after)) = c.status {
-        ui.label(RichText::new(format!("Status {before} → {after}")).color(p.redirect));
+        ui.label(
+            RichText::new(t!("changes-status", before = before, after = after)).color(p.redirect),
+        );
     }
     let ms = |ms: u64| format::elapsed(std::time::Duration::from_millis(ms));
     ui.label(
-        RichText::new(format!(
-            "Time {} → {} · Size {} → {}",
-            ms(c.elapsed_ms.0),
-            ms(c.elapsed_ms.1),
-            format::size(c.size.0),
-            format::size(c.size.1)
+        RichText::new(t!(
+            "changes-time-size",
+            time_before = ms(c.elapsed_ms.0),
+            time_after = ms(c.elapsed_ms.1),
+            size_before = format::size(c.size.0),
+            size_after = format::size(c.size.1)
         ))
         .color(p.muted),
     );
     if !c.headers.is_empty() {
         ui.add_space(8.0);
-        theme::section_label(ui, &format!("Headers ({})", c.headers.len()));
+        theme::section_label(ui, &t!("changes-headers", count = c.headers.len()));
         changes(ui, &c.headers);
     }
     ui.add_space(8.0);
     match &c.body {
-        BodyChanges::Same => theme::section_label(ui, "Body: the same"),
+        BodyChanges::Same => theme::section_label(ui, &t!("changes-body-same")),
         BodyChanges::Json {
             changes: list,
             more,
         } => {
-            theme::section_label(ui, &format!("Body ({})", list.len() + more));
+            theme::section_label(ui, &t!("changes-body", count = list.len() + more));
             changes(ui, list);
             if *more > 0 {
-                theme::hint(ui, format!("… and {more} more."));
+                theme::hint(ui, t!("changes-more", count = *more));
             }
         }
         BodyChanges::Lines { differ, first } => {
-            theme::section_label(ui, "Body");
-            ui.label(format!("{differ} lines differ, the first at line {first}."));
+            theme::section_label(ui, &t!("body"));
+            ui.label(t!("changes-lines-differ", count = *differ, first = *first));
         }
     }
 }

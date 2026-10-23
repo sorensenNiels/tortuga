@@ -178,29 +178,31 @@ impl DefaultsDialog {
                     || !self.description.trim().is_empty());
             self.tabs(ui, folder, inherited.is_some(), description);
             let file = match self.target {
-                DefaultsTarget::Folder(..) => "folder file (_folder.toml)",
-                DefaultsTarget::Project(_) => "project file (tortuga.toml)",
-                DefaultsTarget::Workspace if ws.file.is_some() => "workspace file",
-                DefaultsTarget::Workspace => "workspace (on this machine)",
+                DefaultsTarget::Folder(..) => t!("defaults-file-folder"),
+                DefaultsTarget::Project(_) => t!("defaults-file-project"),
+                DefaultsTarget::Workspace if ws.file.is_some() => t!("defaults-file-workspace"),
+                DefaultsTarget::Workspace => t!("defaults-file-workspace-local"),
             };
             match self.tab {
                 Tab::Headers => {
-                    key_value_table(ui, "default-headers", &mut self.headers, "Header", &vars);
+                    key_value_table(
+                        ui,
+                        "default-headers",
+                        &mut self.headers,
+                        &t!("header"),
+                        &vars,
+                    );
                 }
-                Tab::Auth => auth_tab(ui, &mut self.auth, &vars, file, folder, workspace),
+                Tab::Auth => auth_tab(ui, &mut self.auth, &vars, &file, folder, workspace),
                 Tab::Variables => {
                     key_value_table(
                         ui,
                         "default-variables",
                         &mut self.variables,
-                        "Variable",
+                        &t!("variable"),
                         &VarHelp::default(),
                     );
-                    theme::hint(
-                        ui,
-                        "Defaults for {{variables}} in this folder's requests. A value from the \
-                         active environment, or a secret value, wins over these.",
-                    );
+                    theme::hint(ui, t!("defaults-variables-hint"));
                 }
                 Tab::Description => {
                     description_editor(
@@ -229,9 +231,9 @@ impl DefaultsDialog {
             let (cancel, save) = ui
                 .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let save = ui
-                        .add_enabled(!read_only, theme::primary_button(ui, "Save"))
+                        .add_enabled(!read_only, theme::primary_button(ui, t!("save")))
                         .clicked();
-                    (ui.button("Cancel").clicked(), save)
+                    (ui.button(t!("cancel")).clicked(), save)
                 })
                 .inner;
             if save {
@@ -266,7 +268,7 @@ impl DefaultsDialog {
         let app = &state.settings.client;
         Some(match &self.target {
             DefaultsTarget::Workspace => (
-                format!("Workspace defaults — {}", ws.name),
+                t!("defaults-title-workspace", name = &ws.name),
                 false,
                 None,
                 Some(ResolvedSettings::resolve(&[], app)),
@@ -274,7 +276,7 @@ impl DefaultsDialog {
             DefaultsTarget::Project(root) => {
                 let c = state.collection(root)?;
                 (
-                    format!("Project defaults — {}", c.name()),
+                    t!("defaults-title-project", name = c.name()),
                     c.read_only,
                     Some(root.clone()),
                     Some(ResolvedSettings::resolve(
@@ -287,7 +289,7 @@ impl DefaultsDialog {
                 let c = state.collection(root)?;
                 let item = c.find(folder)?;
                 (
-                    format!("Folder defaults — {}", item.name()),
+                    t!("defaults-title-folder", name = item.name()),
                     c.read_only,
                     Some(root.clone()),
                     None,
@@ -301,15 +303,15 @@ impl DefaultsDialog {
         let variable_count = self.variables.iter().filter(|v| v.is_active()).count();
         let count = |n: usize| (n > 0).then(|| n.to_string());
         let mut tabs = vec![
-            (Tab::Headers, "Headers", count(header_count)),
+            (Tab::Headers, t!("headers"), count(header_count)),
             (
                 Tab::Auth,
-                "Auth",
+                t!("tab-auth"),
                 self.auth.is_some().then(|| "⏺".to_owned()),
             ),
         ];
         if folder {
-            tabs.push((Tab::Variables, "Variables", count(variable_count)));
+            tabs.push((Tab::Variables, t!("variables"), count(variable_count)));
         }
         if settings {
             let overrides = [
@@ -320,13 +322,13 @@ impl DefaultsDialog {
             .into_iter()
             .filter(|set| *set)
             .count();
-            tabs.push((Tab::Requests, "Requests", count(overrides)));
+            tabs.push((Tab::Requests, t!("import-row-requests"), count(overrides)));
         }
         if description {
             let written = !self.description.trim().is_empty();
             tabs.push((
                 Tab::Description,
-                "Description",
+                t!("defaults-description"),
                 written.then(|| "⏺".to_owned()),
             ));
         }
@@ -335,23 +337,11 @@ impl DefaultsDialog {
 }
 
 /// What the defaults of `target` are for.
-fn explanation(target: &DefaultsTarget) -> &'static str {
+fn explanation(target: &DefaultsTarget) -> String {
     match target {
-        DefaultsTarget::Folder(..) => {
-            "Every request in this folder and its subfolders inherits these, before the \
-             project's defaults. A request (or a subfolder) can replace a header by using the \
-             same name, and can choose its own auth."
-        }
-        DefaultsTarget::Project(_) => {
-            "Every request in this project inherits these, over the workspace's. A request can \
-             replace a header by adding one with the same name (or switch it off), and can \
-             choose its own auth."
-        }
-        DefaultsTarget::Workspace => {
-            "Every project in this workspace inherits these, below its own: a project, folder or \
-             request header with the same name replaces one of these, and their own auth wins. \
-             The scratch request doesn't use them."
-        }
+        DefaultsTarget::Folder(..) => t!("defaults-explain-folder"),
+        DefaultsTarget::Project(_) => t!("defaults-explain-project"),
+        DefaultsTarget::Workspace => t!("defaults-explain-workspace"),
     }
 }
 
@@ -368,17 +358,21 @@ fn requests_tab(
         .num_columns(2)
         .spacing([16.0, 10.0])
         .show(ui, |ui| {
-            let label = ui.label("Timeout (ms)");
+            let label = ui.label(t!("request-timeout"));
             let t = inherited.timeout_ms;
             let edit = TextEdit::singleline(timeout_text)
                 .id_salt("settings-timeout")
-                .hint_text(format!("{} (from {})", t.value, t.from.label()))
+                .hint_text(t!(
+                    "request-from-level",
+                    value = t.value,
+                    level = crate::format::level(t.from)
+                ))
                 .desired_width(200.0);
             if ui.add(edit).labelled_by(label.id).changed() {
                 settings.timeout_ms = parse_timeout(timeout_text);
             }
             ui.end_row();
-            let label = ui.label("Follow redirects");
+            let label = ui.label(t!("defaults-follow-redirects"));
             inherit_picker(
                 ui,
                 (label.id, "settings-redirects"),
@@ -386,7 +380,7 @@ fn requests_tab(
                 inherited.follow_redirects,
             );
             ui.end_row();
-            let label = ui.label("Send and store cookies");
+            let label = ui.label(t!("defaults-cookies"));
             inherit_picker(
                 ui,
                 (label.id, "settings-cookies"),
@@ -399,11 +393,9 @@ fn requests_tab(
     theme::hint(
         ui,
         if workspace {
-            "Empty or “Inherit” uses the app's settings. Projects can set their own, and a \
-             request can still set its own timeout and turn cookies off."
+            t!("defaults-requests-hint-workspace")
         } else {
-            "Empty or “Inherit” uses the workspace's value, else the app's settings. A request \
-             can still set its own timeout and turn cookies off."
+            t!("defaults-requests-hint-project")
         },
     );
 }
@@ -415,24 +407,29 @@ fn inherit_picker(
     value: &mut Option<bool>,
     inherited: Inherited<bool>,
 ) {
-    let on_off = |b: bool| if b { "on" } else { "off" };
-    let inherit = format!(
-        "Inherit: {} (from {})",
-        on_off(inherited.value),
-        inherited.from.label()
-    );
+    let inherit = if inherited.value {
+        t!(
+            "defaults-inherit-on",
+            level = crate::format::level(inherited.from)
+        )
+    } else {
+        t!(
+            "defaults-inherit-off",
+            level = crate::format::level(inherited.from)
+        )
+    };
     let shown = match value {
         None => inherit.clone(),
-        Some(true) => "On".to_owned(),
-        Some(false) => "Off".to_owned(),
+        Some(true) => t!("on"),
+        Some(false) => t!("off"),
     };
     ComboBox::from_id_salt(id.1)
         .selected_text(shown)
         .width(260.0)
         .show_ui(ui, |ui| {
             ui.selectable_value(value, None, inherit);
-            ui.selectable_value(value, Some(true), "On");
-            ui.selectable_value(value, Some(false), "Off");
+            ui.selectable_value(value, Some(true), t!("on"));
+            ui.selectable_value(value, Some(false), t!("off"));
         })
         .response
         .labelled_by(id.0);
@@ -448,25 +445,18 @@ fn auth_tab(
 ) {
     // A folder or project can inherit, or say "no auth" to stop what it would inherit
     // (R-HTTP-5, R-COL-11, R-SET-2). The workspace is the top: nothing to inherit.
-    kind_picker(ui, auth, (!workspace).then_some("Inherit"));
+    let inherit = t!("defaults-inherit");
+    kind_picker(ui, auth, (!workspace).then_some(inherit.as_str()));
     if workspace && *auth == Some(Auth::None) {
         *auth = None;
     }
     ui.add_space(6.0);
     let hint = match (auth.as_mut(), folder, workspace) {
-        (None, true, _) => {
-            "Requests in this folder use the auth of a parent folder, or of the project."
-        }
-        (None, false, false) => "Requests in this project use the workspace's auth, if it has one.",
-        (None, false, true) => "Requests send no authentication unless their project sets some.",
-        (Some(Auth::None), true, _) => {
-            "Requests in this folder send no authentication, whatever a parent folder or the \
-             project sets. A request can still choose its own."
-        }
-        (Some(Auth::None), false, _) => {
-            "Requests in this project send no authentication, even when the workspace sets \
-             some. A folder or request can still choose its own."
-        }
+        (None, true, _) => t!("defaults-auth-folder-inherits"),
+        (None, false, false) => t!("defaults-auth-project-inherits"),
+        (None, false, true) => t!("defaults-auth-workspace-none"),
+        (Some(Auth::None), true, _) => t!("defaults-auth-folder-none"),
+        (Some(Auth::None), false, _) => t!("defaults-auth-project-none"),
         (Some(a), ..) => {
             auth_fields(ui, "default-auth", a, vars, file);
             return;

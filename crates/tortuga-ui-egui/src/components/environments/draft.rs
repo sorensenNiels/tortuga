@@ -119,7 +119,7 @@ impl Draft {
     }
 
     pub fn add_environment(&mut self) {
-        let name = format!("Environment {}", self.environments.len() + 1);
+        let name = t!("env-default-name", number = self.environments.len() + 1);
         self.environments.push(EnvColumn {
             id: None,
             name,
@@ -195,13 +195,10 @@ impl Draft {
         let mut seen = BTreeSet::new();
         for e in &self.environments {
             if e.name.trim().is_empty() {
-                return Err("Every environment needs a name.".into());
+                return Err(t!("env-needs-name"));
             }
             if !seen.insert(e.name.trim().to_lowercase()) {
-                return Err(format!(
-                    "There are two environments called “{}”.",
-                    e.name.trim()
-                ));
+                return Err(t!("env-duplicate", name = e.name.trim()));
             }
         }
 
@@ -227,10 +224,10 @@ impl Draft {
         for v in &vars {
             let name = v.name.trim();
             if name.contains(['{', '}']) {
-                return Err(format!("Variable names cannot contain braces: “{name}”."));
+                return Err(t!("env-variable-braces", name = name));
             }
             if !var_seen.insert(name) {
-                return Err(format!("There are two variables called “{name}”."));
+                return Err(t!("env-variable-duplicate", name = name));
             }
         }
         let (secret_vars, vars): (Vec<&VarRow>, Vec<&VarRow>) =
@@ -433,10 +430,10 @@ pub fn to_environments(
     for d in drafts {
         let name = d.name.trim();
         if name.is_empty() {
-            return Err("Every environment needs a name.".into());
+            return Err(t!("env-needs-name"));
         }
         if out.iter().any(|e| e.is_named(name)) {
-            return Err(format!("There are two environments called “{name}”."));
+            return Err(t!("env-duplicate", name = name));
         }
         let mut env = WorkspaceEnvironment {
             id: d
@@ -454,7 +451,7 @@ pub fn to_environments(
                 continue;
             }
             if env.servers.keys().any(|s| names_match(s, server)) {
-                return Err(format!("“{name}” names the server “{server}” twice."));
+                return Err(t!("env-server-twice", env = name, server = server));
             }
             env.servers.insert(server.to_owned(), url.trim().to_owned());
         }
@@ -463,10 +460,10 @@ pub fn to_environments(
         for v in d.variables.iter().filter(|v| !v.name.trim().is_empty()) {
             let var = v.name.trim();
             if var.contains(['{', '}']) {
-                return Err(format!("Variable names cannot contain braces: “{var}”."));
+                return Err(t!("env-variable-braces", name = var));
             }
             if !seen.insert(var) {
-                return Err(format!("“{name}” has two variables called “{var}”."));
+                return Err(t!("env-variable-duplicate-in", env = name, name = var));
             }
             if v.secret {
                 env.secrets.insert(var.to_owned());

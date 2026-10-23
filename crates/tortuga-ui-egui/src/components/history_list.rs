@@ -62,24 +62,24 @@ fn compare_menu(
     let mut action = None;
     response.context_menu(|ui| {
         if row.summary.status.is_none() {
-            ui.label("No response to compare");
+            ui.label(t!("history-no-response-to-compare"));
             return;
         }
-        if ui.button("Compare with the send before").clicked() {
+        if ui.button(t!("history-compare-before")).clicked() {
             action = Some(HistoryAction::CompareWithBefore {
                 root: root.clone(),
                 id: id.clone(),
             });
         }
         if cx.selected_for_comparing.is_some_and(|s| s != id)
-            && ui.button("Compare with the selected one").clicked()
+            && ui.button(t!("history-compare-selected")).clicked()
         {
             action = Some(HistoryAction::CompareWithSelected {
                 root: root.clone(),
                 id: id.clone(),
             });
         }
-        if ui.button("Select for comparing").clicked() {
+        if ui.button(t!("history-select-for-compare")).clicked() {
             action = Some(HistoryAction::SelectForComparing {
                 root: root.clone(),
                 id: id.clone(),
@@ -117,16 +117,19 @@ pub fn history_list(
             ui.add(
                 TextEdit::singleline(filter)
                     .id_salt("history-filter")
-                    .hint_text("Filter history")
+                    .hint_text(t!("history-filter"))
                     .desired_width(ui.available_width()),
             )
-            .on_hover_text("Search by name, URL, status, project or environment");
+            .on_hover_text(t!("history-filter-hint"));
         },
         |ui| {
             if !cx.places.is_empty() {
-                ui.menu_button("Clear", |ui| {
+                ui.menu_button(t!("clear"), |ui| {
                     for (root, name) in cx.places {
-                        if ui.button(format!("Clear {name}")).clicked() {
+                        if ui
+                            .button(t!("history-clear-one", name = name.as_str()))
+                            .clicked()
+                        {
                             action = Some(HistoryAction::Clear(ClearHistory::One(
                                 root.clone(),
                                 name.clone(),
@@ -134,12 +137,12 @@ pub fn history_list(
                         }
                     }
                     ui.separator();
-                    if ui.button("Clear all history").clicked() {
+                    if ui.button(t!("history-clear-all")).clicked() {
                         action = Some(HistoryAction::Clear(ClearHistory::All));
                     }
                 })
                 .response
-                .on_hover_text("Remove history kept on this computer");
+                .on_hover_text(t!("history-clear-hint"));
             }
         },
     );
@@ -155,9 +158,9 @@ pub fn history_list(
         theme::hint(
             ui,
             if rows.is_empty() {
-                "Requests you send appear here. History stays on this computer."
+                t!("history-empty")
             } else {
-                "Nothing in the history matches."
+                t!("history-no-match")
             },
         );
         return action;
@@ -191,7 +194,7 @@ pub fn history_list(
                 }
             }
             if shown.len() == MAX_ROWS {
-                theme::hint(ui, "Older entries: use the filter to find them.");
+                theme::hint(ui, t!("history-older"));
             }
         });
     action
@@ -228,7 +231,7 @@ fn history_row(
         Some(code @ 200..=299) => (code.to_string(), p.ok),
         Some(code @ 300..=399) => (code.to_string(), p.redirect),
         Some(code) => (code.to_string(), p.fail),
-        None => ("Error".to_owned(), p.fail),
+        None => (t!("error"), p.fail),
     };
     let atoms = [
         Atom::from(

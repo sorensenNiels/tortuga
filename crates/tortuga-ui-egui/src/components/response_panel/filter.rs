@@ -46,14 +46,11 @@ impl Syntax {
         }
     }
 
-    pub(super) fn filter_help(self) -> &'static str {
+    pub(super) fn filter_help(self) -> String {
         match self {
-            Self::Json => "JSONPath: $.name, [0], [-1], [1:3], [*], ..name, [?(@.price < 10)]",
-            Self::Xml => {
-                "XPath: /a/b, //name, *, @id, text(), .., [1], [last()], [@id='7'], [price < 10]. \
-                 A name without a prefix matches any prefix."
-            }
-            Self::Plain => "",
+            Self::Json => t!("filter-help-json"),
+            Self::Xml => t!("filter-help-xml"),
+            Self::Plain => String::new(),
         }
     }
 }
@@ -103,20 +100,16 @@ impl ResponseView {
 pub fn filter_body(view: &ResponseView, expr: &str) -> Result<TextBody, String> {
     match view.syntax() {
         Syntax::Json => {
-            let value = view
-                .json()
-                .ok_or_else(|| "The body is not valid JSON.".to_owned())?;
+            let value = view.json().ok_or_else(|| t!("filter-not-json"))?;
             let found = jsonpath::query(expr, value).map_err(|e| format::sentence(&e))?;
             let text = serde_json::to_string_pretty(&found).map_err(|e| e.to_string())?;
             Ok(shown(text, Syntax::Json))
         }
         Syntax::Xml => {
-            let doc = view
-                .xml()
-                .ok_or_else(|| "The body is not valid XML.".to_owned())?;
+            let doc = view.xml().ok_or_else(|| t!("filter-not-xml"))?;
             let text = xpath::query(expr, doc).map_err(|e| format::sentence(&e))?;
             Ok(shown(text, Syntax::Xml))
         }
-        Syntax::Plain => Err("Only JSON and XML bodies can be filtered.".to_owned()),
+        Syntax::Plain => Err(t!("filter-only-json-xml")),
     }
 }

@@ -456,20 +456,20 @@ pub fn badge(ui: &mut Ui, text: impl Into<String>, color: Color32) -> Response {
 // ---------------------------------------------------------------- tabs
 
 /// Underlined tabs on a full-width rule. `items` are (value, label, optional badge such as a count).
-pub fn tabs<T: PartialEq + Copy>(
+pub fn tabs<T: PartialEq + Copy, S: AsRef<str>>(
     ui: &mut Ui,
     current: &mut T,
-    items: &[(T, &str, Option<String>)],
+    items: &[(T, S, Option<String>)],
 ) {
     tabs_flagged(ui, current, items, &[]);
 }
 
 /// [`tabs`], with the label and badge of the tabs in `failing` in the failure colour
 /// (e.g. Tests when a test failed).
-pub fn tabs_flagged<T: PartialEq + Copy>(
+pub fn tabs_flagged<T: PartialEq + Copy, S: AsRef<str>>(
     ui: &mut Ui,
     current: &mut T,
-    items: &[(T, &str, Option<String>)],
+    items: &[(T, S, Option<String>)],
     failing: &[T],
 ) {
     let p = palette(ui);
@@ -485,7 +485,8 @@ pub fn tabs_flagged<T: PartialEq + Copy>(
                 (false, false) => p.muted,
             };
             // One real button per tab, so clicks work everywhere (also inside dialogs).
-            let mut atoms = vec![egui::Atom::from(semibold(*label).color(color))];
+            let label = label.as_ref();
+            let mut atoms = vec![egui::Atom::from(semibold(label).color(color))];
             if let Some(b) = badge {
                 let c = match (failed, selected) {
                     (true, _) => p.fail,
@@ -498,7 +499,7 @@ pub fn tabs_flagged<T: PartialEq + Copy>(
             let response = ui.add(egui::Button::new(atoms).frame(false).gap(5.0));
             let name = match badge {
                 Some(b) => format!("{label} ({b})"),
-                None => (*label).to_owned(),
+                None => label.to_owned(),
             };
             response.widget_info(|| WidgetInfo::selected(Role::Tab, true, selected, &name));
             if selected {

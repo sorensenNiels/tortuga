@@ -298,15 +298,16 @@ pub fn sidebar(
         ui,
         |ui| {
             if heading {
-                theme::section_label(ui, "Projects");
+                theme::section_label(ui, &t!("sidebar-projects"));
             }
         },
         |ui| {
             if state.host.can_pick_folders() {
-                let (response, inner) =
-                    egui::containers::menu::MenuButton::from_button(theme::ghost_button("+ Add"))
-                        .ui(ui, |ui| add_menu(ui, &state.settings.importers));
-                response.on_hover_text("Add a project to this workspace");
+                let (response, inner) = egui::containers::menu::MenuButton::from_button(
+                    theme::ghost_button(t!("sidebar-add")),
+                )
+                .ui(ui, |ui| add_menu(ui, &state.settings.importers));
+                response.on_hover_text(t!("sidebar-add-hint"));
                 tree.actions.extend(inner.and_then(|i| i.inner));
             }
         },
@@ -323,8 +324,10 @@ pub fn sidebar(
                 let collapsed = match shared {
                     Some(repo) => {
                         let git = state.git.get(&members[0].root);
-                        ui.push_id(repo, |ui| repository_row(ui, repo, git, &members, &mut tree))
-                            .inner
+                        ui.push_id(repo, |ui| {
+                            repository_row(ui, repo, git, &members, &mut tree)
+                        })
+                        .inner
                     }
                     None => false,
                 };
@@ -336,20 +339,25 @@ pub fn sidebar(
                         tree.git = state.git.get(&c.root);
                         tree.show_branch = shared.is_none();
                         tree.mock_port = state.mocks.port(&c.root);
-                        collection(ui, c, state.cookie_jar(Some(&c.root)).len(), depth, &mut tree);
+                        collection(
+                            ui,
+                            c,
+                            state.cookie_jar(Some(&c.root)).len(),
+                            depth,
+                            &mut tree,
+                        );
                     });
                 }
             }
             for (project, reason) in &state.missing {
-                ui.push_id(&project.path, |ui| missing_row(ui, project, reason, &mut tree));
+                ui.push_id(&project.path, |ui| {
+                    missing_row(ui, project, reason, &mut tree);
+                });
             }
             drag_label(ui);
             if state.collections.is_empty() && state.missing.is_empty() {
                 ui.add_space(4.0);
-                theme::hint(
-                    ui,
-                    "Add a project to start. Projects are plain files you can commit to git, next to your code.",
-                );
+                theme::hint(ui, t!("sidebar-empty"));
             }
         });
 
@@ -363,12 +371,12 @@ fn scratch_row(ui: &mut Ui, scratch_selected: bool, tree: &mut Tree<'_>) {
         .add(
             Button::selectable(
                 scratch_selected,
-                (Atom::from("✏"), Atom::from("Scratch request")),
+                (Atom::from("✏"), Atom::from(t!("scratch-request"))),
             )
             .min_size(full)
             .frame_when_inactive(scratch_selected),
         )
-        .on_hover_text("A request that is not saved anywhere, for quick one-off calls");
+        .on_hover_text(t!("scratch-request-hint"));
     if scratch.double_clicked() {
         tree.actions.push(SidebarAction::Keep(None));
     } else if scratch.clicked() {
@@ -380,7 +388,11 @@ fn scratch_row(ui: &mut Ui, scratch_selected: bool, tree: &mut Tree<'_>) {
 fn project_marks(ui: &Ui, tree: &Tree<'_>) -> Vec<Atom<'static>> {
     let p = theme::palette(ui);
     tree.mock_port
-        .map(|port| RichText::new(format!("mock :{port}")).small().color(p.ok))
+        .map(|port| {
+            RichText::new(t!("sidebar-mock-port", port = port))
+                .small()
+                .color(p.ok)
+        })
         .into_iter()
         .map(Atom::from)
         .collect()
@@ -410,7 +422,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
         }
         atoms.push(Atom::from(theme::semibold(c.name())).atom_shrink(true));
         if read_only {
-            atoms.push(Atom::from(RichText::new("read-only").small().weak()));
+            atoms.push(Atom::from(RichText::new(t!("read-only")).small().weak()));
         }
         // R-GIT-12: the current branch (shown on the repository row when projects share one).
         let branch = tree
@@ -435,7 +447,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
             hover = format!("{summary}\n{hover}");
         }
         if let Some(branch) = branch {
-            hover = format!("{hover}\nGit branch: {branch}");
+            hover = format!("{hover}\n{}", t!("git-branch", branch = branch.as_str()));
         }
         let row = row.on_hover_text(hover);
         if row.clicked() {
@@ -483,7 +495,7 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
     let collapsed = tree.st.collapsed.contains(&group);
     let atoms = [
         Atom::from(twisty(collapsed)),
-        Atom::from(theme::semibold("Workflows")),
+        Atom::from(theme::semibold(t!("sidebar-workflows"))),
         Atom::from(
             RichText::new(c.workflows.len().to_string())
                 .small()
@@ -492,10 +504,7 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
         Atom::grow(),
     ];
     let (row, ()) = tree_row(ui, depth, false, atoms, |_| {});
-    if row
-        .on_hover_text("Requests run one after the other, with checks (R-FLOW-1)")
-        .clicked()
-    {
+    if row.on_hover_text(t!("sidebar-workflows-hint")).clicked() {
         tree.st.toggle(&group);
     }
     if collapsed {
@@ -512,7 +521,7 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
             Atom::from(RichText::new("⏵").size(10.5).color(p.accent)),
             Atom::from(w.name.clone()).atom_shrink(true),
             Atom::from(
-                RichText::new(crate::format::count(w.steps.len(), "step"))
+                RichText::new(t!("sidebar-workflow-steps", count = w.steps.len()))
                     .small()
                     .color(p.muted),
             ),
@@ -524,17 +533,17 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
         let read_only = c.read_only;
         let menu = |ui: &mut Ui| {
             let mut choice = None;
-            if ui.button("Run").clicked() {
+            if ui.button(t!("workflow-run")).clicked() {
                 choice = Some(MenuChoice::Action(SidebarAction::RunWorkflow(key.clone())));
             }
-            if !read_only && ui.button("Rename…").clicked() {
+            if !read_only && ui.button(t!("rename-ellipsis")).clicked() {
                 choice = Some(MenuChoice::Action(SidebarAction::RenameWorkflow(
                     key.clone(),
                 )));
             }
             if !read_only
                 && ui
-                    .button(RichText::new("Delete…").color(theme::palette(ui).fail))
+                    .button(RichText::new(t!("delete-ellipsis")).color(theme::palette(ui).fail))
                     .clicked()
             {
                 choice = Some(MenuChoice::Action(SidebarAction::DeleteWorkflow(
@@ -549,7 +558,7 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
             })
             .inner;
         let row = if dirty {
-            row.on_hover_text("Unsaved changes")
+            row.on_hover_text(t!("unsaved-changes"))
         } else {
             row
         };
@@ -600,13 +609,13 @@ fn repository_row(
     }
     atoms.push(Atom::grow());
     let (row, ()) = tree_row(ui, 0, false, atoms, |_| {});
-    let mut hover = format!(
-        "Git repository {}\n{} projects in this workspace",
-        repo.display(),
-        members.len()
+    let mut hover = t!(
+        "sidebar-repository-hint",
+        path = repo.display().to_string(),
+        count = members.len()
     );
     if let Some(branch) = branch {
-        hover = format!("{hover}\nGit branch: {branch}");
+        hover = format!("{hover}\n{}", t!("git-branch", branch = branch.as_str()));
     }
     if row.on_hover_text(hover).clicked() {
         tree.st.toggle(&key);
@@ -657,9 +666,7 @@ fn deleted_row(ui: &mut Ui, path: &Path, depth: usize) {
         git_marker(ui, FileStatus::Deleted),
     ];
     let (row, ()) = tree_row(ui, depth, false, atoms, |_| {});
-    row.on_hover_text(
-        "Deleted since the last commit. Commit the deletion, or restore the file with git.",
-    );
+    row.on_hover_text(t!("sidebar-deleted-in-git"));
 }
 
 /// The one-letter git marker of a row (R-GIT-12).
@@ -684,14 +691,14 @@ fn row_hover(
 ) -> Option<String> {
     // The first line of its description (R-COL-22), then what needs attention.
     let summary = crate::format::summary_line(description);
-    let mut hover: Vec<&str> = summary.as_deref().into_iter().collect();
+    let mut hover: Vec<String> = summary.into_iter().collect();
     if let Some(err) = folder_error {
-        hover.push(err);
+        hover.push(err.clone());
     }
     if conflict {
-        hover.push("Changed on disk while you had unsaved edits: open it to choose");
+        hover.push(t!("sidebar-conflict-hint"));
     } else if dirty {
-        hover.push("Unsaved changes");
+        hover.push(t!("unsaved-changes"));
     }
     if let Some(status) = git_status {
         hover.push(git_description(status));
@@ -699,12 +706,12 @@ fn row_hover(
     (!hover.is_empty()).then(|| hover.join("\n"))
 }
 
-fn git_description(status: FileStatus) -> &'static str {
+fn git_description(status: FileStatus) -> String {
     match status {
-        FileStatus::Modified => "Git: modified since the last commit",
-        FileStatus::New => "Git: new, not committed yet",
-        FileStatus::Deleted => "Git: deleted",
-        FileStatus::Conflicted => "Git: merge conflict — fix it, then commit",
+        FileStatus::Modified => t!("git-modified"),
+        FileStatus::New => t!("git-new"),
+        FileStatus::Deleted => t!("git-deleted"),
+        FileStatus::Conflicted => t!("git-conflicted"),
     }
 }
 

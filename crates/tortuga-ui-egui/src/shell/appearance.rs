@@ -1,6 +1,6 @@
-//! The theme, text size, density and code font (R-SET-4, R-SET-5, R-SET-10): given to
-//! egui when the settings change, and a text size changed with Ctrl+= / Ctrl+- / Ctrl+0
-//! (egui's zoom keys) is saved.
+//! The theme, text size, density, code font and language (R-SET-4, R-SET-5, R-SET-10,
+//! R-I18N-1): given to egui when the settings change, and a text size changed with
+//! Ctrl+= / Ctrl+- / Ctrl+0 (egui's zoom keys) is saved.
 
 use std::path::Path;
 
@@ -8,6 +8,7 @@ use tortuga_core::settings::{Appearance, Theme, check_font_file};
 
 use super::TortugaUi;
 use crate::host::Host;
+use crate::i18n;
 use crate::theme;
 
 impl TortugaUi {
@@ -28,6 +29,8 @@ impl TortugaUi {
         }
         let wanted = self.state.settings.appearance.clone();
         let applied = self.applied_appearance.take();
+        let os_language = self.state.host.os_language();
+        i18n::set(i18n::resolve(wanted.language, os_language.as_deref()));
         ctx.set_theme(match wanted.theme {
             Theme::System => egui::ThemePreference::System,
             Theme::Light => egui::ThemePreference::Light,
@@ -47,9 +50,7 @@ impl TortugaUi {
             let bytes = wanted.code_font.as_deref().and_then(|path| {
                 read_font(self.state.host.as_ref(), path)
                     .map_err(|e| {
-                        self.state.notify(format!(
-                            "The code font can't be used, so the bundled one is: {e}"
-                        ));
+                        self.state.notify(t!("code-font-fallback", error = e));
                     })
                     .ok()
             });
@@ -62,7 +63,7 @@ impl TortugaUi {
 /// The bytes of the font file at `path`, if it is one (R-SET-10).
 pub(super) fn read_font(host: &dyn Host, path: &Path) -> Result<Vec<u8>, String> {
     let Some(reader) = host.file_reader() else {
-        return Err("fonts can't be read from files here".to_owned());
+        return Err(t!("code-font-no-files"));
     };
     let bytes = (reader.0)(path).map_err(|e| format!("{}: {e}", path.display()))?;
     check_font_file(path, &bytes).map_err(|e| e.to_string())?;
@@ -109,6 +110,41 @@ mod tests {
             (ctx.zoom_factor() - 1.5).abs() < 1e-6,
             "changed in Settings"
         );
+    }
+
+    /// R-I18N-1, R-I18N-2: the UI follows the OS's language unless one is chosen in
+    /// Settings, and changes at once when the setting does.
+    #[test]
+    fn the_ui_is_shown_in_the_chosen_language() {
+        use egui_kittest::kittest::Queryable;
+        use tortuga_core::settings::Language;
+
+        let host = TestHost {
+            os_language: Some("da-DK".into()),
+            ..TestHost::default()
+        };
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(TortugaUi::new(Box::new(host))));
+        let shared = std::rc::Rc::clone(&ui);
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+        harness.get_by_label("Kladdeanmodning");
+        harness.get_by_label("Send en anmodning for at se svaret her.");
+
+        ui.borrow_mut()
+            .state
+            .update_settings(|s| s.appearance.language = Language::English);
+        harness.run();
+        harness.run();
+        harness.get_by_label("Scratch request");
+        assert!(harness.query_by_label("Kladdeanmodning").is_none());
+
+        ui.borrow_mut()
+            .state
+            .update_settings(|s| s.appearance.language = Language::Danish);
+        harness.run();
+        harness.run();
+        harness.get_by_label("Kladdeanmodning");
+        crate::i18n::set(Language::English);
     }
 
     /// R-SET-10: density and code size reach egui's style; a code font file is

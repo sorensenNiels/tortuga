@@ -28,7 +28,7 @@ pub(super) fn drag_handle<P: Clone + Send + Sync + 'static>(
         ui.label(egui::RichText::new("☰").color(theme::palette(ui).muted))
     })
     .response
-    .on_hover_text("Drag to change the order");
+    .on_hover_text(t!("drag-to-reorder"));
 }
 
 /// Makes the list row `zone` a drop target for `P`. Returns the dragged index if dropped
@@ -78,7 +78,7 @@ pub(super) fn defaults_view(
     let names = name_width(total);
     let values = (total - names - ui.spacing().item_spacing.x).max(120.0);
 
-    theme::section_label(ui, "Servers");
+    theme::section_label(ui, &t!("servers"));
     let mut remove = None;
     let mut move_server = None;
     Grid::new("default-servers").num_columns(1).show(ui, |ui| {
@@ -92,7 +92,7 @@ pub(super) fn defaults_view(
                 );
                 if ui
                     .add(theme::icon_button(ui, "🗙"))
-                    .on_hover_text("Remove this server from every environment")
+                    .on_hover_text(t!("env-remove-server-everywhere"))
                     .clicked()
                 {
                     remove = Some(row);
@@ -117,8 +117,8 @@ pub(super) fn defaults_view(
     Grid::new("default-variables")
         .num_columns(2)
         .show(ui, |ui| {
-            theme::section_label(ui, "Variables");
-            theme::section_label(ui, "Default");
+            theme::section_label(ui, &t!("variables"));
+            theme::section_label(ui, &t!("default"));
             ui.end_row();
             for (row, v) in d.variables.iter_mut().enumerate() {
                 if variable_row::name_cell(
@@ -137,7 +137,11 @@ pub(super) fn defaults_view(
                     TextEdit::singleline(&mut v.default)
                         .id_salt(("default", row))
                         .password(v.secret)
-                        .hint_text(if v.secret { "not set" } else { "" })
+                        .hint_text(if v.secret {
+                            t!("not-set")
+                        } else {
+                            String::new()
+                        })
                         .font(egui::TextStyle::Monospace),
                 );
                 ui.end_row();
@@ -189,14 +193,14 @@ impl Inherited {
     /// The placeholder of a variable's empty value: what it inherits.
     pub(super) fn variable_hint(&self, v: &super::draft::VarRow) -> String {
         if self.secrets.contains(&v.name) {
-            return "workspace secret".to_owned();
+            return t!("env-workspace-secret");
         }
         if let Some(value) = self.variables.get(&v.name) {
             return value.clone();
         }
         match (v.secret, v.default.is_empty()) {
-            (true, true) => "not set".to_owned(),
-            (true, false) => "default".to_owned(),
+            (true, true) => t!("not-set"),
+            (true, false) => t!("env-default-hint"),
             (false, _) => v.default.clone(),
         }
     }
@@ -219,11 +223,11 @@ pub(super) fn project_values(
     Grid::new(("env-servers", col))
         .num_columns(2)
         .show(ui, |ui| {
-            theme::section_label(ui, "Servers");
-            theme::section_label(ui, "Base URL");
+            theme::section_label(ui, &t!("servers"));
+            theme::section_label(ui, &t!("base-url"));
             ui.end_row();
             for (row, s) in d.servers.iter_mut().enumerate() {
-                if name_label(ui, names, &s.name, false, REMOVE_SERVER) {
+                if name_label(ui, names, &s.name, false, &t!("env-remove-server")) {
                     remove_server = Some(row);
                 }
                 let hint = inherited.server(&s.name).unwrap_or("https://…").to_owned();
@@ -249,11 +253,11 @@ pub(super) fn project_values(
     Grid::new(("env-variables", col))
         .num_columns(2)
         .show(ui, |ui| {
-            theme::section_label(ui, "Variables");
-            theme::section_label(ui, "Value");
+            theme::section_label(ui, &t!("variables"));
+            theme::section_label(ui, &t!("value"));
             ui.end_row();
             for (row, v) in d.variables.iter_mut().enumerate() {
-                if name_label(ui, names, &v.name, v.secret, REMOVE_VARIABLE) {
+                if name_label(ui, names, &v.name, v.secret, &t!("env-remove-variable")) {
                     remove_variable = Some(row);
                 }
                 // Secret values are masked; a placeholder never shows a secret value.
@@ -281,23 +285,34 @@ pub(super) fn project_values(
 /// Width of the name column in the workspace's tables.
 const NAME_WIDTH: f32 = 200.0;
 
-/// Hover texts of the remove buttons in an environment's tables.
-const REMOVE_SERVER: &str = "Remove this server from the project, in every environment";
-const REMOVE_VARIABLE: &str = "Remove this variable from the project, in every environment";
+/// What a colour is called (R-SRV-8).
+fn color_name(color: EnvironmentColor) -> String {
+    match color {
+        EnvironmentColor::Green => t!("color-green"),
+        EnvironmentColor::Teal => t!("color-teal"),
+        EnvironmentColor::Blue => t!("color-blue"),
+        EnvironmentColor::Purple => t!("color-purple"),
+        EnvironmentColor::Pink => t!("color-pink"),
+        EnvironmentColor::Red => t!("color-red"),
+        EnvironmentColor::Orange => t!("color-orange"),
+        EnvironmentColor::Yellow => t!("color-yellow"),
+        EnvironmentColor::Grey => t!("color-grey"),
+    }
+}
 
 /// The colours an environment's dot can have, the default first (R-SRV-8).
 pub(super) fn color_choice(ui: &mut Ui, color: &mut Option<EnvironmentColor>) {
     let choices = std::iter::once(None).chain(EnvironmentColor::ALL.into_iter().map(Some));
     for choice in choices {
-        let label = choice.map_or("Default", EnvironmentColor::label);
+        let label = choice.map_or_else(|| t!("default"), color_name);
         let button = egui::Button::selectable(
             *color == choice,
             theme::environment_dot(ui, choice).size(14.0),
         );
-        let response = ui.add(button).on_hover_text(label);
+        let response = ui.add(button).on_hover_text(&label);
         // Named for screen readers (and tests): every swatch shows the same "⏺".
         response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::Role::RadioButton, true, *color == choice, label)
+            egui::WidgetInfo::selected(egui::Role::RadioButton, true, *color == choice, &label)
         });
         if response.clicked() {
             *color = choice;
@@ -339,39 +354,28 @@ fn name_label(ui: &mut Ui, width: f32, name: &str, secret: bool, remove_help: &s
 }
 
 fn add_server_row(ui: &mut Ui, d: &mut Draft, width: f32, new_server: &mut String) {
-    if let Some(name) = new_row_input(
-        ui,
-        "new-server",
-        width,
-        new_server,
-        "Add server (press Enter)…",
-    ) {
+    if let Some(name) = new_row_input(ui, "new-server", width, new_server, &t!("add-server")) {
         d.add_server(name);
     }
     ui.end_row();
 }
 
 fn add_variable_row(ui: &mut Ui, d: &mut Draft, width: f32, new_variable: &mut String) {
-    if let Some(name) = new_row_input(
-        ui,
-        "new-variable",
-        width,
-        new_variable,
-        "Add variable (press Enter)…",
-    ) {
+    if let Some(name) = new_row_input(ui, "new-variable", width, new_variable, &t!("add-variable"))
+    {
         d.add_variable(name);
     }
     ui.end_row();
 }
 
 const SECRET_HELP: SecretHelp = SecretHelp {
-    secret: "Secret: values stay on this machine. Click to share them through the project files.",
-    shared: "Shared through the project files. Click to make it secret (values stay on this machine).",
+    secret: || t!("secret-help-project-secret"),
+    shared: || t!("secret-help-project-shared"),
 };
 
 const SHARED_SECRET_HELP: SecretHelp = SecretHelp {
-    secret: "Secret: the value stays on this machine. Click to share it.",
-    shared: "Shared with the workspace. Click to make it secret (the value stays on this machine).",
+    secret: || t!("secret-help-workspace-secret"),
+    shared: || t!("secret-help-workspace-shared"),
 };
 
 /// The workspace's base URLs by server name: every project's server of that name uses it.
@@ -383,8 +387,8 @@ pub(super) fn shared_servers(
 ) {
     let mut remove = None;
     Grid::new("ws-env-servers").num_columns(2).show(ui, |ui| {
-        theme::section_label(ui, "Servers");
-        theme::section_label(ui, "Base URL");
+        theme::section_label(ui, &t!("servers"));
+        theme::section_label(ui, &t!("base-url"));
         ui.end_row();
         for (row, (name, url)) in d.servers.iter_mut().enumerate() {
             ui.horizontal(|ui| {
@@ -393,11 +397,11 @@ pub(super) fn shared_servers(
                     NAME_WIDTH - 30.0,
                     TextEdit::singleline(name)
                         .id_salt(("ws-server", row))
-                        .hint_text("server name"),
+                        .hint_text(t!("env-server-name-hint")),
                 );
                 if ui
                     .add(theme::icon_button(ui, "🗙"))
-                    .on_hover_text("Remove this server's URL")
+                    .on_hover_text(t!("env-remove-server-url"))
                     .clicked()
                 {
                     remove = Some(row);
@@ -418,7 +422,7 @@ pub(super) fn shared_servers(
             "ws-new-server",
             NAME_WIDTH,
             new_server,
-            "Add server (press Enter)…",
+            &t!("add-server"),
         ) {
             d.servers.push((name, String::new()));
         }
@@ -433,11 +437,11 @@ pub(super) fn shared_servers(
         .map(String::as_str)
         .collect();
     let hint = if missing.is_empty() {
-        "Each URL goes to every project's server of that name.".to_owned()
+        t!("env-shared-servers-hint")
     } else {
-        format!(
-            "Each URL goes to every project's server of that name. Servers in the projects: {}.",
-            missing.join(", ")
+        t!(
+            "env-shared-servers-hint-missing",
+            servers = missing.join(", ")
         )
     };
     theme::hint(ui, hint);
@@ -447,8 +451,8 @@ pub(super) fn shared_servers(
 pub(super) fn shared_variables(ui: &mut Ui, d: &mut EnvDraft, new_variable: &mut String) {
     let mut remove = None;
     Grid::new("ws-env-variables").num_columns(2).show(ui, |ui| {
-        theme::section_label(ui, "Variables");
-        theme::section_label(ui, "Value");
+        theme::section_label(ui, &t!("variables"));
+        theme::section_label(ui, &t!("value"));
         ui.end_row();
         for (row, v) in d.variables.iter_mut().enumerate() {
             if variable_row::name_cell(
@@ -467,7 +471,11 @@ pub(super) fn shared_variables(ui: &mut Ui, d: &mut EnvDraft, new_variable: &mut
                 TextEdit::singleline(&mut v.value)
                     .id_salt(("ws-env-value", row))
                     .password(v.secret)
-                    .hint_text(if v.secret { "not set" } else { "" })
+                    .hint_text(if v.secret {
+                        t!("not-set")
+                    } else {
+                        String::new()
+                    })
                     .font(egui::TextStyle::Monospace),
             );
             ui.end_row();
@@ -477,7 +485,7 @@ pub(super) fn shared_variables(ui: &mut Ui, d: &mut EnvDraft, new_variable: &mut
             "ws-env-new-variable",
             NAME_WIDTH,
             new_variable,
-            "Add variable (press Enter)…",
+            &t!("add-variable"),
         ) {
             d.variables.push(VarDraft {
                 name,

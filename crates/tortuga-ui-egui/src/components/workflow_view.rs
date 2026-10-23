@@ -190,37 +190,40 @@ pub fn workflow_editor(
     let mut action = header(ui, workflow, cx);
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut workflow.continue_on_failure, "Continue after a failed step");
+        ui.checkbox(
+            &mut workflow.continue_on_failure,
+            t!("workflow-continue-on-failure"),
+        );
         ui.add_space(16.0);
-        let label = ui.label("Data file");
+        let label = ui.label(t!("workflow-data-file"));
         let mut data = workflow.data.clone().unwrap_or_default();
         let edit = ui
             .add(
                 TextEdit::singleline(&mut data)
                     .id_salt("workflow-data")
-                    .hint_text("none: one run")
+                    .hint_text(t!("workflow-data-none"))
                     .desired_width(220.0),
             )
             .labelled_by(label.id)
-            .on_hover_text("A CSV or JSON file, relative to the project: one run per row, its values as variables");
+            .on_hover_text(t!("workflow-data-hint"));
         if edit.changed() {
             workflow.data = Some(data).filter(|d| !d.trim().is_empty());
         }
-        if cx.can_pick_files && ui.small_button("Choose…").clicked() {
+        if cx.can_pick_files && ui.small_button(t!("choose")).clicked() {
             action = Some(WorkflowAction::ChooseData);
         }
-        if workflow.data.is_some() && ui.small_button("Clear").clicked() {
+        if workflow.data.is_some() && ui.small_button(t!("clear")).clicked() {
             workflow.data = None;
         }
     });
     ui.add_space(8.0);
-    theme::section_label(ui, "Steps");
+    theme::section_label(ui, &t!("workflow-steps"));
     ScrollArea::vertical()
         .id_salt("workflow-steps")
         .auto_shrink([false, true])
         .show(ui, |ui| {
             if workflow.steps.is_empty() {
-                theme::hint(ui, "Add the requests to run, in order. Values captured by a step can be used by the next ones as {{variables}}.");
+                theme::hint(ui, t!("workflow-steps-empty"));
             }
             let mut change = None;
             for i in 0..workflow.steps.len() {
@@ -263,7 +266,7 @@ fn header(ui: &mut Ui, workflow: &mut Workflow, cx: WorkflowContext<'_>) -> Opti
         ui,
         |ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new("Workflow").small().color(p.muted));
+                ui.label(RichText::new(t!("workflow")).small().color(p.muted));
                 ui.horizontal(|ui| {
                     let title =
                         egui::FontId::new(18.0, egui::FontFamily::Name(theme::SEMIBOLD.into()));
@@ -276,35 +279,36 @@ fn header(ui: &mut Ui, workflow: &mut Workflow, cx: WorkflowContext<'_>) -> Opti
                             .clip_text(false)
                             .desired_width(24.0),
                     )
-                    .on_hover_text("Workflow name");
+                    .on_hover_text(t!("workflow-name"));
                     if cx.dirty {
-                        theme::badge(ui, "Unsaved", p.redirect);
+                        theme::badge(ui, t!("unsaved"), p.redirect);
                     }
                 });
             });
         },
         |ui| {
             if cx.running {
-                if ui.add(theme::danger_button(ui, "Cancel")).clicked() {
+                if ui.add(theme::danger_button(ui, t!("cancel"))).clicked() {
                     action = Some(WorkflowAction::Cancel);
                 }
             } else if ui
-                .add_enabled(!workflow.steps.is_empty(), theme::primary_button(ui, "Run"))
-                .on_hover_text(
-                    "Run the steps in order with the active environment (unsaved changes included)",
+                .add_enabled(
+                    !workflow.steps.is_empty(),
+                    theme::primary_button(ui, t!("workflow-run")),
                 )
+                .on_hover_text(t!("workflow-run-hint"))
                 .clicked()
             {
                 action = Some(WorkflowAction::Run);
             }
             if ui
-                .add_enabled(cx.dirty && !cx.read_only, egui::Button::new("Save"))
-                .on_hover_text("Save (Ctrl+S)")
+                .add_enabled(cx.dirty && !cx.read_only, egui::Button::new(t!("save")))
+                .on_hover_text(t!("save-shortcut"))
                 .clicked()
             {
                 action = Some(WorkflowAction::Save);
             }
-            if cx.dirty && ui.button("Revert").clicked() {
+            if cx.dirty && ui.button(t!("revert")).clicked() {
                 action = Some(WorkflowAction::Revert);
             }
         },
@@ -350,17 +354,17 @@ fn step_row(
                     }
                     None => {
                         ui.label(
-                            RichText::new(format!("⚠ {} is not in the project", step.request))
+                            RichText::new(t!("workflow-step-missing", request = &step.request))
                                 .color(p.fail),
                         );
                     }
                 }
                 let mut extras = Vec::new();
                 if !step.capture.is_empty() {
-                    extras.push(crate::format::count(step.capture.len(), "capture"));
+                    extras.push(t!("workflow-captures", count = step.capture.len()));
                 }
                 if !step.tests.trim().is_empty() {
-                    extras.push("tests".to_owned());
+                    extras.push(t!("workflow-step-has-tests"));
                 }
                 if !extras.is_empty() {
                     ui.label(RichText::new(extras.join(" · ")).small().color(p.muted));
@@ -370,21 +374,21 @@ fn step_row(
                 if !cx.read_only {
                     if ui
                         .add(theme::icon_button(ui, "🗙"))
-                        .on_hover_text("Remove this step")
+                        .on_hover_text(t!("workflow-step-remove"))
                         .clicked()
                     {
                         *change = Some(StepChange::Remove(i));
                     }
                     if ui
                         .add(theme::icon_button(ui, "↓"))
-                        .on_hover_text("Move down")
+                        .on_hover_text(t!("move-down"))
                         .clicked()
                     {
                         *change = Some(StepChange::Down(i));
                     }
                     if ui
                         .add(theme::icon_button(ui, "↑"))
-                        .on_hover_text("Move up")
+                        .on_hover_text(t!("move-up"))
                         .clicked()
                     {
                         *change = Some(StepChange::Up(i));
@@ -392,16 +396,20 @@ fn step_row(
                 }
                 if request.is_some()
                     && ui
-                        .small_button("Open")
-                        .on_hover_text("Go to the request")
+                        .small_button(t!("open"))
+                        .on_hover_text(t!("workflow-step-open"))
                         .clicked()
                 {
                     action = Some(WorkflowAction::OpenRequest(step.request_path()));
                 }
-                let label = if open { "Close" } else { "Checks…" };
+                let label = if open {
+                    t!("close")
+                } else {
+                    t!("workflow-step-checks")
+                };
                 if ui
                     .small_button(label)
-                    .on_hover_text("Captures and tests for this step, on top of the request's own")
+                    .on_hover_text(t!("workflow-step-checks-hint"))
                     .clicked()
                 {
                     st.expanded = if open { None } else { Some(i) };
@@ -438,7 +446,7 @@ fn step_details(
         .show(ui, |ui| {
             ui.add_enabled_ui(!read_only, |ui| {
                 ui.horizontal(|ui| {
-                    let label = ui.label("Step name");
+                    let label = ui.label(t!("workflow-step-name"));
                     let mut name = step.name.clone().unwrap_or_default();
                     let hint = request.map_or("", |r| r.name.as_str());
                     if ui
@@ -455,21 +463,23 @@ fn step_details(
                     }
                 });
                 ui.add_space(4.0);
-                theme::section_label(ui, "Captures");
-                if key_value_table(ui, "step-captures", captures, "Variable", &VarHelp::default()) {
+                theme::section_label(ui, &t!("captures"));
+                if key_value_table(
+                    ui,
+                    "step-captures",
+                    captures,
+                    &t!("variable"),
+                    &VarHelp::default(),
+                ) {
                     step.capture = captures
                         .iter()
                         .filter(|c| c.is_active())
                         .map(|c| (c.name.trim().to_owned(), c.value.trim().to_owned()))
                         .collect();
                 }
-                theme::hint(
-                    ui,
-                    "$.json.path, xpath://xml/path, header:Name or status; available as {{variable}} in later \
-                     steps.",
-                );
+                theme::hint(ui, t!("workflow-captures-hint"));
                 ui.add_space(4.0);
-                super::script_editor::script_heading(ui, "Tests", &mut step.tests);
+                super::script_editor::script_heading(ui, &t!("tests"), &mut step.tests);
                 // Line numbers, to find the lines the Console names; no breakpoints here.
                 super::script_editor::script_editor(
                     ui,
@@ -480,7 +490,7 @@ fn step_details(
                     None,
                     &std::collections::BTreeMap::new(),
                 );
-                theme::hint(ui, "Runs after the request's own tests.");
+                theme::hint(ui, t!("workflow-step-tests-hint"));
             });
         });
 }
@@ -494,12 +504,12 @@ fn add_step(
     ui.add_space(6.0);
     let mut picked: Option<&Path> = None;
     ComboBox::from_id_salt("add-step")
-        .selected_text("+ Add step…")
+        .selected_text(t!("workflow-add-step"))
         .width(320.0)
         .height(400.0)
         .show_ui(ui, |ui| {
             if requests.is_empty() {
-                theme::hint(ui, "This project has no requests yet.");
+                theme::hint(ui, t!("workflow-no-requests"));
             }
             for r in requests {
                 let text = format!("{}  {}  {}", theme::method_short(r.method), r.name, r.place);
@@ -509,7 +519,7 @@ fn add_step(
             }
         })
         .response
-        .on_hover_text("Add a request of this project as the next step");
+        .on_hover_text(t!("workflow-add-step-hint"));
     if let Some(path) = picked {
         workflow.steps.push(Step::new(path));
         st.sync(workflow);
@@ -523,8 +533,8 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
         ui.vertical_centered(|ui| {
             ui.add_space(30.0);
             ui.label(RichText::new("⏵").size(28.0).color(p.border));
-            ui.label(theme::semibold("Not run yet").color(p.muted));
-            theme::hint(ui, "Run the workflow to see each step's result here.");
+            ui.label(theme::semibold(t!("workflow-not-run")).color(p.muted));
+            theme::hint(ui, t!("workflow-not-run-hint"));
         });
         return;
     };
@@ -557,7 +567,7 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         mark(ui, !failed);
-                        ui.label(theme::semibold(format!("Row {}", n + 1)));
+                        ui.label(theme::semibold(t!("workflow-row", row = n + 1)));
                         ui.add(Label::new(RichText::new(row).small().color(p.muted)).truncate());
                     });
                 }
@@ -567,13 +577,7 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                     }
                 }
                 if iteration.skipped > 0 {
-                    theme::hint(
-                        ui,
-                        format!(
-                            "{} skipped after the failure.",
-                            crate::format::count(iteration.skipped, "later step")
-                        ),
-                    );
+                    theme::hint(ui, t!("workflow-skipped", count = iteration.skipped));
                 }
                 match iteration.ended {
                     Some(end @ FlowEnd::Stopped) => theme::hint(ui, end.message()),
@@ -586,9 +590,14 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                     ui.spinner();
                     let of = run.steps_per_iteration;
                     let label = if multi {
-                        format!("Row {}, step {} of {of} …", n + 1, i + 1)
+                        t!(
+                            "workflow-running-row-step",
+                            row = n + 1,
+                            step = i + 1,
+                            of = of
+                        )
                     } else {
-                        format!("Step {} of {of} …", i + 1)
+                        t!("workflow-running-step", step = i + 1, of = of)
                     };
                     ui.label(RichText::new(label).color(p.muted));
                 });
@@ -609,29 +618,26 @@ fn summary(ui: &mut Ui, run: &RunView) {
     ui.horizontal_wrapped(|ui| {
         if run.running {
             ui.spinner();
-            ui.label(theme::semibold("Running…"));
+            ui.label(theme::semibold(t!("running")));
         } else if run.cancelled {
-            theme::badge(ui, "Cancelled", p.muted);
+            theme::badge(ui, t!("cancelled"), p.muted);
         } else if run.passed() {
-            theme::badge(ui, "Passed", p.ok);
+            theme::badge(ui, t!("passed"), p.ok);
         } else {
-            theme::badge(ui, "Failed", p.fail);
+            theme::badge(ui, t!("failed"), p.fail);
         }
         let mut parts = vec![
-            format!("{} passed", crate::format::count(passed, "test")),
-            format!("{failed} failed"),
+            t!("workflow-tests-passed", count = passed),
+            t!("workflow-tests-failed", count = failed),
         ];
         if failed_steps > 0 {
-            parts.push(format!(
-                "{} failed",
-                crate::format::count(failed_steps, "step")
-            ));
+            parts.push(t!("workflow-steps-failed", count = failed_steps));
         }
         if run.iterations_planned > 1 {
-            parts.push(format!(
-                "{} of {} rows",
-                run.iterations.len(),
-                run.iterations_planned
+            parts.push(t!(
+                "workflow-rows-done",
+                done = run.iterations.len(),
+                planned = run.iterations_planned
             ));
         }
         ui.label(RichText::new(parts.join(" · ")).color(p.muted));
@@ -659,7 +665,11 @@ fn step_result_row(ui: &mut Ui, step: &StepView, i: usize, selected: bool, inden
     }
     if !step.tests.tests.is_empty() {
         let passed = step.tests.tests.iter().filter(|t| t.passed).count();
-        detail.push(format!("tests {passed}/{}", step.tests.tests.len()));
+        detail.push(t!(
+            "workflow-step-tests",
+            passed = passed,
+            total = step.tests.tests.len()
+        ));
     }
     let (glyph, color) = if step.failure.is_some() {
         ("✗", p.fail)
@@ -709,14 +719,14 @@ fn step_detail(ui: &mut Ui, step: &StepView) {
             tests_details(ui, &step.tests);
             if !step.tests.console.is_empty() {
                 ui.add_space(8.0);
-                theme::section_label(ui, "Console");
+                theme::section_label(ui, &t!("console"));
                 super::console_view::console_view(ui, &step.tests.console);
             }
             if let Some(body) = &step.body {
                 ui.add_space(8.0);
-                theme::section_label(ui, "Response body");
+                theme::section_label(ui, &t!("response-body"));
                 if body.is_empty() {
-                    theme::hint(ui, "No body.");
+                    theme::hint(ui, t!("no-body"));
                 } else {
                     ui.add(Label::new(RichText::new(body).monospace()).wrap());
                 }

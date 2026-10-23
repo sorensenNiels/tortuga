@@ -87,9 +87,9 @@ impl TortugaUi {
         let (rect, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), DIVIDER), Sense::hover());
         let hint = if self.split.response_full {
-            "Drag to change the request's height. Double-click to show the request again."
+            t!("divider-show-request")
         } else {
-            "Drag to change the request's height. Double-click to give the response all of it."
+            t!("divider-response-full")
         };
         let response = divider(ui, rect, false).on_hover_text(hint);
         if response.double_clicked() {
@@ -113,8 +113,7 @@ impl TortugaUi {
 
     /// Side by side: the divider in `rect`, between columns `available` wide in all.
     pub(super) fn side_divider(&mut self, ui: &Ui, rect: Rect, left: f32, available: f32) {
-        let response = divider(ui, rect, true)
-            .on_hover_text("Drag to change the widths. Double-click for equal widths.");
+        let response = divider(ui, rect, true).on_hover_text(t!("divider-widths"));
         let share = if response.double_clicked() {
             Some(DEFAULT_REQUEST_SHARE)
         } else if response.dragged() && available > 0.0 {
@@ -140,11 +139,7 @@ fn divider(ui: &Ui, rect: Rect, vertical: bool) -> egui::Response {
     let id = ui.make_persistent_id("request-response-divider");
     let response = ui.interact(rect, id, Sense::click_and_drag());
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::accesskit::Role::Splitter,
-            true,
-            "Request and response divider",
-        )
+        egui::WidgetInfo::labeled(egui::accesskit::Role::Splitter, true, t!("divider-name"))
     });
     let p = theme::palette(ui);
     let active = response.hovered() || response.dragged();

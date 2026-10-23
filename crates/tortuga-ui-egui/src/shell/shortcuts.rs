@@ -46,62 +46,62 @@ pub(super) const GO_TO_TAB: [KeyboardShortcut; 9] = [
 /// editor's `script` keys (R-SET-16).
 pub(super) fn sheet(mac: bool, script: &ScriptKeys) -> Vec<ShortcutRow> {
     let keys = |k: KeyboardShortcut| keys(k, mac);
-    let either = |a: KeyboardShortcut, b: KeyboardShortcut| format!("{} or {}", keys(a), keys(b));
-    let row = |group, keys: String, does| ShortcutRow { group, keys, does };
+    let either = |a: KeyboardShortcut, b: KeyboardShortcut| {
+        format!("{}{}{}", keys(a), t!("or-separator"), keys(b))
+    };
+    let (anywhere, tabs, request, scripts) = (
+        t!("shortcut-group-anywhere"),
+        t!("shortcut-group-tabs"),
+        t!("shortcut-group-request"),
+        t!("shortcut-group-scripts"),
+    );
+    let row = |group: &String, keys: String, does: String| ShortcutRow {
+        group: group.clone(),
+        keys,
+        does,
+    };
     let [first, .., eighth, last] = GO_TO_TAB;
     let mut rows = vec![
+        row(&anywhere, keys(SEND), t!("shortcut-send")),
         row(
-            "Anywhere",
-            keys(SEND),
-            "Send the request, or run the open workflow",
-        ),
-        row(
-            "Anywhere",
+            &anywhere,
             keys(SEND_EVERYWHERE),
-            "Send the request to every environment",
+            t!("shortcut-send-everywhere"),
         ),
-        row("Anywhere", keys(SAVE), "Save the request or workflow"),
-        row("Anywhere", keys(QUICK_OPEN), "Go to a request"),
-        row("Anywhere", either(COMMANDS, COMMANDS_TOO), "Every command"),
-        row("Anywhere", keys(FOCUS_URL), "Go to the URL"),
-        row("Anywhere", keys(ENVIRONMENT), "Switch the environment"),
-        row("Anywhere", keys(FIND), "Search in the response"),
-        row("Anywhere", keys(TOGGLE_SIDEBAR), "Hide or show the sidebar"),
+        row(&anywhere, keys(SAVE), t!("shortcut-save")),
+        row(&anywhere, keys(QUICK_OPEN), t!("shortcut-quick-open")),
         row(
-            "Anywhere",
+            &anywhere,
+            either(COMMANDS, COMMANDS_TOO),
+            t!("shortcut-commands"),
+        ),
+        row(&anywhere, keys(FOCUS_URL), t!("shortcut-focus-url")),
+        row(&anywhere, keys(ENVIRONMENT), t!("shortcut-environment")),
+        row(&anywhere, keys(FIND), t!("shortcut-find")),
+        row(&anywhere, keys(TOGGLE_SIDEBAR), t!("shortcut-sidebar")),
+        row(
+            &anywhere,
             either(ZOOM_IN_SECONDARY, ZOOM_OUT),
-            "Larger or smaller text",
+            t!("shortcut-zoom"),
         ),
-        row("Anywhere", keys(ZOOM_RESET), "Text at its usual size"),
-        row("Anywhere", keys(SHORTCUTS), "This list"),
-        row("Tabs", keys(PREVIOUS_TAB), "Back to the tab shown before"),
+        row(&anywhere, keys(ZOOM_RESET), t!("shortcut-zoom-reset")),
+        row(&anywhere, keys(SHORTCUTS), t!("shortcut-this-list")),
+        row(&tabs, keys(PREVIOUS_TAB), t!("shortcut-previous-tab")),
+        row(&tabs, either(NEXT_TAB, TAB_BEFORE), t!("shortcut-next-tab")),
         row(
-            "Tabs",
-            either(NEXT_TAB, TAB_BEFORE),
-            "The next or the previous tab",
-        ),
-        row(
-            "Tabs",
+            &tabs,
             format!("{} … {}", keys(first), keys(eighth)),
-            "The tab at that place",
+            t!("shortcut-tab-at"),
         ),
-        row("Tabs", keys(last), "The last tab"),
-        row("Tabs", keys(CLOSE_TAB), "Close the tab"),
-        row(
-            "Request",
-            keys(CLOSE_PREVIEW),
-            "Close the preview under the URL",
-        ),
-        row(
-            "Scripts",
-            either(INDENT, OUTDENT),
-            "Indent or outdent the lines",
-        ),
+        row(&tabs, keys(last), t!("shortcut-last-tab")),
+        row(&tabs, keys(CLOSE_TAB), t!("shortcut-close-tab")),
+        row(&request, keys(CLOSE_PREVIEW), t!("shortcut-close-preview")),
+        row(&scripts, either(INDENT, OUTDENT), t!("shortcut-indent")),
     ];
     for command in ScriptCommand::ALL {
         let shown = script_keys::keys_label(script, command, mac);
         if !shown.is_empty() {
-            rows.push(row("Scripts", shown, command.name()));
+            rows.push(row(&scripts, shown, script_keys::command_name(command)));
         }
     }
     rows
@@ -109,25 +109,25 @@ pub(super) fn sheet(mac: bool, script: &ScriptKeys) -> Vec<ShortcutRow> {
 
 /// The keys the app uses outside script fields and what they do there, as the sheet
 /// says it, so Settings can tell when a script key is one of them (R-SET-16).
-pub(crate) fn app_keys() -> Vec<(KeyboardShortcut, &'static str)> {
+pub(crate) fn app_keys() -> Vec<(KeyboardShortcut, String)> {
     let mut keys = vec![
-        (SEND, "Send the request, or run the open workflow"),
-        (SEND_EVERYWHERE, "Send the request to every environment"),
-        (SAVE, "Save the request or workflow"),
-        (QUICK_OPEN, "Go to a request"),
-        (COMMANDS, "Every command"),
-        (COMMANDS_TOO, "Every command"),
-        (FOCUS_URL, "Go to the URL"),
-        (ENVIRONMENT, "Switch the environment"),
-        (FIND, "Search in the response"),
-        (TOGGLE_SIDEBAR, "Hide or show the sidebar"),
-        (SHORTCUTS, "This list"),
-        (PREVIOUS_TAB, "Back to the tab shown before"),
-        (NEXT_TAB, "The next or the previous tab"),
-        (TAB_BEFORE, "The next or the previous tab"),
-        (CLOSE_TAB, "Close the tab"),
+        (SEND, t!("shortcut-send")),
+        (SEND_EVERYWHERE, t!("shortcut-send-everywhere")),
+        (SAVE, t!("shortcut-save")),
+        (QUICK_OPEN, t!("shortcut-quick-open")),
+        (COMMANDS, t!("shortcut-commands")),
+        (COMMANDS_TOO, t!("shortcut-commands")),
+        (FOCUS_URL, t!("shortcut-focus-url")),
+        (ENVIRONMENT, t!("shortcut-environment")),
+        (FIND, t!("shortcut-find")),
+        (TOGGLE_SIDEBAR, t!("shortcut-sidebar")),
+        (SHORTCUTS, t!("shortcut-this-list")),
+        (PREVIOUS_TAB, t!("shortcut-previous-tab")),
+        (NEXT_TAB, t!("shortcut-next-tab")),
+        (TAB_BEFORE, t!("shortcut-next-tab")),
+        (CLOSE_TAB, t!("shortcut-close-tab")),
     ];
-    keys.extend(GO_TO_TAB.iter().map(|k| (*k, "The tab at that place")));
+    keys.extend(GO_TO_TAB.iter().map(|k| (*k, t!("shortcut-tab-at"))));
     keys
 }
 

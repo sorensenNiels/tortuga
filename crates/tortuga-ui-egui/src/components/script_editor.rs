@@ -47,6 +47,9 @@ fn field_id(ui: &Ui, id: &str) -> Id {
     ui.make_persistent_id(("script", id))
 }
 
+/// A snippet's menu label, in the UI's language, and its code (R-TEST-15).
+pub type Snippet = (fn() -> String, &'static str);
+
 /// What a script sub-tab shows above the field `id`: when it runs, and its buttons:
 /// Beautify, "Snippets" (R-TEST-15) and, where `rerun` is `Some(enabled)`, "Re-run
 /// tests" (R-TEST-12). Returns whether that was clicked.
@@ -55,7 +58,7 @@ pub fn script_toolbar(
     about: &str,
     id: &str,
     script: &mut String,
-    snippets: &[(&str, &str)],
+    snippets: &[Snippet],
     rerun: Option<bool>,
 ) -> bool {
     let field = field_id(ui, id);
@@ -65,19 +68,17 @@ pub fn script_toolbar(
             |ui| theme::hint(ui, about),
             |ui| {
                 beautify_button(ui, script);
-                ui.menu_button("Snippets", |ui| {
+                ui.menu_button(t!("script-snippets"), |ui| {
                     for (label, code) in snippets {
-                        if ui.button(*label).clicked() {
+                        if ui.button(label()).clicked() {
                             insert_snippet(ui, field, script, code);
                         }
                     }
                 });
                 rerun.is_some_and(|enabled| {
-                    ui.add_enabled(enabled, egui::Button::new("Re-run tests").small())
-                        .on_hover_text(
-                            "Run the captures and tests again on the last response, without sending",
-                        )
-                        .on_disabled_hover_text("Send the request first: tests run on its response")
+                    ui.add_enabled(enabled, egui::Button::new(t!("script-rerun")).small())
+                        .on_hover_text(t!("script-rerun-hint"))
+                        .on_disabled_hover_text(t!("script-rerun-disabled"))
                         .clicked()
                 })
             },
@@ -228,14 +229,14 @@ fn field_menu(ui: &mut Ui, field: Id, script: &mut String, keys: &ScriptKeys) {
     };
     let label = |k: KeyboardShortcut| script_keys::key_label(k, mac);
     let mut edited = None;
-    if item(ui, "Cut", label(CUT), !picked.is_empty()) {
+    if item(ui, &t!("cut"), label(CUT), !picked.is_empty()) {
         ui.ctx().copy_text(picked.clone());
         edited = Some(script_editing::replace_selection(script, selection, ""));
     }
-    if item(ui, "Copy", label(COPY), !picked.is_empty()) {
+    if item(ui, &t!("copy"), label(COPY), !picked.is_empty()) {
         ui.ctx().copy_text(picked);
     }
-    if item(ui, "Paste", label(PASTE), true) {
+    if item(ui, &t!("paste"), label(PASTE), true) {
         // The pasted text arrives as an event for the focused field.
         ui.memory_mut(|m| m.request_focus(field));
         ui.ctx()
@@ -245,7 +246,7 @@ fn field_menu(ui: &mut Ui, field: Id, script: &mut String, keys: &ScriptKeys) {
     for command in ScriptCommand::ALL {
         let enabled = command != ScriptCommand::Beautify || !script.trim().is_empty();
         let shown = script_keys::keys_label(keys, command, mac);
-        if item(ui, command.name(), shown, enabled) {
+        if item(ui, &script_keys::command_name(command), shown, enabled) {
             edited = Some(command_edit(command, script, selection));
         }
     }
@@ -326,9 +327,9 @@ fn beautify_button(ui: &mut Ui, script: &mut String) {
     let beautify = ui
         .add_enabled(
             !script.trim().is_empty(),
-            egui::Button::new("Beautify").small(),
+            egui::Button::new(t!("script-beautify")).small(),
         )
-        .on_hover_text("One statement per line, indented; comments and strings are kept");
+        .on_hover_text(t!("script-beautify-hint"));
     if beautify.clicked() {
         *script = tortuga_core::js_format::beautify(script);
     }
@@ -365,7 +366,7 @@ pub fn line_marks(
                     mark.passed += 1;
                 } else {
                     mark.failed
-                        .push(message.clone().unwrap_or_else(|| "failed".into()));
+                        .push(message.clone().unwrap_or_else(|| t!("script-test-failed")));
                 }
             }
             ConsoleEntry::Error {
@@ -391,21 +392,20 @@ fn mark_text(mark: &LineMark) -> (String, bool) {
     } else if let Some(first) = mark.failed.first() {
         let more = match mark.failed.len() {
             1 => String::new(),
-            n => format!(" (and {} more)", n - 1),
+            n => t!("script-and-more", count = n - 1),
         };
         parts.push(format!("✗ {first}{more}"));
         if mark.passed > 0 {
-            parts.push(format!("{} passed", mark.passed));
+            parts.push(t!("script-passed", count = mark.passed));
         }
     } else if mark.passed == 1 {
         parts.push("✓".to_owned());
     } else if mark.passed > 1 {
-        parts.push(format!("✓ {} passed", mark.passed));
+        parts.push(format!("✓ {}", t!("script-passed", count = mark.passed)));
     }
     match mark.hits {
         0 => {}
-        1 => parts.push("⏺ 1 hit".to_owned()),
-        n => parts.push(format!("⏺ {n} hits")),
+        n => parts.push(format!("⏺ {}", t!("script-hits", count = n))),
     }
     let text = parts.join(" · ");
     (format::truncate(&text, MAX_MARK).0.to_owned(), failed)
@@ -477,7 +477,7 @@ pub fn script_editor(
     let click = ui
         .interact(gutter, ui.scope_id().with(("gutter", id)), Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Click a line number to set or clear a breakpoint");
+        .on_hover_text(t!("script-gutter-hint"));
     let y = click.interact_pointer_pos().filter(|_| click.clicked())?.y;
     // The line whose first row is nearest to the click.
     lines

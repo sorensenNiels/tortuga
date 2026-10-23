@@ -90,26 +90,6 @@ impl Feature {
             Self::Docs => "docs",
         }
     }
-
-    /// What Settings calls it.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Scripts => "Scripts, tests and captures",
-            Self::Examples => "Examples and the mock server",
-            Self::Workflows => "Workflows",
-            Self::Docs => "Descriptions",
-        }
-    }
-
-    /// What turning it off hides.
-    pub fn hides(self) -> &'static str {
-        match self {
-            Self::Scripts => "the Scripts tab",
-            Self::Examples => "the Examples tab, “Save as example” and the mock server",
-            Self::Workflows => "workflows in the sidebar and the palette",
-            Self::Docs => "the Docs tab and the “Description…” items",
-        }
-    }
 }
 
 /// Which features are shown (R-SET-13). All are on by default, including ones added in
@@ -199,7 +179,21 @@ pub enum Theme {
     Dark,
 }
 
-/// How the app looks (R-SET-4, R-SET-5, R-SET-7, R-SET-10).
+/// The language of the UI (R-I18N-1): the operating system's, or one chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Language {
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "da")]
+    Danish,
+    /// The operating system's language, English when the UI has no translation for it.
+    /// Also what a language a newer version wrote becomes, so the file still loads.
+    #[default]
+    #[serde(rename = "system", other)]
+    System,
+}
+
+/// How the app looks (R-SET-4, R-SET-5, R-SET-7, R-SET-10, R-I18N-1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
@@ -218,6 +212,8 @@ pub struct Appearance {
     pub code_size: u16,
     #[serde(skip_serializing_if = "is_default")]
     pub layout: RequestLayout,
+    #[serde(skip_serializing_if = "is_default")]
+    pub language: Language,
 }
 
 /// Checks that `bytes`, read from `path`, are a font egui can draw with (R-SET-10):
@@ -257,6 +253,7 @@ impl Default for Appearance {
             code_font: None,
             code_size: 100,
             layout: RequestLayout::Stacked,
+            language: Language::System,
         }
     }
 }
@@ -412,17 +409,6 @@ pub enum Level {
     App,
 }
 
-impl Level {
-    /// "the project", "the workspace" or "the app's settings", to say where a value comes from.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Project => "the project",
-            Self::Workspace => "the workspace",
-            Self::App => "the app's settings",
-        }
-    }
-}
-
 /// A value and the level it comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inherited<T> {
@@ -573,7 +559,6 @@ mod tests {
                 from: Level::App
             }
         );
-        assert_eq!(Level::App.label(), "the app's settings");
     }
 
     /// R-SET-4..7: appearance and history are only written when changed, and come back.
@@ -654,6 +639,24 @@ mod tests {
             ..Appearance::default()
         };
         assert!((tiny.code_scale() - 0.7).abs() < 1e-6, "clamped");
+    }
+
+    /// R-I18N-1: the language is only written when chosen, comes back, and one a newer
+    /// version wrote loads as the system's.
+    #[test]
+    fn language_round_trips() {
+        let defaults = toml::to_string(&AppSettings::default()).expect("toml");
+        assert!(!defaults.contains("language"), "{defaults}");
+        let mut settings = AppSettings::default();
+        settings.appearance.language = Language::Danish;
+        let text = toml::to_string(&settings).expect("toml");
+        assert!(text.contains("language = \"da\"\n"), "{text}");
+        let back: AppSettings = toml::from_str(&text).expect("read");
+        assert_eq!(back, settings);
+        let newer: AppSettings =
+            toml::from_str("[appearance]\nlanguage = \"de\"\ntext_size = 125\n").expect("newer");
+        assert_eq!(newer.appearance.language, Language::System);
+        assert_eq!(newer.appearance.text_size, 125);
     }
 
     /// R-SET-10: font files are recognised by their first bytes.

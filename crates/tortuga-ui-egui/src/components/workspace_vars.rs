@@ -40,8 +40,8 @@ pub struct WorkspaceVarsDialog {
 const NAME_WIDTH: f32 = 220.0;
 const VALUE_WIDTH: f32 = 340.0;
 const SECRET_HELP: SecretHelp = SecretHelp {
-    secret: "Secret: the value stays on this machine. Click to share it.",
-    shared: "Shared with the workspace. Click to make it secret (the value stays on this machine).",
+    secret: || t!("secret-help-workspace-secret"),
+    shared: || t!("secret-help-workspace-shared"),
 };
 
 impl WorkspaceVarsDialog {
@@ -76,7 +76,7 @@ impl WorkspaceVarsDialog {
 
     pub fn show(&mut self, ctx: &Context, state: &AppState) -> DialogResult<WorkspaceVarsAction> {
         let ws = state.workspace();
-        let title = format!("Workspace variables — {}", ws.name);
+        let title = t!("workspace-vars-title", name = &ws.name);
         let captured = state.workspace_runtime_vars();
         dialog(ctx, "workspace-vars", &title, 640.0, false, |ui| {
             theme::hint(
@@ -109,7 +109,7 @@ impl WorkspaceVarsDialog {
             );
             if let Some(warning) = state.host.secrets_warning() {
                 ui.add_space(4.0);
-                theme::callout(ui, warning);
+                theme::callout(ui, warning.text());
             }
             ui.add_space(12.0);
             let clear = captured_section(ui, captured);
@@ -119,8 +119,8 @@ impl WorkspaceVarsDialog {
             ui.add_space(12.0);
             let (cancel, save) = ui
                 .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let save = ui.add(theme::primary_button(ui, "Save")).clicked();
-                    (ui.button("Cancel").clicked(), save)
+                    let save = ui.add(theme::primary_button(ui, t!("save"))).clicked();
+                    (ui.button(t!("cancel")).clicked(), save)
                 })
                 .inner;
             if clear {
@@ -147,8 +147,8 @@ fn variables_table(ui: &mut Ui, rows: &mut Vec<WorkspaceVarRow>, new_variable: &
     Grid::new("workspace-variables")
         .num_columns(2)
         .show(ui, |ui| {
-            theme::section_label(ui, "Variable");
-            theme::section_label(ui, "Value");
+            theme::section_label(ui, &t!("variable"));
+            theme::section_label(ui, &t!("value"));
             ui.end_row();
             let mut remove = None;
             for (i, row) in rows.iter_mut().enumerate() {
@@ -168,7 +168,11 @@ fn variables_table(ui: &mut Ui, rows: &mut Vec<WorkspaceVarRow>, new_variable: &
                     TextEdit::singleline(&mut row.value)
                         .id_salt(("ws-value", i))
                         .password(row.secret)
-                        .hint_text(if row.secret { "not set" } else { "value" })
+                        .hint_text(if row.secret {
+                            t!("not-set")
+                        } else {
+                            t!("value-hint")
+                        })
                         .font(egui::TextStyle::Monospace),
                 );
                 ui.end_row();
@@ -178,7 +182,7 @@ fn variables_table(ui: &mut Ui, rows: &mut Vec<WorkspaceVarRow>, new_variable: &
                 "ws-new-variable",
                 NAME_WIDTH,
                 new_variable,
-                "Add variable (press Enter)…",
+                &t!("add-variable"),
             ) {
                 rows.push(WorkspaceVarRow {
                     name,
@@ -194,7 +198,7 @@ fn variables_table(ui: &mut Ui, rows: &mut Vec<WorkspaceVarRow>, new_variable: &
 
 /// The values captured this session, with "Clear captured". Returns whether it was clicked.
 fn captured_section(ui: &mut Ui, captured: Option<&BTreeMap<String, String>>) -> bool {
-    theme::section_label(ui, "Captured this session");
+    theme::section_label(ui, &t!("workspace-vars-captured"));
     theme::hint(
         ui,
         format!(
@@ -204,7 +208,7 @@ fn captured_section(ui: &mut Ui, captured: Option<&BTreeMap<String, String>>) ->
         ),
     );
     let Some(captured) = captured else {
-        theme::hint(ui, "None yet.");
+        theme::hint(ui, t!("none-yet"));
         return false;
     };
     let p = theme::palette(ui);
@@ -222,8 +226,8 @@ fn captured_section(ui: &mut Ui, captured: Option<&BTreeMap<String, String>>) ->
                 ui.end_row();
             }
         });
-    ui.add(theme::ghost_button("Clear captured"))
-        .on_hover_text("Forget the captured values")
+    ui.add(theme::ghost_button(t!("workspace-vars-clear-captured")))
+        .on_hover_text(t!("workspace-vars-clear-captured-hint"))
         .clicked()
 }
 
@@ -237,15 +241,18 @@ pub fn to_variables(
     for row in rows.iter().filter(|r| !r.name.trim().is_empty()) {
         let name = row.name.trim();
         if name.contains(['{', '}']) {
-            return Err(format!("Variable names cannot contain braces: “{name}”."));
+            return Err(t!("env-variable-braces", name = name));
         }
         if let Some(rest) = name.strip_prefix(WORKSPACE_PREFIX) {
-            return Err(format!(
-                "Leave out “{WORKSPACE_PREFIX}”: “{name}” is used as {{{{{rest}}}}}."
+            return Err(t!(
+                "workspace-vars-prefix",
+                prefix = WORKSPACE_PREFIX,
+                name = name,
+                rest = rest
             ));
         }
         if !seen.insert(name.to_owned()) {
-            return Err(format!("There are two variables called “{name}”."));
+            return Err(t!("env-variable-duplicate", name = name));
         }
         if row.secret {
             vars.secrets.insert(name.to_owned());

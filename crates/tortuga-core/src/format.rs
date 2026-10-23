@@ -156,21 +156,6 @@ impl EnvironmentColor {
         Self::Yellow,
         Self::Grey,
     ];
-
-    /// The name shown to the user.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Green => "Green",
-            Self::Teal => "Teal",
-            Self::Blue => "Blue",
-            Self::Purple => "Purple",
-            Self::Pink => "Pink",
-            Self::Red => "Red",
-            Self::Orange => "Orange",
-            Self::Yellow => "Yellow",
-            Self::Grey => "Grey",
-        }
-    }
 }
 
 /// A colour this build doesn't know (from a newer one) reads as the default rather than

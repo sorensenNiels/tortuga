@@ -49,15 +49,11 @@ impl TortugaUi {
     /// a method other than GET, HEAD or OPTIONS asks first (R-SRV-9).
     pub(super) fn send_everywhere(&mut self, egui_ctx: &egui::Context) {
         let Some(key) = self.selection.clone() else {
-            return self
-                .state
-                .inform("Save the request in a project to send it to its environments.");
+            return self.state.inform(t!("fanout-save-first"));
         };
         let environments = self.state.environments_of(&key.root);
         if environments.is_empty() {
-            return self
-                .state
-                .inform("This project has no environments to send to.");
+            return self.state.inform(t!("fanout-no-environments"));
         }
         let method = self.current.method;
         let protected: Vec<String> = environments
@@ -69,12 +65,12 @@ impl TortugaUi {
             return self.start_fanout(egui_ctx);
         }
         let dialog = ConfirmDialog {
-            title: format!("Send {} to every environment?", method.as_str()),
-            message: format!(
-                "That includes the protected {}: this request may change their data.",
-                protected.join(" and ")
+            title: t!("fanout-confirm-title", method = method.as_str()),
+            message: t!(
+                "fanout-confirm-message",
+                environments = protected.join(&t!("and-separator"))
             ),
-            confirm_label: "Send".into(),
+            confirm_label: t!("send"),
         };
         self.modal = Some(Modal::Protected(Guarded::SendEverywhere, dialog));
     }

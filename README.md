@@ -224,7 +224,8 @@ environments dialog, drag the ☰ handle of an environment or server to change t
 
 **Settings.** Settings (top right) has four tabs. **Requests**: redirects, cookies, the default timeout, CA
 certificates, and hosts whose certificates aren't checked, for test servers with self-signed certificates (only on your
-machine). **Appearance**: light, dark or system theme, text size (also **Ctrl+=**, **Ctrl+-**, **Ctrl+0**) and wrapping
+machine). **Appearance**: light, dark or system theme, the language (English or Danish; by default the
+system's), text size (also **Ctrl+=**, **Ctrl+-**, **Ctrl+0**) and wrapping
 long lines in responses (also the **Wrap** switch above a response). **History**: how many sent requests are kept per
 project, or none. **Importers**: which importers "+ Add" offers.
 

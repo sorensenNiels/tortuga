@@ -1,6 +1,7 @@
 use egui::{Color32, ComboBox, Key, RichText, Stroke, TextEdit, Ui};
 use tortuga_core::script::{Breakpoints, ScriptKind};
 use tortuga_core::settings::{Feature, FeatureSettings, ResolvedSettings};
+use tortuga_core::vars::Origin;
 use tortuga_core::{Auth, HttpMethod, KeyValue, ParamsBody, Request, RequestBody};
 
 use super::TestsView;
@@ -154,9 +155,9 @@ pub struct EditorContext<'a> {
     pub collection_auth: Option<&'a Auth>,
     /// Headers this request inherits, with where each comes from (R-COL-4, R-COL-11),
     /// shown read-only.
-    pub inherited_headers: &'a [(KeyValue, String)],
-    /// Where the inherited auth comes from, e.g. "the project" or "folder “Admin”".
-    pub auth_origin: &'a str,
+    pub inherited_headers: &'a [(KeyValue, Origin)],
+    /// Where the inherited auth comes from.
+    pub auth_origin: &'a Origin,
     /// Cookies in the jar this request uses (R-CK-1).
     pub cookie_count: usize,
     /// The request belongs to a collection (its jar is saved); `false` for the scratch request.
@@ -225,7 +226,7 @@ pub fn request_editor(
 ) -> Option<EditorAction> {
     let base_hint = match (&request.server, cx.server_base) {
         (Some(_), Some(base)) => format!("{base}…"),
-        (Some(_), None) => "No URL for this server in the active environment".to_owned(),
+        (Some(_), None) => t!("request-server-no-url"),
         _ => String::new(),
     };
     let action = request_bar(ui, request, st, cx, &base_hint);
@@ -251,20 +252,11 @@ pub fn request_editor(
             .collect();
         theme::warning(
             ui,
-            format!(
-                "Undefined: {} — define them in the project's environments or the workspace's variables.",
-                names.join(", ")
-            ),
+            t!("request-undefined-variables", names = names.join(", ")),
         );
     }
     if let Some(host) = cx.unverified_host {
-        theme::warning(
-            ui,
-            format!(
-                "⚠ The certificate of {host} is not verified (Settings → Requests). Use this for \
-                 test servers only."
-            ),
-        );
+        theme::warning(ui, t!("request-unverified-host", host = host));
     }
 
     if cx.view == EditorView::UrlOnly {
@@ -284,25 +276,37 @@ pub fn request_editor(
     // A feature that is off hides its tab, unless this request uses it (R-SET-13).
     let shown = |feature: Feature, used: bool| used || cx.features.enabled(feature);
     let mut tabs = vec![
-        (Tab::Params, "Params", count(param_count)),
+        (Tab::Params, t!("tab-params"), count(param_count)),
         (
             Tab::Headers,
-            "Headers",
+            t!("headers"),
             count(header_count + cx.inherited_headers.len()),
         ),
-        (Tab::Auth, "Auth", has_auth.then(|| "⏺".to_owned())),
-        (Tab::Body, "Body", has_body.then(|| "⏺".to_owned())),
-        (Tab::Options, "Options", None),
+        (Tab::Auth, t!("tab-auth"), has_auth.then(|| "⏺".to_owned())),
+        (Tab::Body, t!("body"), has_body.then(|| "⏺".to_owned())),
+        (Tab::Options, t!("tab-options"), None),
     ];
     if shown(Feature::Scripts, scripted) {
-        tabs.push((Tab::Scripts, "Scripts", scripted.then(|| "⏺".to_owned())));
+        tabs.push((
+            Tab::Scripts,
+            t!("tab-scripts"),
+            scripted.then(|| "⏺".to_owned()),
+        ));
     }
     // Only a project's requests are served by its mock, and documented.
     if cx.in_collection && shown(Feature::Examples, !request.examples.is_empty()) {
-        tabs.push((Tab::Examples, "Examples", count(request.examples.len())));
+        tabs.push((
+            Tab::Examples,
+            t!("tab-examples"),
+            count(request.examples.len()),
+        ));
     }
     if cx.in_collection && shown(Feature::Docs, documented) {
-        tabs.push((Tab::Docs, "Docs", documented.then(|| "⏺".to_owned())));
+        tabs.push((
+            Tab::Docs,
+            t!("tab-docs"),
+            documented.then(|| "⏺".to_owned()),
+        ));
     }
     if !tabs.iter().any(|(tab, _, _)| *tab == st.tab) {
         st.tab = Tab::Params;
@@ -331,32 +335,29 @@ fn tab_content(
                 path_variables(ui, &mut request.path_vars, cx.vars);
                 ui.add_space(12.0);
             }
-            if key_value_table(ui, "params", &mut request.params, "Parameter", cx.vars) {
+            if key_value_table(ui, "params", &mut request.params, &t!("parameter"), cx.vars) {
                 st.url_text = request.display_url();
             }
         }
         Tab::Headers => {
-            key_value_table(ui, "headers", &mut request.headers, "Header", cx.vars);
+            key_value_table(ui, "headers", &mut request.headers, &t!("header"), cx.vars);
             if !cx.inherited_headers.is_empty() {
                 ui.add_space(8.0);
                 inherited_headers(ui, cx.inherited_headers);
                 ui.horizontal(|ui| {
-                    if ui.small_button("Edit project defaults…").clicked() {
+                    if ui.small_button(t!("edit-project-defaults")).clicked() {
                         action = Some(EditorAction::EditCollectionDefaults);
                     }
                     let from_workspace = cx
                         .inherited_headers
                         .iter()
-                        .any(|(_, origin)| origin == "the workspace");
-                    if from_workspace && ui.small_button("Edit workspace defaults…").clicked() {
+                        .any(|(_, origin)| *origin == Origin::Workspace);
+                    if from_workspace && ui.small_button(t!("edit-workspace-defaults")).clicked() {
                         action = Some(EditorAction::EditWorkspaceDefaults);
                     }
                 });
             }
-            theme::hint(
-                ui,
-                "Content-Type is set automatically from the body type unless you add it here.",
-            );
+            theme::hint(ui, t!("request-content-type-hint"));
         }
         Tab::Auth => {
             match request_auth(
@@ -461,21 +462,21 @@ fn request_bar(
         let size = [send_width, group.response.rect.height()];
         if cx.sending {
             if ui
-                .add_sized(size, theme::danger_button(ui, "Cancel"))
+                .add_sized(size, theme::danger_button(ui, t!("cancel")))
                 .clicked()
             {
                 action = Some(EditorAction::Cancel);
             }
         } else {
             let send = ui
-                .add_sized(size, theme::primary_button(ui, "Send"))
-                .on_hover_text("Send (Ctrl+Enter). Right-click to send to every environment.");
+                .add_sized(size, theme::primary_button(ui, t!("send")))
+                .on_hover_text(t!("request-send-hint"));
             if send.clicked() {
                 action = Some(EditorAction::Send);
             }
             if cx.in_collection {
                 send.context_menu(|ui| {
-                    if ui.button("Send to every environment").clicked() {
+                    if ui.button(t!("cmd-send-everywhere")).clicked() {
                         action = Some(EditorAction::SendEverywhere);
                     }
                 });
@@ -495,8 +496,8 @@ fn path_variables(ui: &mut Ui, vars: &mut [KeyValue], help: &VarHelp) {
         .spacing([6.0, 4.0])
         .show(ui, |ui| {
             ui.label("");
-            theme::section_label(ui, "Path variable");
-            theme::section_label(ui, "Value");
+            theme::section_label(ui, &t!("request-path-variable"));
+            theme::section_label(ui, &t!("value"));
             ui.end_row();
             for (i, var) in vars.iter_mut().enumerate() {
                 ui.label("");
@@ -506,33 +507,31 @@ fn path_variables(ui: &mut Ui, vars: &mut [KeyValue], help: &VarHelp) {
                     .id_salt(("path-var-name", i))
                     .font(egui::TextStyle::Monospace)
                     .interactive(false)
-                    .hint_text("Name");
+                    .hint_text(t!("name"));
                 theme::sized_edit(ui, width, name_field)
-                    .on_hover_text("Change the name in the URL");
+                    .on_hover_text(t!("request-path-variable-rename"));
                 let id = ui.make_persistent_id(("path-var", i));
                 let size = FieldWidth::Fixed(width);
                 var_edit(ui, id, &mut var.value, help, Lines::One, size, |e| {
-                    e.hint_text("Value")
+                    e.hint_text(t!("value"))
                 });
                 ui.end_row();
             }
         });
-    theme::hint(
-        ui,
-        "Path variables come from :name segments in the URL. An empty value stops the send.",
-    );
+    theme::hint(ui, t!("request-path-variables-hint"));
 }
 
 /// Headers this request inherits, grouped by where they come from (R-COL-4, R-COL-11), read-only.
-fn inherited_headers(ui: &mut Ui, headers: &[(KeyValue, String)]) {
+fn inherited_headers(ui: &mut Ui, headers: &[(KeyValue, Origin)]) {
     let p = theme::palette(ui);
-    let mut origins: Vec<&str> = headers.iter().map(|(_, o)| o.as_str()).collect();
+    let mut origins: Vec<&Origin> = headers.iter().map(|(_, o)| o).collect();
     origins.dedup();
     for (i, origin) in origins.into_iter().enumerate() {
         if i > 0 {
             ui.add_space(6.0);
         }
-        theme::section_label(ui, &format!("From {origin}"));
+        let from = crate::format::origin(origin);
+        theme::section_label(ui, &t!("var-from", from = from.as_str()));
         egui::Grid::new(("inherited-headers", i))
             .num_columns(2)
             .spacing([24.0, 4.0])
@@ -544,10 +543,7 @@ fn inherited_headers(ui: &mut Ui, headers: &[(KeyValue, String)]) {
                 }
             });
     }
-    theme::hint(
-        ui,
-        "Add a header with the same name above to replace one, or add it switched off to leave it out.",
-    );
+    theme::hint(ui, t!("request-inherited-headers-hint"));
 }
 
 /// Returns the method it had before the user picked another one.
@@ -562,25 +558,21 @@ fn method_picker(ui: &mut Ui, request: &mut Request) -> Option<HttpMethod> {
             }
         })
         .response
-        .on_hover_text("HTTP method");
+        .on_hover_text(t!("request-method"));
     (request.method != method).then_some(method)
 }
 
 /// "Move the query parameters into the body?" after GET became POST, PUT, … (R-HTTP-21).
 fn params_offer(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
     let count = request.params.iter().filter(|p| p.is_active()).count();
-    let what = if count == 1 {
-        "the query parameter".to_owned()
-    } else {
-        format!("the {count} query parameters")
-    };
     let mut chosen = None;
     ui.horizontal_wrapped(|ui| {
         theme::hint(
             ui,
-            format!(
-                "{} usually sends data in its body. Move {what} into it as",
-                request.method
+            t!(
+                "request-params-offer",
+                method = request.method.as_str(),
+                count = count
             ),
         );
         if ui.small_button("JSON").clicked() {
@@ -589,7 +581,10 @@ fn params_offer(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
         if ui.small_button("XML").clicked() {
             chosen = Some(ParamsBody::Xml);
         }
-        if ui.add(theme::ghost_button("Keep in URL")).clicked() {
+        if ui
+            .add(theme::ghost_button(t!("request-keep-in-url")))
+            .clicked()
+        {
             st.params_offer = ParamsOffer::Hidden;
         }
     });
@@ -609,17 +604,16 @@ fn server_picker(ui: &mut Ui, request: &mut Request, cx: EditorContext<'_>, base
         .filter(|id| !cx.servers.iter().any(|(s, _)| s == *id))
         .cloned();
     let selected = match &request.server {
-        None => "No server".to_owned(),
-        Some(id) => cx
-            .servers
-            .iter()
-            .find(|(s, _)| s == id)
-            .map_or_else(|| format!("{id} (missing)"), |(_, name)| name.clone()),
+        None => t!("request-no-server"),
+        Some(id) => cx.servers.iter().find(|(s, _)| s == id).map_or_else(
+            || t!("request-server-missing", id = id),
+            |(_, name)| name.clone(),
+        ),
     };
     let combo = ComboBox::from_id_salt("server")
         .selected_text(selected)
         .show_ui(ui, |ui| {
-            ui.selectable_value(&mut request.server, None, "No server");
+            ui.selectable_value(&mut request.server, None, t!("request-no-server"));
             for (id, name) in cx.servers {
                 ui.selectable_value(&mut request.server, Some(id.clone()), name);
             }
@@ -627,7 +621,7 @@ fn server_picker(ui: &mut Ui, request: &mut Request, cx: EditorContext<'_>, base
                 ui.selectable_value(
                     &mut request.server,
                     Some(id.clone()),
-                    format!("{id} (missing)"),
+                    t!("request-server-missing", id = id),
                 );
             }
         })
@@ -645,9 +639,9 @@ fn url_field(
     cx: EditorContext<'_>,
 ) -> Option<EditorAction> {
     let hint = if request.server.is_some() {
-        "/path"
+        "/path".to_owned()
     } else {
-        "Enter request URL"
+        t!("request-url-hint")
     };
     let min_size = egui::vec2(0.0, ui.spacing().interact_size.y);
     let width = ui.available_width();
@@ -705,52 +699,46 @@ fn request_options(
 ) {
     let timeout = cx.settings.timeout_ms;
     ui.horizontal(|ui| {
-        ui.label("Timeout (ms)");
+        ui.label(t!("request-timeout"));
         let edit = TextEdit::singleline(&mut st.timeout_text)
             .id_salt("timeout")
-            .hint_text(format!("{} (from {})", timeout.value, timeout.from.label()))
+            .hint_text(t!(
+                "request-from-level",
+                value = timeout.value,
+                level = crate::format::level(timeout.from)
+            ))
             .desired_width(220.0);
         if ui.add(edit).changed() {
             request.timeout_ms = parse_timeout(&st.timeout_text);
         }
     });
-    theme::hint(
-        ui,
-        "Leave empty to use the project's, the workspace's or the app's setting.",
-    );
+    theme::hint(ui, t!("request-timeout-hint"));
 
     // R-CK-2: per request, saved in the request file.
     ui.add_space(12.0);
     let jar = if cx.in_collection {
-        "this project's cookie jar"
+        t!("request-jar-project")
     } else {
-        "the scratch cookie jar (kept until the app closes)"
+        t!("request-jar-scratch")
     };
     // Off for the project or workspace: a request can only turn cookies off (R-SET-1).
     let cookies = cx.settings.cookies;
     ui.add_enabled_ui(cookies.value, |ui| {
-        ui.checkbox(&mut request.cookies, format!("Use cookies from {jar}"));
+        ui.checkbox(
+            &mut request.cookies,
+            t!("request-use-cookies", jar = jar.as_str()),
+        );
     });
     if !cookies.value {
         theme::hint(
             ui,
-            format!(
-                "Cookies are turned off in {}, so this request sends and stores none.",
-                cookies.from.label()
+            t!(
+                "request-cookies-off",
+                level = crate::format::level(cookies.from)
             ),
         );
     }
-    let stored = match cx.cookie_count {
-        1 => "1 cookie stored".to_owned(),
-        n => format!("{n} cookies stored"),
-    };
-    theme::hint(
-        ui,
-        format!(
-            "{stored}. When off, no cookies from the jar are sent and cookies in the response are not \
-             stored. A Cookie header you add yourself is always sent."
-        ),
-    );
+    theme::hint(ui, t!("request-cookies-hint", count = cx.cookie_count));
 }
 
 /// A positive number of milliseconds; anything else means "use the default".
@@ -788,7 +776,7 @@ mod tests {
                         unverified_host: None,
                         collection_auth: None,
                         inherited_headers: &[],
-                        auth_origin: "the project",
+                        auth_origin: &Origin::Project,
                         cookie_count: 0,
                         in_collection: false,
                         preview: None,
@@ -840,7 +828,7 @@ mod tests {
                         unverified_host: None,
                         collection_auth: None,
                         inherited_headers: &[],
-                        auth_origin: "the project",
+                        auth_origin: &Origin::Project,
                         cookie_count: 0,
                         in_collection,
                         preview: None,
@@ -883,7 +871,7 @@ mod tests {
                     unverified_host: None,
                     collection_auth: None,
                     inherited_headers: &[],
-                    auth_origin: "the project",
+                    auth_origin: &Origin::Project,
                     cookie_count: 0,
                     in_collection: false,
                     preview: None,
@@ -984,7 +972,7 @@ mod tests {
                     unverified_host: None,
                     collection_auth: None,
                     inherited_headers: &[],
-                    auth_origin: "the project",
+                    auth_origin: &Origin::Project,
                     cookie_count: 0,
                     in_collection: false,
                     preview: Some(&preview),
@@ -1042,7 +1030,7 @@ mod tests {
                         unverified_host: None,
                         collection_auth: None,
                         inherited_headers: &[],
-                        auth_origin: "the project",
+                        auth_origin: &Origin::Project,
                         cookie_count: 0,
                         in_collection: false,
                         preview: None,
@@ -1100,7 +1088,7 @@ mod tests {
                         unverified_host: None,
                         collection_auth: None,
                         inherited_headers: &[],
-                        auth_origin: "the project",
+                        auth_origin: &Origin::Project,
                         cookie_count: 0,
                         in_collection: false,
                         preview: None,

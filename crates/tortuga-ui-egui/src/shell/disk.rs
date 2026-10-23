@@ -113,14 +113,14 @@ impl TortugaUi {
         let p = theme::palette(ui);
         let (message, keep, take) = match change {
             DiskChange::Changed => (
-                "This request changed on disk (for example after git pull) while you had unsaved edits.",
-                "Keep mine",
-                "Take theirs",
+                t!("conflict-changed"),
+                t!("conflict-keep-mine"),
+                t!("conflict-take-theirs"),
             ),
             DiskChange::Deleted => (
-                "This request was deleted on disk while you had unsaved edits.",
-                "Restore with my edits",
-                "Discard my edits",
+                t!("conflict-deleted"),
+                t!("conflict-restore"),
+                t!("conflict-discard"),
             ),
         };
         let mut choice = None;

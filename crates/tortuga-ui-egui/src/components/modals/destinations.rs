@@ -14,7 +14,10 @@ fn destinations(state: &AppState, root: &Path) -> Vec<(String, PathBuf)> {
     let Some(c) = state.collection(root) else {
         return Vec::new();
     };
-    let mut out = vec![(format!("{} (top level)", c.name()), PathBuf::new())];
+    let mut out = vec![(
+        t!("destination-top-level", project = c.name()),
+        PathBuf::new(),
+    )];
     for f in c.folders() {
         let depth = f.path.components().count();
         out.push((
@@ -80,12 +83,13 @@ impl MoveDialog {
         dialog(
             ctx,
             "move",
-            &format!("Move “{name}”"),
+            &t!("move-title", name = name),
             380.0,
             true,
             |ui| {
-                folder_picker(ui, "move-target", "To folder", &choices, target);
-                let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Move"), !unchanged);
+                folder_picker(ui, "move-target", &t!("move-to-folder"), &choices, target);
+                let (cancel, confirm) =
+                    actions(ui, theme::primary_button(ui, t!("move")), !unchanged);
                 finish(cancel, confirm.then(|| target.clone()))
             },
         )
@@ -120,7 +124,7 @@ impl Destination {
     }
 
     fn show(&mut self, ui: &mut Ui, id: &str, state: &AppState) {
-        let label = field_label(ui, "Project");
+        let label = field_label(ui, &t!("project"));
         let selected = self
             .root
             .as_ref()
@@ -151,7 +155,7 @@ impl Destination {
         folder_picker(
             ui,
             &format!("{id}-folder"),
-            "Folder",
+            &t!("folder"),
             &folders,
             &mut self.folder,
         );
@@ -177,7 +181,7 @@ impl SaveToCollectionDialog {
     pub fn new(state: &AppState, initial_name: &str) -> Self {
         Self {
             to: Destination::new(state, None),
-            name: if initial_name == "Untitled request" {
+            name: if initial_name == t!("untitled-request") {
                 String::new()
             } else {
                 initial_name.to_owned()
@@ -190,24 +194,24 @@ impl SaveToCollectionDialog {
         dialog(
             ctx,
             "save-to-collection",
-            "Save request",
+            &t!("save-request-title"),
             420.0,
             true,
             |ui| {
                 if state.collections.is_empty() {
-                    ui.label("Add or create a project first (“+ Add” in the sidebar).");
+                    ui.label(t!("save-request-no-project"));
                 } else {
-                    field_label(ui, "Name");
+                    field_label(ui, &t!("name"));
                     ui.add(
                         TextEdit::singleline(&mut self.name)
-                            .hint_text("e.g. List users")
+                            .hint_text(t!("save-request-name-hint"))
                             .desired_width(f32::INFINITY),
                     );
                     self.to.show(ui, "save", state);
                 }
                 let name = self.name.trim();
                 let ok = self.to.root.is_some() && !name.is_empty();
-                let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Save"), ok);
+                let (cancel, confirm) = actions(ui, theme::primary_button(ui, t!("save")), ok);
                 let done = confirm
                     .then(|| self.to.key())
                     .flatten()
@@ -244,19 +248,19 @@ impl CopyToProjectDialog {
         dialog(
             ctx,
             "copy-to-project",
-            &format!("Copy “{name}” to project"),
+            &t!("copy-to-project-title", name = name),
             420.0,
             true,
             |ui| {
                 if to.root.is_none() {
-                    ui.label("There is no project that can be changed to copy into.");
+                    ui.label(t!("copy-to-project-none"));
                 } else {
                     to.show(ui, "copy", state);
                 }
                 let into_itself =
                     to.root.as_ref() == Some(&item.root) && to.folder.starts_with(&item.path);
                 let ok = to.root.is_some() && !into_itself;
-                let (cancel, confirm) = actions(ui, theme::primary_button(ui, "Copy"), ok);
+                let (cancel, confirm) = actions(ui, theme::primary_button(ui, t!("copy")), ok);
                 finish(cancel, confirm.then(|| to.key()).flatten())
             },
         )

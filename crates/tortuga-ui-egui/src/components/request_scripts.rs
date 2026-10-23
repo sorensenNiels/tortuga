@@ -7,75 +7,78 @@ use tortuga_core::Request;
 use tortuga_core::script::{ConsoleEntry, ScriptKind};
 
 use super::request_editor::{EditorAction, EditorContext, EditorState, Rerun};
-use super::script_editor::{LineMark, line_marks, script_editor, script_toolbar};
+use super::script_editor::{LineMark, Snippet, line_marks, script_editor, script_toolbar};
 use super::{TestsView, VarHelp, key_value_table};
 use crate::theme;
 
 /// Snippets for a pre-request script (R-TEST-15): (menu label, code).
-const PRE_REQUEST_SNIPPETS: &[(&str, &str)] = &[
-    ("Set a variable", "vars.set(\"name\", \"value\");"),
+const PRE_REQUEST_SNIPPETS: &[Snippet] = &[
     (
-        "Set a header",
+        || t!("snippet-set-variable"),
+        "vars.set(\"name\", \"value\");",
+    ),
+    (
+        || t!("snippet-set-header"),
         "req.setHeader(\"X-Request-Id\", String(Date.now()));",
     ),
     (
-        "Timestamp in a variable",
+        || t!("snippet-timestamp"),
         "vars.set(\"now\", new Date().toISOString());",
     ),
     (
-        "Random number in a variable",
+        || t!("snippet-random"),
         "vars.set(\"random\", String(Math.floor(Math.random() * 1000000)));",
     ),
-    ("Log the request", "console.log(req.method, req.url);"),
+    (
+        || t!("snippet-log-request"),
+        "console.log(req.method, req.url);",
+    ),
 ];
 
 /// Snippets for a test script (R-TEST-15): (menu label, code).
-const TEST_SNIPPETS: &[(&str, &str)] = &[
+const TEST_SNIPPETS: &[Snippet] = &[
     (
-        "Status is 200",
+        || t!("snippet-status-200"),
         "test(\"status is 200\", () => {\n  expect(res.status).toBe(200);\n});",
     ),
     (
-        "Status is 2xx",
+        || t!("snippet-status-2xx"),
         "test(\"status is 2xx\", () => {\n  expect(res.status).to.be.within(200, 299);\n});",
     ),
     (
-        "Response time under 500 ms",
+        || t!("snippet-response-time"),
         "test(\"response time under 500 ms\", () => {\n  expect(res.time).toBeLessThan(500);\n});",
     ),
     (
-        "Body is JSON",
+        || t!("snippet-body-json"),
         "test(\"body is JSON\", () => {\n  expect(res.header(\"content-type\")).toMatch(/json/);\n});",
     ),
     (
-        "Body has a property",
+        || t!("snippet-body-property"),
         "test(\"body has an id\", () => {\n  expect(res.json()).toHaveProperty(\"id\");\n});",
     ),
     (
-        "Save a field to a variable",
+        || t!("snippet-save-field"),
         "vars.set(\"id\", String(res.json().id));",
     ),
-    ("Log the body", "console.log(res.json());"),
+    (|| t!("snippet-log-body"), "console.log(res.json());"),
+    (|| t!("snippet-read-xml"), XML_SNIPPET),
     (
-        XML_SNIPPET,
-        "// The XML body as an object: attributes under $, text under _ (as in Postman).\nconst xml = xml2Json(res.body);\nconsole.log(xml);",
-    ),
-    (
-        "Save a cookie to a variable",
+        || t!("snippet-save-cookie"),
         "if (res.cookie(\"session\") !== undefined) {\n  vars.set(\"session\", res.cookie(\"session\"));\n}",
     ),
     (
-        "Workflow: repeat a step until done",
+        || t!("snippet-workflow-repeat"),
         "// In a workflow run: run the step \"Check status\" again until the job is done.\nif (res.json().status === \"running\") {\n  workflow.next(\"Check status\");\n}",
     ),
     (
-        "Workflow: stop the run",
+        || t!("snippet-workflow-stop"),
         "// In a workflow run: end this iteration after this step.\nif (res.status === 404) {\n  workflow.stop();\n}",
     ),
 ];
 
 /// The test snippet that needs an XML response (R-TEST-18).
-const XML_SNIPPET: &str = "Read an XML body";
+const XML_SNIPPET: &str = "// The XML body as an object: attributes under $, text under _ (as in Postman).\nconst xml = xml2Json(res.body);\nconsole.log(xml);";
 
 /// Room under a script field for its "Reference" line.
 const BELOW_FIELD: f32 = 64.0;
@@ -171,7 +174,7 @@ fn sub_tabs(
     let tabs = [
         (
             ScriptTab::PreRequest,
-            "Pre-request",
+            t!("scripts-pre-request"),
             badge(
                 !request.scripts.pre_request.trim().is_empty(),
                 went_wrong(pre_marks).then(|| "✗".to_owned()),
@@ -180,7 +183,7 @@ fn sub_tabs(
         ),
         (
             ScriptTab::Tests,
-            "Tests",
+            t!("tests"),
             badge(
                 !request.scripts.tests.trim().is_empty(),
                 test_result,
@@ -189,7 +192,7 @@ fn sub_tabs(
         ),
         (
             ScriptTab::Captures,
-            "Captures",
+            t!("captures"),
             (!request.capture.is_empty()).then(|| request.capture.len().to_string()),
         ),
     ];
@@ -232,7 +235,7 @@ pub fn request_scripts(
         ScriptTab::PreRequest => {
             script_toolbar(
                 ui,
-                "Runs before variables are filled in and the request is sent.",
+                &t!("scripts-pre-request-about"),
                 "pre-request",
                 &mut request.scripts.pre_request,
                 PRE_REQUEST_SNIPPETS,
@@ -247,20 +250,13 @@ pub fn request_scripts(
                 Some(&cx.breakpoints.pre_request),
                 &pre_marks,
             );
-            reference(
-                ui,
-                "pre-request",
-                "vars.get/set/unset/has/replaceIn, req.method/url/headers/body, \
-                 req.setHeader(name, value), xml2Json(text), info.requestName/iteration, workflow.next(step)/stop() \
-                 in workflow runs, console.log/info/warn/error. Click a line number to set a breakpoint: the \
-                 Console then shows the variables there.",
-            );
+            reference(ui, "pre-request", &t!("scripts-pre-request-reference"));
             toggled.map(|line| EditorAction::ToggleBreakpoint(ScriptKind::PreRequest, line))
         }
         ScriptTab::Tests => {
             let rerun = script_toolbar(
                 ui,
-                "Runs after the response arrives.",
+                &t!("scripts-tests-about"),
                 "tests",
                 &mut request.scripts.tests,
                 TEST_SNIPPETS,
@@ -275,16 +271,7 @@ pub fn request_scripts(
                 Some(&cx.breakpoints.tests),
                 &test_marks,
             );
-            reference(
-                ui,
-                "tests",
-                "test(name, fn); expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not) \
-                 or Chai's expect(x).to.equal/.to.be.an(\"object\")/.to.have.property/…; \
-                 res.status, res.json(), res.header(name), res.cookie(name), res.time, res.body; \
-                 xml2Json(text); \
-                 vars; info; workflow.next(step)/stop() in workflow runs; console.log. Click a line number to set a breakpoint: the Console then shows \
-                 the variables there.",
-            );
+            reference(ui, "tests", &t!("scripts-tests-reference"));
             if rerun {
                 Some(EditorAction::RerunTests)
             } else {
@@ -315,7 +302,7 @@ fn rows_that_fit(ui: &Ui) -> usize {
 
 /// What a script can use, folded away under the field.
 fn reference(ui: &mut Ui, id: &str, text: &str) {
-    CollapsingHeader::new("Reference")
+    CollapsingHeader::new(t!("scripts-reference"))
         .id_salt(("script-reference", id))
         .show(ui, |ui| theme::hint(ui, text));
 }
@@ -325,7 +312,7 @@ fn captures(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
         ui,
         "captures",
         &mut st.captures,
-        "Variable",
+        &t!("variable"),
         &VarHelp::default(),
     ) {
         request.capture = st
@@ -335,12 +322,7 @@ fn captures(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
             .map(|c| (c.name.trim().to_owned(), c.value.trim().to_owned()))
             .collect();
     }
-    theme::hint(
-        ui,
-        "Puts a value from the response into a variable: $.json.path, xpath://xml/path, \
-         header:Name or status. \
-         Captured values are kept until Tortuga closes and win over environment values.",
-    );
+    theme::hint(ui, t!("scripts-captures-hint"));
 }
 
 #[cfg(test)]
@@ -368,7 +350,7 @@ mod tests {
         use tortuga_core::script::{self, Phase};
         use tortuga_core::{HttpMethod, KeyValue, Response};
         for (label, code) in PRE_REQUEST_SNIPPETS.iter().chain(TEST_SNIPPETS) {
-            assert!(script::parses(code), "{label}: {code}");
+            assert!(script::parses(code), "{}: {code}", label());
         }
         let req = Request::new(HttpMethod::Get, "https://a.test/");
         let res = Response {
@@ -380,7 +362,7 @@ mod tests {
         };
         let all: Vec<&str> = TEST_SNIPPETS
             .iter()
-            .filter(|(label, _)| *label != XML_SNIPPET)
+            .filter(|(_, code)| *code != XML_SNIPPET)
             .map(|(_, c)| *c)
             .collect();
         let run = script::run(
@@ -395,7 +377,7 @@ mod tests {
         assert_eq!(run.vars["id"].as_deref(), Some("7"));
         let xml = TEST_SNIPPETS
             .iter()
-            .find_map(|(label, code)| (*label == XML_SNIPPET).then_some(*code))
+            .find_map(|(_, code)| (*code == XML_SNIPPET).then_some(*code))
             .expect("the XML snippet is in the list");
         let xml_res = Response {
             headers: vec![KeyValue::new("content-type", "application/xml")],

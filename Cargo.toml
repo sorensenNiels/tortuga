@@ -44,6 +44,12 @@ open = "5"
 # The local UTC offset, to show history times (R-HIST-2).
 # Formatting times; the clock is the app's only (core reads the time with web-time).
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# The UI in the user's language (R-I18N-1, D64): Fluent messages, pure Rust (also wasm).
+fluent-bundle = "0.16"
+fluent-syntax = "0.12"
+unic-langid = { version = "0.9", features = ["macros"] }
+# The OS's language, for the UI's default language (R-I18N-1).
+sys-locale = "0.3"
 # Random values for dynamic variables (R-VAR-8); already in the build through Boa.
 rand = "0.10"
 # The `X-Tortuga-Token` header sent with every request (R-HTTP-23).

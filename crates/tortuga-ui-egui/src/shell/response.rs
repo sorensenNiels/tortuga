@@ -72,13 +72,11 @@ impl TortugaUi {
         match response_panel(ui, outcome, &mut self.response, cx) {
             Some(ResponseAction::SaveBody) => {
                 if let Some(Outcome::Response(view)) = outcome {
-                    let r = &view.response;
-                    self.response.save_status =
-                        match self.state.host.save_file(&r.suggested_file_name(), &r.body) {
-                            Some(Ok(path)) => Some(format!("Saved to {}", path.display())),
-                            Some(Err(e)) => Some(format!("Could not save: {e}")),
-                            None => self.response.save_status.take(),
-                        };
+                    save_body(
+                        self.state.host.as_ref(),
+                        &mut self.response.save_status,
+                        &view.response,
+                    );
                 }
             }
             Some(ResponseAction::SaveAsExample) => {
@@ -102,7 +100,7 @@ impl TortugaUi {
             Some(ResponseAction::ShowChanges) => {
                 if let Some(c) = self.sent.get(key).and_then(|s| s.comparison.clone()) {
                     self.modal = Some(Modal::Changes(ChangesDialog {
-                        between: "The previous response → this one".into(),
+                        between: t!("changes-previous-response"),
                         comparison: c,
                     }));
                 }
@@ -128,6 +126,20 @@ impl TortugaUi {
             CookiesTab::Scratch
         }
     }
+}
+
+/// "Save to file…": asks where, writes the body and says how it went in `status`.
+fn save_body(
+    host: &dyn crate::host::Host,
+    status: &mut Option<String>,
+    r: &tortuga_core::Response,
+) {
+    let title = t!("save-response-body");
+    *status = match host.save_file(&title, &r.suggested_file_name(), &r.body) {
+        Some(Ok(path)) => Some(t!("saved-to", path = path.display().to_string())),
+        Some(Err(e)) => Some(t!("could-not-save", error = e)),
+        None => status.take(),
+    };
 }
 
 #[cfg(test)]

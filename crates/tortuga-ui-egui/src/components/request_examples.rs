@@ -112,9 +112,9 @@ fn example_picker(ui: &mut Ui, examples: &mut Vec<Example>, st: &mut ExamplesSta
         let p = theme::palette(ui);
         for (i, example) in examples.iter().enumerate() {
             let name = if example.name.trim().is_empty() {
-                "(no name)"
+                t!("example-no-name")
             } else {
-                example.name.as_str()
+                example.name.clone()
             };
             let label = (
                 RichText::new(name),
@@ -126,8 +126,8 @@ fn example_picker(ui: &mut Ui, examples: &mut Vec<Example>, st: &mut ExamplesSta
                 st.open(i);
             }
         }
-        if ui.button("+ Add example").clicked() {
-            let name = tortuga_core::import::unique_name("Example", |n| {
+        if ui.button(t!("example-add")).clicked() {
+            let name = tortuga_core::import::unique_name(&t!("example-default-name"), |n| {
                 examples.iter().any(|e| e.name == n)
             });
             examples.push(Example::new(name));
@@ -147,7 +147,7 @@ fn example_fields(
         .num_columns(2)
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
-            let label = ui.label("Name");
+            let label = ui.label(t!("name"));
             ui.horizontal(|ui| {
                 theme::sized_edit(
                     ui,
@@ -156,9 +156,9 @@ fn example_fields(
                 )
                 .labelled_by(label.id);
                 let buttons = [
-                    ("↑", "Earlier: asked before the ones below", Change::Up),
-                    ("↓", "Later", Change::Down),
-                    ("🗙", "Remove this example", Change::Remove),
+                    ("↑", t!("example-earlier"), Change::Up),
+                    ("↓", t!("example-later"), Change::Down),
+                    ("🗙", t!("example-remove"), Change::Remove),
                 ];
                 for (glyph, hover, asked) in buttons {
                     if ui
@@ -171,7 +171,7 @@ fn example_fields(
                 }
             });
             ui.end_row();
-            let label = ui.label("Status");
+            let label = ui.label(t!("status"));
             ui.horizontal(|ui| {
                 let edit = TextEdit::singleline(&mut drafts.status).id_salt("example-status");
                 if theme::sized_edit(ui, 60.0, edit)
@@ -182,13 +182,13 @@ fn example_fields(
                     example.status = status;
                 }
                 if parse_status(&drafts.status).is_none() {
-                    theme::warning(ui, "A status from 100 to 999");
+                    theme::warning(ui, t!("example-status-range"));
                 }
                 ui.add_space(12.0);
-                let label = ui.label("Delay (ms)");
+                let label = ui.label(t!("example-delay"));
                 let edit = TextEdit::singleline(&mut drafts.delay)
                     .id_salt("example-delay")
-                    .hint_text("none");
+                    .hint_text(t!("example-delay-none"));
                 if theme::sized_edit(ui, 70.0, edit)
                     .labelled_by(label.id)
                     .changed()
@@ -200,17 +200,14 @@ fn example_fields(
         });
 
     ui.add_space(8.0);
-    theme::section_label(ui, "Headers");
+    theme::section_label(ui, &t!("headers"));
     // Each table in its own id scope: their fields are salted by row only.
     ui.push_id("example-headers", |ui| {
-        key_value_table(ui, "table", &mut example.headers, "Header", help);
+        key_value_table(ui, "table", &mut example.headers, &t!("header"), help);
     });
-    theme::hint(
-        ui,
-        "Without a Content-Type, JSON, XML or text is worked out from the body.",
-    );
+    theme::hint(ui, t!("example-content-type-hint"));
     ui.add_space(8.0);
-    theme::section_label(ui, "Body");
+    theme::section_label(ui, &t!("body"));
     ui.add(
         TextEdit::multiline(&mut example.body)
             .id_salt("example-body")
@@ -219,10 +216,7 @@ fn example_fields(
             .desired_width(f32::INFINITY)
             .hint_text("{\"id\": 1}"),
     );
-    theme::hint(
-        ui,
-        "{{variables}} are filled from the project's active environment.",
-    );
+    theme::hint(ui, t!("example-variables-hint"));
     ui.add_space(8.0);
     conditions(ui, example, drafts);
     change
@@ -230,28 +224,24 @@ fn example_fields(
 
 /// "Answers when": query, header and body conditions (R-MOCK-3).
 fn conditions(ui: &mut Ui, example: &mut Example, drafts: &mut Drafts) {
-    theme::section_label(ui, "Answers when");
-    theme::hint(
-        ui,
-        "Every condition must hold. Without conditions this example answers any request \
-         that reaches it.",
-    );
+    theme::section_label(ui, &t!("example-answers-when"));
+    theme::hint(ui, t!("example-conditions-hint"));
     let tables = [
         (
             "example-query",
-            "Query parameter",
+            t!("example-query-parameter"),
             &mut drafts.query,
             &mut example.conditions.query,
         ),
         (
             "example-match-headers",
-            "Header",
+            t!("header"),
             &mut drafts.headers,
             &mut example.conditions.headers,
         ),
         (
             "example-match-body",
-            "Body ($.path or xpath:…)",
+            t!("example-body-condition"),
             &mut drafts.body,
             &mut example.conditions.body,
         ),
@@ -259,7 +249,7 @@ fn conditions(ui: &mut Ui, example: &mut Example, drafts: &mut Drafts) {
     for (id, hint, rows, map) in tables {
         if ui
             .push_id(id, |ui| {
-                key_value_table(ui, "table", rows, hint, &VarHelp::default())
+                key_value_table(ui, "table", rows, &hint, &VarHelp::default())
             })
             .inner
         {
