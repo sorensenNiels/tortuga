@@ -1,0 +1,39 @@
+name = "registrationItemsSetValues"
+seq = 400
+method = "POST"
+server = "synchservicesbase"
+url = "/apixml"
+
+[auth]
+kind = "basic"
+username = "{{username_2}}"
+password = "{{password_2}}"
+
+[body]
+kind = "xml"
+content = """
+      <syn:registrationItemsSetValue registrationSequence="{{CharacterCheckRegistration}}" xmlns:syn="http://www.synchronicer.dk">\r
+         <syn:itemValue item="BESKED" value="ABCâ äàáã}çñ#.(+!&amp;éêëèíîïìß¤Å*);^-/ÂÄÀÁÃ$ÇÑø,%_&lt;&gt;¦ÉÊËÈÍÎÏÌ`:ÆØ=abcdefghi«»ðýþ±°jklmnopqrªº{¸[]µüstuvwxyz¡¿ÐÝÞ®¢£¥·©§¶¼½¾¬|¯¨´×æôöòóõå¹û~ùúÿ÷²ÔÖÒÓÕ³ÛÜÙÚ ΦABC"/>\r
+         <syn:itemValue item="BESKED_SRV" value="²ÔÖÒÓÕ³ÛÜÙÚ ΦABC &#13;a"/>\r
+      </syn:registrationItemsSetValue>"""
+
+[scripts]
+tests = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+test("Status code is 200", function () {
+    expect(res.status).toBe(200);
+});
+if (res.status == 200){
+    test("status", function(){
+        var jsonObject;
+        jsonObject = xml2Json(res.body);
+        var status = jsonObject.registrationItemsSetValueResponse.$.status;
+        if (status != "success") {
+            workflow.stop();
+        }
+        expect(status).toBe("success");
+    })
+} else {
+    workflow.stop();
+}
+"""

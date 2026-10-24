@@ -9,7 +9,7 @@ use tortuga_core::collection::Direction;
 use tortuga_core::import::ImportKind;
 use tortuga_core::settings::ImporterSettings;
 
-use super::{MenuOffers, Rename, SidebarAction, Tree};
+use super::{MenuOffers, Rename, ShownFeatures, SidebarAction, Tree};
 use crate::components::{ENVIRONMENT_KINDS, environments_entry};
 use crate::state::ItemKey;
 use crate::theme;
@@ -132,6 +132,11 @@ pub(super) fn collection_menu(
             MenuChoice::Action(SidebarAction::ProjectDescription(root.clone()))
         });
     }
+    if offers.features.workflows {
+        item(ui, "⏵", t!("run-requests"), &|| {
+            MenuChoice::Action(SidebarAction::RunRequests(root.clone(), PathBuf::new()))
+        });
+    }
     if offers.features.workflows && !c.read_only {
         item(ui, "🔀", t!("cmd-new-workflow"), &|| {
             MenuChoice::Action(SidebarAction::NewWorkflow(root.clone()))
@@ -184,10 +189,21 @@ pub(super) fn item_menu(
     ui: &mut Ui,
     key: &ItemKey,
     is_folder: bool,
-    docs: bool,
+    features: ShownFeatures,
 ) -> Option<MenuChoice> {
     let act = |a: SidebarAction| Some(MenuChoice::Action(a));
     let mut choice = None;
+    if is_folder
+        && features.workflows
+        && entry(ui, "⏵", &t!("run-requests"))
+            .on_hover_text(t!("run-requests-hint"))
+            .clicked()
+    {
+        choice = act(SidebarAction::RunRequests(
+            key.root.clone(),
+            key.path.clone(),
+        ));
+    }
     if is_folder {
         if entry(ui, "🗋", &t!("cmd-new-request")).clicked() {
             choice = act(SidebarAction::NewRequest {
@@ -207,7 +223,7 @@ pub(super) fn item_menu(
         {
             choice = act(SidebarAction::EditFolderDefaults(key.clone()));
         }
-        if docs
+        if features.docs
             && entry(ui, "📖", &t!("menu-description"))
                 .on_hover_text(t!("menu-folder-description-hint"))
                 .clicked()

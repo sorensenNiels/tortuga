@@ -328,6 +328,7 @@ crates/
 docs/
   ROADMAP.md       The plan: vision, milestones and phases, requirements, ideas and decisions.
   FEATURES.md      What is implemented and verified, per requirement.
+  REQUIREMENTS.md  The agreed text of every implemented requirement.
 scripts/           One-time setup per OS (used by `make setup`).
 ```
 

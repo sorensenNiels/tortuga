@@ -1,0 +1,48 @@
+format = 1
+name = "API: CharacterReplacement"
+description = """
+Denne test suite er beregnet til at teste den replacement af karakterer der **ikke** er del af EBCDIC med spørgsmålstegn.
+
+Testene bør køres med run collection - og bør kunne køres uden hensyn til databasens tilstand (dog må der ikke være rettet for meget i reg typen - f.eks. slet af itemes der blicer sat værdier for).
+
+Generelt vil testen stoppe hvis der er et af service kaldene, der **ikke** returnerer http status 200 - da det så må antages at der enten er noget galt med tilgangen til servicene eller med den authorisation der anvendes.
+
+Det betyder så også at hvis denne brugers password ændres så vil testene fejle.
+
+Testen starter med destinationGet, der checker om en specifik destination findes - hvis **ikke** gør så kaldes destinationCreate.
+
+Herefter har vi en destination og kalder så registrationCreate for at oprette en opgave vi kan definere items for.
+
+registrationItemsSetValues sætter en lang strend, der indeholder de karakterer der rent faktisk findes i EBCDIC (med undtagelse af et par apostrof-tegn der gav for meget støj i testens sammenhæng mellem json og XML).
+
+Her skal intet replaces.
+
+registrationItemSetValue sætter en værdi, der indeholder et græsk special tegn, der ikke er i EBCDIC - dette tegn skal replaces.
+
+registrationItemSetValue 2 sætter en værdi, der indeholder en "normal" apostrof (') - denne skal ikke replaces.
+
+registrationItemSetValue 2 sætter en værdi, der indeholder et single right quotation mark (unicode 2019) - dette findes ikke i EBCDIC - men vi har en speciel kode der før EBCDIC replacen foretages der replacer med en "normal" apostrof - denne replace testes.
+
+Herefter laves et sæt af testes der går på registrationTable API'erne - først checkes eksistens af en destination i destinationGet Table, hvis den ikke findes oprettes den i destinationCreate Table.
+
+Så oprettes en registration i registrationCreate Table.
+
+registrationTableRowCreateSetVal opretter en række og sætter en række værdier, hvoraf en af dem (FEJLBE) indeholdet et tegn, der ikke er i EBCDIC - det checkes at de øvrige tekster er uændrede og at dette tegn erstattes med ?
+
+Det er så den returnerede række de senere tekst arbejdere videre med.
+
+registrationTableItemsSetValues sætter igen en række værdier for en oprettede række - ingen special tegn og det checkes så at alt er uændret.
+
+registrationTableTimeSetValue sætter en enkelt værdi der indeholder en smiley - replace checkes og det checkes at de øvrige værdier er uændrede
+
+Benytter owner APITST"""
+secrets = ["password", "password_2", "username", "username_2"]
+
+[[servers]]
+id = "synchservicesbase"
+name = "synchServicesBase"
+
+[auth]
+kind = "basic"
+username = "{{username}}"
+password = "{{password}}"

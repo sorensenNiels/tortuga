@@ -1,0 +1,41 @@
+name = "destinationCreate Chars"
+seq = 2100
+description = "Opretter en destination med en invalid karakter i navnet"
+method = "POST"
+server = "synchservicesbase"
+url = "/apixml"
+
+[body]
+kind = "xml"
+content = '<syn:destinationCreate destination="ÅÅ{{COUNT}}" destinationType="BOR" name="CharacterReplaceTest Φ" address="Plantevej 27" address2="" zipCode="2870" city="Dyssegård" country="DK" xmlns:syn="http://www.synchronicer.dk"/>'
+
+[scripts]
+pre_request = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+var count = vars.get("COUNT");
+var c = 0;
+if (count != "") {
+    c = Number(count);
+}
+c++;
+vars.set("COUNT", c);
+"""
+tests = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+test("Status code is 200", function () {
+    expect(res.status).toBe(200);
+});
+if (res.status == 200){
+    test("status", function(){
+        var jsonObject;
+        jsonObject = xml2Json(res.body);
+        var status = jsonObject.destinationCreateResponse.$.status;
+        if (status != "success"){
+            workflow.stop();
+        }
+        expect(status).toBe("success");
+    })
+} else {
+    workflow.stop();
+}
+"""

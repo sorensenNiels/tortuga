@@ -582,6 +582,10 @@ const vars = Object.freeze({
       return v === undefined || v === null ? whole : v;
     });
   },
+  // The variables a script sees, by name (R-TEST-19), as Postman's `toObject()`.
+  toObject() {
+    return Object.fromEntries(Object.entries(__vars).filter(([, v]) => v !== null && v !== undefined));
+  },
 });
 
 // New names are properties of the global object, not declarations, so a script that
@@ -604,6 +608,41 @@ globalThis.workflow = Object.freeze({
     __out.flow = "stop";
   },
 });
+
+// Postman's `btoa` and `atob` (R-TEST-19): Base64 of text whose characters are bytes.
+const __b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+globalThis.btoa = function btoa(data) {
+  const s = String(data);
+  let out = "";
+  for (let i = 0; i < s.length; i += 3) {
+    const n = Math.min(3, s.length - i);
+    const b = [0, 1, 2].map((j) => (j < n ? s.charCodeAt(i + j) : 0));
+    if (b.some((c) => c > 255)) {
+      throw new Error("btoa() takes characters up to U+00FF only; encode other text first");
+    }
+    const v = (b[0] << 16) | (b[1] << 8) | b[2];
+    out += __b64[v >> 18] + __b64[(v >> 12) & 63];
+    out += (n > 1 ? __b64[(v >> 6) & 63] : "=") + (n > 2 ? __b64[v & 63] : "=");
+  }
+  return out;
+};
+globalThis.atob = function atob(data) {
+  const s = String(data).replace(/[\t\n\f\r ]/g, "").replace(/={1,2}$/, "");
+  if (s.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(s)) throw new Error("atob() got text that is not Base64");
+  let out = "";
+  let v = 0;
+  let bits = 0;
+  for (const c of s) {
+    v = (v << 6) | __b64.indexOf(c);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out += String.fromCharCode((v >> bits) & 255);
+      v &= (1 << bits) - 1;
+    }
+  }
+  return out;
+};
 
 const console = (() => {
   const at = (level) => (...args) => {
@@ -660,6 +699,10 @@ function test(name, fn) {
     __push({ kind: "test", name: String(name), passed: false, message, line: __line(e && e.stack) || line });
   }
 }
+// Postman's `pm.test.skip` (R-TEST-19): the test does not run or count, the console says so.
+test.skip = function skip(name) {
+  __push({ kind: "note", message: "Skipped test: " + String(name) });
+};
 
 // `expect` takes Jest's style, `expect(x).toBe(1)`, and Chai's, `expect(x).to.equal(1)`
 // (R-TEST-8). Both report "Expected <actual> [not] <what>".
@@ -686,12 +729,17 @@ function __size(v) {
   return v === null || v === undefined ? undefined : v.length;
 }
 
+// A text as the second argument is Chai's message, put before a failure (R-COL-40).
 function expect(actual, flags) {
-  const f = Object.assign({ not: false, deep: false, nested: false, own: false, any: false }, flags);
+  const f = Object.assign(
+    { not: false, deep: false, nested: false, own: false, any: false, ordered: false, contains: false, message: "" },
+    typeof flags === "string" ? { message: flags } : flags,
+  );
   const with_ = (more) => expect(actual, Object.assign({}, f, more));
   const check = (ok, what) => {
     if (Boolean(ok) === f.not) {
-      throw new Error("Expected " + __show(actual) + (f.not ? " not " : " ") + what);
+      const message = "Expected " + __show(actual) + (f.not ? " not " : " ") + what;
+      throw new Error(f.message ? f.message + ": " + message : message);
     }
   };
   const a = {};
@@ -704,6 +752,7 @@ function expect(actual, flags) {
   chain("own", () => with_({ own: true }));
   chain("any", () => with_({ any: true }));
   chain("all", () => with_({ any: false }));
+  chain("ordered", () => with_({ ordered: true }));
   // Chai's checks that are properties, not calls: `.to.be.true`.
   const prop = (name, ok, what) => chain(name, () => { check(ok(), what); return a; });
   prop("ok", () => actual, "to be truthy");
@@ -764,7 +813,6 @@ function expect(actual, flags) {
       check(__type(actual) === t, "to be " + (/^[aeiou]/.test(t) ? "an " : "a ") + t);
       return a;
     },
-    include(item) { check(__includes(actual, item, f.deep), "to include " + __show(item)); return a; },
     property(name, ...value) {
       const p = f.nested
         ? __path(actual, name)
@@ -778,7 +826,6 @@ function expect(actual, flags) {
       // Like Chai, what follows is about the property's value: `.property("id").that.is.a("number")`.
       return !f.not && value.length === 0 ? expect(p.value) : a;
     },
-    lengthOf(n) { check(__size(actual) === n, "to have length " + n); return a; },
     match(re) { check(typeof actual === "string" && re.test(actual), "to match " + String(re)); return a; },
     above(n) { check(actual > n, "to be above " + __show(n)); return a; },
     least(n) { check(actual >= n, "to be at least " + __show(n)); return a; },
@@ -797,25 +844,71 @@ function expect(actual, flags) {
       const have = actual !== null && typeof actual === "object" ? Object.keys(actual) : [];
       const ok = f.any
         ? want.some((k) => have.includes(String(k)))
-        : want.length === have.length && want.every((k) => have.includes(String(k)));
-      check(ok, "to have " + (f.any ? "any of the keys " : "the keys ") + __show(want));
+        : (f.contains || want.length === have.length) && want.every((k) => have.includes(String(k)));
+      const what = f.any ? "to have any of the keys " : f.contains ? "to include the keys " : "to have the keys ";
+      check(ok, what + __show(want));
       return a;
     },
     instanceOf(c) { check(actual instanceof c, "to be an instance of " + (c && c.name)); return a; },
     closeTo(n, delta) { check(Math.abs(actual - n) <= delta, "to be close to " + n + " ± " + delta); return a; },
     satisfy(fn) { check(fn(actual), "to satisfy " + String(fn)); return a; },
     string(s) { check(typeof actual === "string" && actual.includes(s), "to contain " + __show(s)); return a; },
+    members(list) {
+      const same = (x, y) => (f.deep ? __eq(x, y) : x === y);
+      const have = Array.isArray(actual) ? actual : [];
+      const want = Array.isArray(list) ? list : [];
+      let ok;
+      if (f.ordered) {
+        ok = (f.contains || have.length === want.length) && want.every((x, i) => i < have.length && same(have[i], x));
+      } else {
+        const left = [...have];
+        ok = want.every((x) => {
+          const i = left.findIndex((y) => same(y, x));
+          return i >= 0 && left.splice(i, 1).length === 1;
+        }) && (f.contains || left.length === 0);
+      }
+      const what = f.contains ? "to include the members " : "to have the same members as ";
+      check(Array.isArray(actual) && ok, what + (f.ordered ? "in order " : "") + __show(want));
+      return a;
+    },
+    // `lengthOf(n)` asserts, and `length.above(n)` and the like compare the length (R-TEST-19).
+    lengthOf: (() => {
+      const lengthOf = (n) => { check(__size(actual) === n, "to have length " + n); return a; };
+      const compare = (what, ok) => (...n) => {
+        check(ok(__size(actual), ...n), "to have length " + what + " " + n.map(__show).join(".."));
+        return a;
+      };
+      const cmp = {
+        above: compare("above", (s, n) => s > n),
+        least: compare("at least", (s, n) => s >= n),
+        below: compare("below", (s, n) => s < n),
+        most: compare("at most", (s, n) => s <= n),
+        within: compare("within", (s, lo, hi) => s >= lo && s <= hi),
+      };
+      Object.assign(lengthOf, cmp, {
+        gt: cmp.above, greaterThan: cmp.above, gte: cmp.least, lt: cmp.below, lessThan: cmp.below, lte: cmp.most,
+      });
+      lengthOf.at = lengthOf;
+      return lengthOf;
+    })(),
   };
   const aliases = {
-    equals: "equal", eq: "equal", eqls: "eql", an: "a", includes: "include", contain: "include",
-    contains: "include", length: "lengthOf", matches: "match", gt: "above", greaterThan: "above",
-    gte: "least", greaterThanOrEqual: "least", lt: "below", lessThan: "below", lte: "most",
+    equals: "equal", eq: "equal", eqls: "eql", an: "a", length: "lengthOf", matches: "match",
+    gt: "above", greaterThan: "above", gte: "least", greaterThanOrEqual: "least", lt: "below", lessThan: "below", lte: "most",
     lessThanOrEqual: "most", key: "keys", instanceof: "instanceOf", approximately: "closeTo",
     haveOwnProperty: "ownProperty",
   };
   Object.assign(a, methods);
   a.ownProperty = (name, ...value) => with_({ own: true }).property(name, ...value);
   for (const [alias, name] of Object.entries(aliases)) a[alias] = a[name];
+  // `include(x)` asserts, and what follows it is about a subset (R-TEST-19):
+  // `include.members([…])`, `include.all.keys(…)`. Made when used, since the subset's
+  // `expect` has an `include` of its own.
+  const include = () => Object.setPrototypeOf(
+    (item) => { check(__includes(actual, item, f.deep), "to include " + __show(item)); return a; },
+    with_({ contains: true }),
+  );
+  for (const name of ["include", "includes", "contain", "contains"]) chain(name, include);
   return a;
 }
 "#;
@@ -1104,6 +1197,159 @@ mod tests {
             assert!(got.contains(message), "{check}: {got}");
         }
         assert_eq!(out.tests.len(), passing.len() + failing.len());
+    }
+
+    /// R-TEST-19: what Postman scripts use besides R-TEST-8: Chai's `members`, the
+    /// length compared with `length.above(…)`, and `include.keys`, passing and failing.
+    #[test]
+    fn members_lengths_and_included_keys() {
+        use std::fmt::Write as _;
+
+        let res = response(
+            200,
+            r#"{"tags": ["a", "b", "ü😀"], "user": {"id": 1, "name": "Ann"}}"#,
+        );
+        let passing = [
+            "expect(b.tags).to.have.members(['ü😀', 'a', 'b'])",
+            "expect(b.tags).to.include.members(['b'])",
+            "expect(b.tags).to.contain.members(['a', 'ü😀'])",
+            "expect(b.tags).to.have.ordered.members(['a', 'b', 'ü😀'])",
+            "expect(b.tags).to.include.ordered.members(['a', 'b'])",
+            "expect([{x: 1}, {y: 2}]).to.include.deep.members([{y: 2}])",
+            "expect([{x: 1}]).to.have.deep.members([{x: 1}])",
+            "expect(b.tags).to.not.have.members(['a'])",
+            "expect([]).to.have.members([])",
+            "expect(b.tags).to.have.length.above(2)",
+            "expect(b.tags).to.have.lengthOf.at.least(3)",
+            "expect(b.tags).to.have.length.below(4)",
+            "expect(b.tags).to.have.lengthOf.within(1, 3)",
+            "expect(b.tags).to.not.have.length.above(3)",
+            "expect('ü😀').to.have.length.above(2)",
+            "expect(b.tags).to.have.length(3)",
+            "expect(b.user).to.include.keys('name')",
+            "expect(b.user).to.contain.all.keys('id', 'name')",
+            "expect(b.tags).to.include('a')",
+        ];
+        let failing = [
+            (
+                "expect(b.tags).to.have.members(['a', 'b'])",
+                "to have the same members as [\"a\",\"b\"]",
+            ),
+            (
+                "expect(b.tags).to.include.members(['c'])",
+                "to include the members [\"c\"]",
+            ),
+            (
+                "expect(b.tags).to.have.ordered.members(['b', 'a', 'ü😀'])",
+                "in order",
+            ),
+            (
+                "expect([{x: 1}]).to.have.members([{x: 1}])",
+                "to have the same members",
+            ),
+            (
+                "expect('x').to.include.members(['x'])",
+                "to include the members",
+            ),
+            (
+                "expect(b.tags).to.have.length.above(3)",
+                "to have length above 3",
+            ),
+            (
+                "expect(b.tags).to.have.lengthOf.within(4, 9)",
+                "to have length within 4..9",
+            ),
+            ("expect(b.user).to.include.keys('x')", "to include the keys"),
+        ];
+        let mut script = String::from("const b = res.json();\n");
+        for (i, check) in passing.iter().enumerate() {
+            writeln!(script, "test(\"pass {i}\", () => {{ {check}; }});")
+                .expect("writing to a String");
+        }
+        for (i, (check, _)) in failing.iter().enumerate() {
+            writeln!(script, "test(\"fail {i}\", () => {{ {check}; }});")
+                .expect("writing to a String");
+        }
+        let out = test_run(&script, &res);
+        assert_eq!(out.error, None);
+        for (t, check) in out.tests.iter().zip(passing) {
+            assert!(t.passed, "{check}: {:?}", t.message);
+        }
+        for (t, (check, message)) in out.tests[passing.len()..].iter().zip(failing) {
+            assert!(!t.passed, "{check} should fail");
+            let got = t.message.as_deref().unwrap_or_default();
+            assert!(got.contains(message), "{check}: {got}");
+        }
+        assert_eq!(out.tests.len(), passing.len() + failing.len());
+    }
+
+    /// R-TEST-19: `test.skip` neither runs nor counts its test and says so in the console;
+    /// `btoa`/`atob` are Base64 as in Postman; `vars.toObject()` lists the variables.
+    #[test]
+    fn skipped_tests_base64_and_all_variables() {
+        let vars = BTreeMap::from([
+            ("user".to_owned(), "Zoë 😀".to_owned()),
+            ("gone".to_owned(), "x".to_owned()),
+        ]);
+        let out = run(
+            r#"
+            test.skip("later", () => { throw new Error("ran"); });
+            test("base64", () => {
+              expect(btoa("user:pass")).toBe("dXNlcjpwYXNz");
+              expect(btoa("")).toBe("");
+              expect(btoa("a")).toBe("YQ==");
+              expect(btoa("ab")).toBe("YWI=");
+              expect(btoa("Zoë")).toBe("Wm/r");
+              expect(atob("dXNlcjpwYXNz")).toBe("user:pass");
+              expect(atob("YQ==")).toBe("a");
+              expect(atob("YW\nI= ")).toBe("ab");
+              expect(atob(btoa("ÿ\u0000x"))).toBe("ÿ\u0000x");
+              expect(() => btoa("😀")).toThrow;
+            });
+            test("not base64", () => { atob("a#b"); });
+            test("wide", () => { btoa("😀"); });
+            vars.unset("gone");
+            vars.set("n", 1);
+            vars.set("all", JSON.stringify(vars.toObject()));
+            "#,
+            Phase::PreRequest,
+            &vars,
+            &Request::new(HttpMethod::Get, "https://api.test"),
+            None,
+        );
+        assert_eq!(out.error, None);
+        let tests: Vec<(&str, bool)> = out
+            .tests
+            .iter()
+            .map(|t| (t.name.as_str(), t.passed))
+            .collect();
+        assert_eq!(
+            tests,
+            [("base64", true), ("not base64", false), ("wide", false)],
+            "{:?}",
+            out.tests
+        );
+        assert!(
+            out.tests[1]
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not Base64")
+        );
+        assert!(
+            out.tests[2]
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("U+00FF")
+        );
+        assert!(out.console.iter().any(
+            |e| matches!(e, ConsoleEntry::Note { message } if message == "Skipped test: later")
+        ));
+        assert_eq!(
+            out.vars["all"].as_deref(),
+            Some(r#"{"user":"Zoë 😀","n":"1"}"#)
+        );
     }
 
     /// R-TEST-1: passing and failing tests, with readable reasons.

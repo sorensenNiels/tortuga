@@ -85,6 +85,8 @@ enum Modal {
     NewWorkflow(PathBuf, NameDialog),
     RenameWorkflow(crate::state::WorkflowKey, NameDialog),
     DeleteWorkflow(crate::state::WorkflowKey, ConfirmDialog),
+    /// Keep a project's run as a workflow file (R-FLOW-7).
+    SaveRunAs(PathBuf, NameDialog),
     RuntimeVars(crate::components::RuntimeVarsDialog),
     /// The cookie viewer (R-CK-5).
     Cookies(CookiesDialog),

@@ -1,0 +1,46 @@
+name = "registrationTableRowCreateSetVal"
+seq = 1500
+method = "POST"
+server = "synchservicesbase"
+url = "/apixml"
+
+[auth]
+kind = "basic"
+username = "{{username_2}}"
+password = "{{password_2}}"
+
+[body]
+kind = "xml"
+content = """
+      <syn:registrationTableRowCreateSetVal registrationSequence="{{CharacterCheckRegistration}}" table="FEJL" xmlns:syn="http://www.synchronicer.dk">\r
+        <syn:row>\r
+            <syn:itemValue item="FEJLTP" value="MSM"/>\r
+            <syn:itemValue item="FEJLVJ" value="Plantevej"/>\r
+            <syn:itemValue item="FEJLPB" value="2870"/>\r
+            <syn:itemValue item="FEJLHN" value="2"/>\r
+            <syn:itemValue item="FEJLBE" value="ABC Φ ABC"/>\r
+         </syn:row>\r
+      </syn:registrationTableRowCreateSetVal>"""
+
+[scripts]
+tests = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+test("Status code is 200", function () {
+    expect(res.status).toBe(200);
+});
+if (res.status == 200){
+    test("status", function(){
+        var jsonObject;
+        jsonObject = xml2Json(res.body);
+        var status = jsonObject.registrationTableRowCreateSetValResponse.$.status;
+        if (status != "success") {
+            workflow.stop();
+        }
+        expect(status).toBe("success");
+        var rowid =  jsonObject.registrationTableRowCreateSetValResponse.row.$.rowId;
+        vars.set("CharacterCheckRow", rowid);
+    })
+} else {
+    workflow.stop();
+}
+"""

@@ -20,12 +20,32 @@ use tortuga_core::{AppSettings, Client, ClientSettings, Collection, Request};
 use crate::format::sentence;
 use crate::host::{Host, LocalState, Workspace};
 
-/// Identifies a workflow of an open project (R-FLOW-2).
+/// Identifies a workflow of an open project (R-FLOW-2), or the project's run that is
+/// not saved (R-FLOW-7).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WorkflowKey {
     pub root: PathBuf,
-    /// The workflow file's stem.
+    /// The workflow file's stem, or [`RUN_ID`] for the run.
     pub id: String,
+}
+
+/// The id of a project's run that is not saved: never a file's, since workflow ids are
+/// slugs and `Collection::save_workflow` refuses ids with a `.`.
+const RUN_ID: &str = ".run";
+
+impl WorkflowKey {
+    /// The project's run of its or a folder's requests, not saved (R-FLOW-7).
+    pub fn run(root: &Path) -> Self {
+        Self {
+            root: root.to_owned(),
+            id: RUN_ID.to_owned(),
+        }
+    }
+
+    /// Whether this is the project's run that is not saved (R-FLOW-7).
+    pub fn is_run(&self) -> bool {
+        self.id == RUN_ID
+    }
 }
 
 /// Identifies a request in an open collection.

@@ -351,6 +351,8 @@ fn run(args: &Args) -> Result<bool, String> {
         environment,
         secrets: BTreeMap::new(),
         overrides: args.vars.clone(),
+        // The command line keeps no variables between runs (R-FLOW-9).
+        runtime: BTreeMap::new(),
         workspace: workspace.variables.values,
         workspace_defaults: workspace.defaults,
         rows,

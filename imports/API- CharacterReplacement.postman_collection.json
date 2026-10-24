@@ -1,0 +1,1908 @@
+{
+  "info": {
+    "_postman_id": "5bb22b8c-bd0b-4234-a055-6d0d72875f86",
+    "name": "API: CharacterReplacement",
+    "description": "Denne test suite er beregnet til at teste den replacement af karakterer der **ikke** er del af EBCDIC med spørgsmålstegn.\n\nTestene bør køres med run collection - og bør kunne køres uden hensyn til databasens tilstand (dog må der ikke være rettet for meget i reg typen - f.eks. slet af itemes der blicer sat værdier for).\n\nGenerelt vil testen stoppe hvis der er et af service kaldene, der **ikke** returnerer http status 200 - da det så må antages at der enten er noget galt med tilgangen til servicene eller med den authorisation der anvendes.\n\nDet betyder så også at hvis denne brugers password ændres så vil testene fejle.\n\nTesten starter med destinationGet, der checker om en specifik destination findes - hvis **ikke** gør så kaldes destinationCreate.\n\nHerefter har vi en destination og kalder så registrationCreate for at oprette en opgave vi kan definere items for.\n\nregistrationItemsSetValues sætter en lang strend, der indeholder de karakterer der rent faktisk findes i EBCDIC (med undtagelse af et par apostrof-tegn der gav for meget støj i testens sammenhæng mellem json og XML).\n\nHer skal intet replaces.\n\nregistrationItemSetValue sætter en værdi, der indeholder et græsk special tegn, der ikke er i EBCDIC - dette tegn skal replaces.\n\nregistrationItemSetValue 2 sætter en værdi, der indeholder en \"normal\" apostrof (') - denne skal ikke replaces.\n\nregistrationItemSetValue 2 sætter en værdi, der indeholder et single right quotation mark (unicode 2019) - dette findes ikke i EBCDIC - men vi har en speciel kode der før EBCDIC replacen foretages der replacer med en \"normal\" apostrof - denne replace testes.\n\nHerefter laves et sæt af testes der går på registrationTable API'erne - først checkes eksistens af en destination i destinationGet Table, hvis den ikke findes oprettes den i destinationCreate Table.\n\nSå oprettes en registration i registrationCreate Table.\n\nregistrationTableRowCreateSetVal opretter en række og sætter en række værdier, hvoraf en af dem (FEJLBE) indeholdet et tegn, der ikke er i EBCDIC - det checkes at de øvrige tekster er uændrede og at dette tegn erstattes med ?\n\nDet er så den returnerede række de senere tekst arbejdere videre med.\n\nregistrationTableItemsSetValues sætter igen en række værdier for en oprettede række - ingen special tegn og det checkes så at alt er uændret.\n\nregistrationTableTimeSetValue sætter en enkelt værdi der indeholder en smiley - replace checkes og det checkes at de øvrige værdier er uændrede\n\nBenytter owner APITST",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "11463842",
+    "_collection_link": "https://go.postman.co/collection/16471776-5bb22b8c-bd0b-4234-a055-6d0d72875f86?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "destinationGet",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200) {\r",
+              "    const xml2js = require('xml2js');\r",
+              "    var jsonObject;\r",
+              "    xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "        jsonObject = result;\r",
+              "    });\r",
+              "    var status = jsonObject.destinationGetResponse.$.status;\r",
+              "    if (status == \"success\"){\r",
+              "        pm.execution.setNextRequest(\"registrationCreate\");\r",
+              "    } else {\r",
+              "        pm.execution.setNextRequest(\"destinationCreate\");\r",
+              "    }\r",
+              "} else { \r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationGet destination=\"CHARREPTST\" destinationType=\"BOR\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "destinationCreate",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.destinationCreateResponse.$.status;\r",
+              "        if (status != \"success\"){\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationCreate destination=\"CHARREPTST\" destinationType=\"BOR\" name=\"CharacterReplaceTest\" address=\"Plantevej 27\" address2=\"\" zipCode=\"2870\" city=\"Dyssegård\" country=\"DK\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationCreate",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationCreateResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        var seq = (jsonObject.registrationCreateResponse.registration.$.registrationSequence);\r",
+              "        pm.collectionVariables.set(\"CharacterCheckRegistration\", seq);\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationCreate registrationType=\"BOR\" earlyDate=\"2099-01-01\" earlyTime=\"00:00:01\" lateDate=\"2099-01-02\" lateTime=\"23:59:59\" tourType=\"BOR\" destinationType=\"BOR\" destination=\"CHARREPTST\" durationMinutes=\"10\" xmlns:syn=\"http://www.synchronicer.dk\"/>\r\n",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationItemsSetValues",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationItemsSetValueResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "      <syn:registrationItemsSetValue registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://www.synchronicer.dk\">\r\n         <syn:itemValue item=\"BESKED\" value=\"ABCâ äàáã}çñ#.(+!&amp;éêëèíîïìß¤Å*);^-/ÂÄÀÁÃ$ÇÑø,%_&lt;&gt;¦ÉÊËÈÍÎÏÌ`:ÆØ=abcdefghi«»ðýþ±°jklmnopqrªº{¸[]µüstuvwxyz¡¿ÐÝÞ®¢£¥·©§¶¼½¾¬|¯¨´×æôöòóõå¹û~ùúÿ÷²ÔÖÒÓÕ³ÛÜÙÚ ΦABC\"/>\r\n         <syn:itemValue item=\"BESKED_SRV\" value=\"²ÔÖÒÓÕ³ÛÜÙÚ ΦABC &#13;a\"/>\r\n      </syn:registrationItemsSetValue>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationGet1",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationGetResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        \r",
+              "        var len = jsonObject.registrationGetResponse.registration.itemValue.length;\r",
+              "        for (i = 0; i < len; i++){\r",
+              "            var item = jsonObject.registrationGetResponse.registration.itemValue[i].$.item;\r",
+              "            var val = jsonObject.registrationGetResponse.registration.itemValue[i].$.value;\r",
+              "            if (item == \"BESKED\"){\r",
+              "                pm.expect(val).to.equal(\"ABCâ äàáã}çñ#.(+!&éêëèíîïìß¤Å*);^-/ÂÄÀÁÃ$ÇÑø,%_<>¦ÉÊËÈÍÎÏÌ`:ÆØ=abcdefghi«»ðýþ±°jklmnopqrªº{¸[]µüstuvwxyz¡¿ÐÝÞ®¢£¥·©§¶¼½¾¬|¯¨´×æôöòóõå¹û~ùúÿ÷²ÔÖÒÓÕ³ÛÜÙÚ ?ABC\");\r",
+              "            }\r",
+              "            if (item == \"BESKED_SRV\") {\r",
+              "                pm.expect(val).to.equal(\"²ÔÖÒÓÕ³ÛÜÙÚ ?ABC \\ra\");\r",
+              "            }        \r",
+              "        }\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationGet registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationItemSetValue",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationItemSetValueResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "      <syn:registrationItemSetValue registrationSequence=\"{{CharacterCheckRegistration}}\" item=\"BESKED\" value=\"ABC Φ ABC\" xmlns:syn=\"http://www.synchronicer.dk\">\r\n      </syn:registrationItemSetValue>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationGet2",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationGetResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        \r",
+              "        var len = jsonObject.registrationGetResponse.registration.itemValue.length;\r",
+              "        for (i = 0; i < len; i++){\r",
+              "            var item = jsonObject.registrationGetResponse.registration.itemValue[i].$.item;\r",
+              "            var val = jsonObject.registrationGetResponse.registration.itemValue[i].$.value;\r",
+              "            if (item == \"BESKED\"){\r",
+              "                pm.expect(val).to.equal(\"ABC ? ABC\");\r",
+              "            } \r",
+              "        }\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationGet registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationItemSetValue 2",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationItemSetValueResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": false,
+        "disableUrlEncoding": false
+      },
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "      <syn:registrationItemSetValue registrationSequence=\"{{CharacterCheckRegistration}}\" item=\"BESKED\" value=\"ABC ' ABC\" xmlns:syn=\"http://www.synchronicer.dk\">\r\n      </syn:registrationItemSetValue>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationGet4",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationGetResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        \r",
+              "        var len = jsonObject.registrationGetResponse.registration.itemValue.length;\r",
+              "        for (i = 0; i < len; i++){\r",
+              "            var item = jsonObject.registrationGetResponse.registration.itemValue[i].$.item;\r",
+              "            var val = jsonObject.registrationGetResponse.registration.itemValue[i].$.value;\r",
+              "            if (item == \"BESKED\"){\r",
+              "                pm.expect(val).to.equal(\"ABC ' ABC\");\r",
+              "            } \r",
+              "        }\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationGet registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationItemSetValue 3",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationItemSetValueResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "      <syn:registrationItemSetValue registrationSequence=\"{{CharacterCheckRegistration}}\" item=\"BESKED\" value=\"ABC ’ ABC\" xmlns:syn=\"http://www.synchronicer.dk\">\r\n      </syn:registrationItemSetValue>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationGet5",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationGetResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        \r",
+              "        var len = jsonObject.registrationGetResponse.registration.itemValue.length;\r",
+              "        for (i = 0; i < len; i++){\r",
+              "            var item = jsonObject.registrationGetResponse.registration.itemValue[i].$.item;\r",
+              "            var val = jsonObject.registrationGetResponse.registration.itemValue[i].$.value;\r",
+              "            if (item == \"BESKED\"){\r",
+              "                pm.expect(val).to.equal(\"ABC ' ABC\");\r",
+              "            } \r",
+              "        }\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationGet registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "destinationGet Table",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200) {\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "    var status = jsonObject.destinationGetResponse.$.status;\r",
+              "    if (status == \"success\"){\r",
+              "        pm.execution.setNextRequest(\"registrationCreate Table\");\r",
+              "    } else {\r",
+              "        pm.execution.setNextRequest(\"destinationCreate Table\");\r",
+              "    }\r",
+              "} else { \r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationGet destination=\"CHARREPTST\" destinationType=\"LYS\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "destinationCreate Table",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.destinationCreateResponse.$.status;\r",
+              "        if (status != \"success\"){\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationCreate destination=\"CHARREPTST\" destinationType=\"LYS\" name=\"CharacterReplaceTest\" address=\"Plantevej 27\" address2=\"\" zipCode=\"2870\" city=\"Dyssegård\" country=\"DK\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationCreate Table",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationCreateResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        var seq = (jsonObject.registrationCreateResponse.registration.$.registrationSequence);\r",
+              "        pm.collectionVariables.set(\"CharacterCheckRegistration\", seq);\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationCreate registrationType=\"LYSAFH\" earlyDate=\"2099-01-01\" earlyTime=\"00:00:01\" lateDate=\"2099-01-02\" lateTime=\"23:59:59\" tourType=\"LYS\" destinationType=\"LYS\" destination=\"CHARREPTST\" durationMinutes=\"10\" xmlns:syn=\"http://www.synchronicer.dk\"/>\r\n",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationTableRowCreateSetVal",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationTableRowCreateSetValResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        var rowid =  jsonObject.registrationTableRowCreateSetValResponse.row.$.rowId;\r",
+              "        pm.collectionVariables.set(\"CharacterCheckRow\", rowid);\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "      <syn:registrationTableRowCreateSetVal registrationSequence=\"{{CharacterCheckRegistration}}\" table=\"FEJL\" xmlns:syn=\"http://www.synchronicer.dk\">\r\n        <syn:row>\r\n            <syn:itemValue item=\"FEJLTP\" value=\"MSM\"/>\r\n            <syn:itemValue item=\"FEJLVJ\" value=\"Plantevej\"/>\r\n            <syn:itemValue item=\"FEJLPB\" value=\"2870\"/>\r\n            <syn:itemValue item=\"FEJLHN\" value=\"2\"/>\r\n            <syn:itemValue item=\"FEJLBE\" value=\"ABC Φ ABC\"/>\r\n         </syn:row>\r\n      </syn:registrationTableRowCreateSetVal>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationGet1 Table",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationGetResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        \r",
+              "        var len = jsonObject.registrationGetResponse.registration.table.length;\r",
+              "        for (i = 0; i < len; i++){\r",
+              "            var table = jsonObject.registrationGetResponse.registration.table[i].$.table;\r",
+              "            if (table == \"FEJL\"){\r",
+              "                var len2 = jsonObject.registrationGetResponse.registration.table[i].row.length;\r",
+              "                for (j = 0; j < len2; j++){\r",
+              "                    var rowid = jsonObject.registrationGetResponse.registration.table[i].row[j].$.rowId;\r",
+              "                    if (rowid == pm.collectionVariables.get(\"CharacterCheckRow\")){\r",
+              "                        var len3 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue.length;\r",
+              "                        for (k = 0; k < len3; k++){\r",
+              "                            var item2 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue[k].$.item;\r",
+              "                            var val2 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue[k].$.value;\r",
+              "                            if (item2 == \"FEJLTP\"){\r",
+              "                                pm.expect(val2).to.equal(\"MSM\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLBE\") {\r",
+              "                                pm.expect(val2).to.equal(\"ABC ? ABC\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLHN\") {\r",
+              "                                pm.expect(val2).to.equal(\"2\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLVJ\") {\r",
+              "                                pm.expect(val2).to.equal(\"Plantevej\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLPB\") {\r",
+              "                                pm.expect(val2).to.equal(\"2870\");\r",
+              "                            }\r",
+              "                        }\r",
+              "                    }\r",
+              "                }\r",
+              "            }\r",
+              "        }\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationGet registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationTableItemsSetValue",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationTableItemsSetValuesResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "      <syn:registrationTableItemsSetValues registrationSequence=\"{{CharacterCheckRegistration}}\" table=\"FEJL\" xmlns:syn=\"http://www.synchronicer.dk\">\r\n         <syn:row rowId=\"{{CharacterCheckRow}}\">\r\n            <syn:itemValue item=\"FEJLBE\" value=\"ABC X ABC\"/>\r\n            <syn:itemValue item=\"FEJLVJ\" value=\"Dyssegårdsvej\"/>\r\n         </syn:row>\r\n      </syn:registrationTableItemsSetValues>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationGet2 Table",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationGetResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        \r",
+              "        var len = jsonObject.registrationGetResponse.registration.table.length;\r",
+              "        for (i = 0; i < len; i++){\r",
+              "            var table = jsonObject.registrationGetResponse.registration.table[i].$.table;\r",
+              "            if (table == \"FEJL\"){\r",
+              "                var len2 = jsonObject.registrationGetResponse.registration.table[i].row.length;\r",
+              "                for (j = 0; j < len2; j++){\r",
+              "                    var rowid = jsonObject.registrationGetResponse.registration.table[i].row[j].$.rowId;\r",
+              "                    if (rowid == pm.collectionVariables.get(\"CharacterCheckRow\")){\r",
+              "                        var len3 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue.length;\r",
+              "                        for (k = 0; k < len3; k++){\r",
+              "                            var item2 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue[k].$.item;\r",
+              "                            var val2 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue[k].$.value;\r",
+              "                            if (item2 == \"FEJLTP\"){\r",
+              "                                pm.expect(val2).to.equal(\"MSM\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLBE\") {\r",
+              "                                pm.expect(val2).to.equal(\"ABC X ABC\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLHN\") {\r",
+              "                                pm.expect(val2).to.equal(\"2\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLVJ\") {\r",
+              "                                pm.expect(val2).to.equal(\"Dyssegårdsvej\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLPB\") {\r",
+              "                                pm.expect(val2).to.equal(\"2870\");\r",
+              "                            }\r",
+              "                        }\r",
+              "                    }\r",
+              "                }\r",
+              "            }\r",
+              "        }\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationGet registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationTableItemSetValue",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationTableItemSetValueResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationTableItemSetValue registrationSequence=\"{{CharacterCheckRegistration}}\" table=\"FEJL\" item=\"FEJLBE\" rowId=\"{{CharacterCheckRow}}\" value=\"ABC &#128515; ABC\" xmlns:syn=\"http://www.synchronicer.dk\">\r\n</syn:registrationTableItemSetValue>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "registrationGet3 Table",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.registrationGetResponse.$.status;\r",
+              "        if (status != \"success\") {\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "        \r",
+              "        var len = jsonObject.registrationGetResponse.registration.table.length;\r",
+              "        for (i = 0; i < len; i++){\r",
+              "            var table = jsonObject.registrationGetResponse.registration.table[i].$.table;\r",
+              "            if (table == \"FEJL\"){\r",
+              "                var len2 = jsonObject.registrationGetResponse.registration.table[i].row.length;\r",
+              "                for (j = 0; j < len2; j++){\r",
+              "                    var rowid = jsonObject.registrationGetResponse.registration.table[i].row[j].$.rowId;\r",
+              "                    if (rowid == pm.collectionVariables.get(\"CharacterCheckRow\")){\r",
+              "                        var len3 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue.length;\r",
+              "                        for (k = 0; k < len3; k++){\r",
+              "                            var item2 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue[k].$.item;\r",
+              "                            var val2 = jsonObject.registrationGetResponse.registration.table[i].row[j].itemValue[k].$.value;\r",
+              "                            if (item2 == \"FEJLTP\"){\r",
+              "                                pm.expect(val2).to.equal(\"MSM\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLBE\") {\r",
+              "                                pm.expect(val2).to.equal(\"ABC ? ABC\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLHN\") {\r",
+              "                                pm.expect(val2).to.equal(\"2\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLVJ\") {\r",
+              "                                pm.expect(val2).to.equal(\"Dyssegårdsvej\");\r",
+              "                            }\r",
+              "                            if (item2 == \"FEJLPB\") {\r",
+              "                                pm.expect(val2).to.equal(\"2870\");\r",
+              "                            }\r",
+              "                        }\r",
+              "                    }\r",
+              "                }\r",
+              "            }\r",
+              "        }\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "basic",
+          "basic": [
+            {
+              "key": "password",
+              "value": "APISDASN",
+              "type": "string"
+            },
+            {
+              "key": "username",
+              "value": "APISDASNTST",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:registrationGet registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "destinationCreate Chars",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200){\r",
+              "    pm.test(\"status\", function(){\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.destinationCreateResponse.$.status;\r",
+              "        if (status != \"success\"){\r",
+              "            pm.execution.setNextRequest(null);\r",
+              "        }\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    })\r",
+              "} else {\r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "var count = pm.collectionVariables.get(\"COUNT\");\r",
+              "var c = 0;\r",
+              "if (count != \"\") {\r",
+              "    c = Number(count);\r",
+              "}\r",
+              "c++;\r",
+              "pm.collectionVariables.set(\"COUNT\", c);"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationCreate destination=\"ÅÅ{{COUNT}}\" destinationType=\"BOR\" name=\"CharacterReplaceTest Φ\" address=\"Plantevej 27\" address2=\"\" zipCode=\"2870\" city=\"Dyssegård\" country=\"DK\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        },
+        "description": "Opretter en destination med en invalid karakter i navnet"
+      },
+      "response": []
+    },
+    {
+      "name": "destinationGet Chars 1",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200) {\r",
+              "    pm.test(\"Status\", function () {\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.destinationGetResponse.$.status;\r",
+              "        pm.expect(status).to.be.equal(\"success\");\r",
+              "    });\r",
+              "    pm.test(\"Value\", function () {\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        pm.expect(jsonObject.destinationGetResponse.destination.$.name).to.equal(\"CharacterReplaceTest ?\");\r",
+              "        \r",
+              "    });      \r",
+              "} else { \r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationGet destination=\"ÅÅ{{COUNT}}\" destinationType=\"BOR\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        },
+        "description": "Check at den invalide karakter er blevet ændret til ?"
+      },
+      "response": []
+    },
+    {
+      "name": "destinationSetValues",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Response data\", function () {\r",
+              "    if (pm.response.code == 200) {\r",
+              "            const xml2js = require('xml2js');\r",
+              "    var jsonObject;\r",
+              "    xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "        jsonObject = result;\r",
+              "    });\r",
+              "        var status = jsonObject.destinationSetValuesResponse.$.status;\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    } else { \r",
+              "        pm.execution.setNextRequest(null);\r",
+              "    }\r",
+              "});"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationSetValues destination=\"ÅÅ{{COUNT}}\" destinationType=\"BOR\" address=\"Rosenkæret  Φ 13\" zipCode=\"2860\" city=\"Søborg\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        },
+        "description": "Opdaterer adressen - men der er en invalid karakter i adress"
+      },
+      "response": []
+    },
+    {
+      "name": "destinationGet Chars 2",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {\r",
+              "    pm.response.to.have.status(200);\r",
+              "});\r",
+              "if (pm.response.code == 200) {\r",
+              "    pm.test(\"Status\", function () {\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.destinationGetResponse.$.status;\r",
+              "        pm.expect(status).to.be.equal(\"success\");\r",
+              "    });\r",
+              "    pm.test(\"Value\", function () {\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        pm.expect(jsonObject.destinationGetResponse.destination.$.name).to.equal(\"CharacterReplaceTest ?\");\r",
+              "        pm.expect(jsonObject.destinationGetResponse.destination.$.address).to.equal(\"Rosenkæret  ? 13\");\r",
+              "    });      \r",
+              "} else { \r",
+              "    pm.execution.setNextRequest(null);\r",
+              "}"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationGet destination=\"ÅÅ{{COUNT}}\" destinationType=\"BOR\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        },
+        "description": "Check at den invalide karakter er replaced med ?"
+      },
+      "response": []
+    },
+    {
+      "name": "destinationRemove",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test(\"Response data\", function () {\r",
+              "    if (pm.response.code == 200) {\r",
+              "        const xml2js = require('xml2js');\r",
+              "        var jsonObject;\r",
+              "        xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+              "            jsonObject = result;\r",
+              "        });\r",
+              "        var status = jsonObject.destinationRemoveResponse.$.status;\r",
+              "        pm.expect(status).to.equal(\"success\");\r",
+              "    } else { \r",
+              "        pm.execution.setNextRequest(null);\r",
+              "    }\r",
+              "});"
+            ],
+            "type": "text/javascript",
+            "packages": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "<syn:destinationRemove destination=\"ÅÅ{{COUNT}}\" destinationType=\"BOR\" xmlns:syn=\"http://www.synchronicer.dk\"/>",
+          "options": {
+            "raw": {
+              "language": "xml"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{synchServicesBase}}/apixml",
+          "host": [
+            "{{synchServicesBase}}"
+          ],
+          "path": [
+            "apixml"
+          ]
+        },
+        "description": "Slet en destination uden provider"
+      },
+      "response": []
+    }
+  ],
+  "auth": {
+    "type": "basic",
+    "basic": [
+      {
+        "key": "password",
+        "value": "testapi",
+        "type": "string"
+      },
+      {
+        "key": "username",
+        "value": "APITST",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "CharacterCheckRegistration",
+      "value": ""
+    },
+    {
+      "key": "CharacterCheckRow",
+      "value": ""
+    },
+    {
+      "key": "COUNT",
+      "value": ""
+    }
+  ]
+}

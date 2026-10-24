@@ -63,6 +63,9 @@ pub enum SidebarAction {
     NewWorkflow(PathBuf),
     SelectWorkflow(WorkflowKey),
     RunWorkflow(WorkflowKey),
+    /// Open a run of the requests in a folder of a project (`""`: all), as Postman's
+    /// "Run collection" (R-FLOW-7).
+    RunRequests(PathBuf, PathBuf),
     RenameWorkflow(WorkflowKey),
     DeleteWorkflow(WorkflowKey),
     /// Show (and clear) the project's runtime variables (R-TEST-5).
@@ -222,6 +225,15 @@ struct ShownFeatures {
     workflows: bool,
     mock: bool,
     docs: bool,
+}
+
+#[cfg(test)]
+impl ShownFeatures {
+    const ALL: Self = Self {
+        workflows: true,
+        mock: true,
+        docs: true,
+    };
 }
 
 struct Tree<'a> {
@@ -787,8 +799,8 @@ fn tree_item(
             atoms.push(git_marker(ui, status));
         }
         let selected = tree.selected == Some(&key);
-        let docs = tree.offers.features.docs;
-        let menu = |ui: &mut Ui| item_menu(ui, &key, is_folder, docs);
+        let features = tree.offers.features;
+        let menu = |ui: &mut Ui| item_menu(ui, &key, is_folder, features);
         let (mut row, from_button) = tree_row(ui, depth, selected, atoms, |ui| {
             if read_only {
                 None
@@ -1016,7 +1028,9 @@ mod tests {
                 Atom::grow(),
             ];
             tree_row(ui, 2, false, atoms, |ui| {
-                menu_button(ui, |ui: &mut Ui| item_menu(ui, &key, false, true))
+                menu_button(ui, |ui: &mut Ui| {
+                    item_menu(ui, &key, false, ShownFeatures::ALL)
+                })
             });
             d.set(ui.cursor().min.y - top);
 
@@ -1045,7 +1059,9 @@ mod tests {
             for name in ["First", "Second"] {
                 let key = ItemKey::new(Path::new("/p"), format!("{name}.toml"));
                 tree_row(ui, 0, false, [Atom::from(name), Atom::grow()], |ui| {
-                    let menu = menu_button(ui, |ui: &mut Ui| item_menu(ui, &key, false, true));
+                    let menu = menu_button(ui, |ui: &mut Ui| {
+                        item_menu(ui, &key, false, ShownFeatures::ALL)
+                    });
                     now.push(ui.visuals().override_text_color.is_none());
                     menu
                 });

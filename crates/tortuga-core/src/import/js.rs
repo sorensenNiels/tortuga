@@ -15,10 +15,10 @@ pub(crate) enum Translation {
 
 /// What a translation makes of the code that `s` starts with: how much of `s` it
 /// replaces, and with what.
-pub(crate) type Translate = fn(&str) -> Option<(usize, String)>;
+pub(crate) type Translate<'a> = &'a dyn Fn(&str) -> Option<(usize, String)>;
 
 /// `code` with every call `at` knows translated.
-pub(crate) fn rewrite(code: &str, at: Translate) -> String {
+pub(crate) fn rewrite(code: &str, at: Translate<'_>) -> String {
     let bytes = code.as_bytes();
     let mut out = String::with_capacity(code.len());
     let mut copied = 0;
@@ -91,7 +91,7 @@ pub(crate) fn word(s: &str, name: &str) -> Option<usize> {
     (!rest.bytes().next().is_some_and(is_word_byte)).then_some(name.len())
 }
 
-fn skip_space(s: &str, i: usize) -> usize {
+pub(crate) fn skip_space(s: &str, i: usize) -> usize {
     s.get(i..)
         .map_or(i, |rest| i + (rest.len() - rest.trim_start().len()))
 }
@@ -108,7 +108,7 @@ pub(crate) fn member(s: &str, i: usize) -> Option<(usize, &str)> {
 
 /// `( … )` at `i`, with optional spaces: where it ends and the arguments, translated
 /// with `at`.
-pub(crate) fn call_args(s: &str, i: usize, at: Translate) -> Option<(usize, Vec<String>)> {
+pub(crate) fn call_args(s: &str, i: usize, at: Translate<'_>) -> Option<(usize, Vec<String>)> {
     let open = skip_space(s, i);
     if s.as_bytes().get(open) != Some(&b'(') {
         return None;
@@ -132,7 +132,7 @@ pub(crate) fn empty_call(s: &str, i: usize) -> Option<usize> {
 }
 
 /// After the bracket that closes the one at `open`.
-fn group_end(s: &str, open: usize) -> Option<usize> {
+pub(crate) fn group_end(s: &str, open: usize) -> Option<usize> {
     let bytes = s.as_bytes();
     let mut depth = 0usize;
     let mut i = open;
@@ -156,8 +156,30 @@ fn group_end(s: &str, open: usize) -> Option<usize> {
     None
 }
 
+/// Where the statement that goes on at `i` ends: at a `;` or line end outside brackets,
+/// or before a bracket that closes one opened earlier.
+pub(crate) fn statement_end(s: &str, i: usize) -> usize {
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    let mut i = i;
+    while let Some(&byte) = bytes.get(i) {
+        if let Some(end) = literal_end(s, i) {
+            i = end;
+            continue;
+        }
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' | b';' | b'\n' if depth == 0 => return i,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    s.len()
+}
+
 /// The arguments between a call's parentheses, trimmed.
-fn split_args(inner: &str) -> Vec<&str> {
+pub(crate) fn split_args(inner: &str) -> Vec<&str> {
     let bytes = inner.as_bytes();
     let mut args = Vec::new();
     let mut depth = 0usize;

@@ -1,0 +1,34 @@
+name = "destinationGet Chars 2"
+seq = 2400
+description = "Check at den invalide karakter er replaced med ?"
+method = "POST"
+server = "synchservicesbase"
+url = "/apixml"
+
+[body]
+kind = "xml"
+content = '<syn:destinationGet destination="ÅÅ{{COUNT}}" destinationType="BOR" xmlns:syn="http://www.synchronicer.dk"/>'
+
+[scripts]
+tests = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+test("Status code is 200", function () {
+    expect(res.status).toBe(200);
+});
+if (res.status == 200) {
+    test("Status", function () {
+        var jsonObject;
+        jsonObject = xml2Json(res.body);
+        var status = jsonObject.destinationGetResponse.$.status;
+        expect(status).toBe("success");
+    });
+    test("Value", function () {
+        var jsonObject;
+        jsonObject = xml2Json(res.body);
+        expect(jsonObject.destinationGetResponse.destination.$.name).toBe("CharacterReplaceTest ?");
+        expect(jsonObject.destinationGetResponse.destination.$.address).toBe("Rosenkæret  ? 13");
+    });      
+} else { 
+    workflow.stop();
+}
+"""

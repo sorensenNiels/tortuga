@@ -78,6 +78,7 @@ impl TortugaUi {
             action @ (SidebarAction::NewWorkflow(_)
             | SidebarAction::SelectWorkflow(_)
             | SidebarAction::RunWorkflow(_)
+            | SidebarAction::RunRequests(..)
             | SidebarAction::RenameWorkflow(_)
             | SidebarAction::DeleteWorkflow(_)
             | SidebarAction::RuntimeVariables(_)) => self.on_workflow_sidebar(action, ctx),

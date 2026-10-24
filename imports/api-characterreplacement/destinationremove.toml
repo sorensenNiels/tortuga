@@ -1,0 +1,25 @@
+name = "destinationRemove"
+seq = 2500
+description = "Slet en destination uden provider"
+method = "POST"
+server = "synchservicesbase"
+url = "/apixml"
+
+[body]
+kind = "xml"
+content = '<syn:destinationRemove destination="ÅÅ{{COUNT}}" destinationType="BOR" xmlns:syn="http://www.synchronicer.dk"/>'
+
+[scripts]
+tests = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+test("Response data", function () {
+    if (res.status == 200) {
+        var jsonObject;
+        jsonObject = xml2Json(res.body);
+        var status = jsonObject.destinationRemoveResponse.$.status;
+        expect(status).toBe("success");
+    } else { 
+        workflow.stop();
+    }
+});
+"""

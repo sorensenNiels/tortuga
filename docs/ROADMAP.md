@@ -1,14 +1,15 @@
 # Tortuga roadmap
 
 > What comes next: vision, principles, the open work, ideas and decisions.
-> Everything that is built and verified, and the requirements it was built to, is in [FEATURES.md](FEATURES.md).
+> Everything that is built and verified is in [FEATURES.md](FEATURES.md); the requirements it was built to are in
+> [REQUIREMENTS.md](REQUIREMENTS.md).
 >
 > - **Requirements** (`R-AREA-n`, [§6](#6-requirements)) describe agreed behaviour precisely. Once one is fully
->   met and verified it moves to FEATURES.md.
+>   met and verified it moves to REQUIREMENTS.md.
 > - **Ideas** (`IDEA-n`, [§7](#7-ideas)) are candidates; one becomes a requirement when it gets a phase and an `R-` ID.
 > - **Decisions** (`Dn`, [§8](#8-decisions)) record choices and the options considered. They stay here, done or not:
 >   code and docs refer to them.
-> - IDs are never reused or renumbered, also after they move to FEATURES.md. Code, tests, commits and FEATURES.md
+> - IDs are never reused or renumbered, also after they move to REQUIREMENTS.md. Code, tests, commits and FEATURES.md
 >   refer to them.
 
 ## 1. Vision
@@ -119,7 +120,13 @@ its numbering; one that gets a phase becomes an `R-COL-` requirement in [§6](#6
 | IDEA-45 | Import again: update a project from a changed OpenAPI description, keeping local changes. | An import always creates a new project today (D34). |
 | IDEA-46 | Import Swagger 2.0 descriptions. | Today they are refused with a hint to convert them (D33). |
 
-#### Postman — done
+#### Postman
+
+**In progress:** the scripts of a real test-suite collection (XML service, 26 requests, run with "Run collection")
+were checked on 2026-10-24: 25 of 26 stayed comments, all because of `require('xml2js')`, and the collection couldn't
+be run in the app as Postman runs it. R-COL-39 to R-COL-41 and R-TEST-19 close that and the other gaps found in `pm.*`
+coverage, with Run… on a project or folder and Postman's runner options (R-FLOW-7 to R-FLOW-9, D65, D66); built and
+tested, not yet checked in the running app (FEATURES.md, "In progress").
 
 **Done:** collections v2.0 and v2.1 with folders, variables, servers, auth, bodies and scripts (R-COL-16, D36);
 scripts translated to Tortuga's API (R-COL-19), with Chai-style assertions to translate to (R-TEST-8);
@@ -134,6 +141,7 @@ the script API they need (R-TEST-16, R-FLOW-6, D50); saved responses as examples
 | IDEA-61 | Translate the rest of Postman's API that scripts use: `pm.sendRequest` (sending a request from a script, mostly to get a token) and `require('crypto-js')`/`CryptoJS` (hashes, HMAC and Base64 for signing requests). | Scripts using them are kept as comments today (R-COL-19). Each needs Tortuga's script API to offer it first: scripts can't send requests or hash. Cookies, `pm.info`, `replaceIn`, the data row and `setNextRequest` are R-COL-21. |
 | IDEA-62 | Import Postman's data export (all collections, environments and globals in one archive) as a workspace: a project per collection, environments as in R-COL-20, globals as workspace variables (R-WS-8). | Builds on R-COL-20. For a team moving over all at once. |
 | IDEA-63 | Import again: update a project from a changed Postman collection, keeping local changes. | As IDEA-45 for OpenAPI. For a team moving over gradually, with the collection still changed in Postman for a while. |
+| IDEA-96 | Name the secret variables of request-level credentials after where they come from (`username_registrationcreate`, or the folder's name when every request in it has the same ones) instead of `username_2`. | Values that match the collection's are already shared; different ones get a number today (R-COL-16). |
 | IDEA-72 | Translate lodash (`_`, `require('lodash')`) in Postman scripts, or offer it in Tortuga's scripts. | **Not planned**: modern JavaScript covers what Postman scripts mostly use it for, and bundling it would slow down every script run. Scripts using it are kept as comments to port. |
 | IDEA-71 | Fetch a collection from Postman's API with an API key instead of from an exported file. | **Not planned**: it contacts a third-party host and needs a Postman account (R-P-4, P5). Exporting a file does the same. |
 
@@ -189,6 +197,13 @@ Requirements still open: not built yet, or implemented but not yet verified ever
 | R-I18N-2 | Every text of the app's own UI is translated: menus, buttons, labels, tooltips, hints, dialogs and notices. English is the source and the fallback for any missing text. Project files, their keys and `{{variables}}`, the script API, HTTP, `tortuga-cli` output, and messages that come from the engine (errors, import warnings, test results) stay English (IDEA-95). |
 | R-I18N-3 | Sizes, durations and dates follow the language: in Danish `1,5 KB`, `1,23 s`, `tors. 14. okt.`, "I dag", "I går". |
 | R-CLI-4 | Each release has a `tortuga-cli` archive per OS next to the installers, for CI: the binary with the README and licences, `.zip` on Windows, `.tar.gz` elsewhere. *(IDEA-43)* |
+| R-COL-39 | **Postman's `xml2js` is translated** on import (R-COL-19): a declaration `NAME = require('xml2js')` is removed, and `NAME.parseString(text, options, callback)` becomes `callback(null, xml2Json(text))`, or `V = xml2Json(text);` when the callback only assigns its result to `V`. Only when `options` is an object literal with `explicitArray: false` and nothing else, since that is the shape `xml2Json` gives (R-TEST-18); without it xml2js puts every child in an array, so such calls (and `new xml2js.Parser`, `parseStringPromise`) are left for the user and the script stays as comments. Lines of imported scripts lose their `\r`. Tested with a trimmed copy of the collection that prompted this, without its credentials or hosts: every script translated, and the `registrationGet` tests passing against an XML response. |
+| R-COL-40 | **More of Postman's assertions and legacy API are translated** (R-COL-19, R-COL-21). A `pm.expect(…)` chain with no Jest counterpart becomes `expect(…)` with the Chai chain kept (R-TEST-8), also with a message as the second argument, instead of leaving the script as comments. `pm.response.to.be.success`/`info`/`redirection`/`clientError`/`serverError`/`error` (status ranges) and `ok`/`accepted`/`badRequest`/`unauthorized`/`forbidden`/`notFound`/`rateLimited` (statuses), with `not`; `.to.have.body(text)` and `.to.have.jsonBody(path[, value])`; `pm.response.headers.has(n)`/`.toObject()`, `pm.response.reason()`; `pm.request.headers.get(n)`, and `pm.request.headers.add`/`upsert` in pre-request scripts → `req.setHeader`; `pm.*.toObject()` → `vars.toObject()`. Legacy: `tests["name"] = cond` → a `test`, `responseCode.code`, `responseTime`, `postman.getResponseHeader`, `postman.get`/`set`/`clearGlobalVariable` (workspace variables, R-WS-8). Only bare `pm.request.url` and `.toString()` are translated: `req.url` is text, so `getHost()`, `query.add(…)` and the like stay for the user (today they are translated and fail when run). |
+| R-TEST-19 | **Script API for what Postman scripts use**: Chai's `members` (with `include`, `same`, `deep`, `ordered`) and `length`/`lengthOf` as a chain before `above`/`below`/`least`/`most`/`within`; `test.skip(name, fn)`, which neither runs nor counts the test and says "Skipped test: name" in the console (translated from `pm.test.skip` today, but missing, so the script fails); `btoa` and `atob` (Postman has them; a script using them is translated today but fails); `vars.toObject()`, the variables a script sees by name. |
+| R-COL-41 | **An imported collection runs as Postman's "Run collection"** does: **Run…** on the project (R-FLOW-7) runs every request in collection order, continuing after a failed request, with step names that are the request names so `setNextRequest` names find their step (R-FLOW-6). The import writes no workflow file (D65). It warns when a script goes on with a name no request has, or one that several requests share. |
+| R-FLOW-7 | **Run a project or folder** (D65), as Postman's "Run collection": **Run…** in a project's and a folder's menu, and **Run project: …** in the command palette, open the workflow view with a run of every request below it in tree order, continuing after failures, named after the project or folder. It is not saved: no file, nothing kept for the next start, one per project (a new one replaces it). Its steps and options are edited as a workflow's and **Run** runs it; **Save as workflow…** (or Ctrl+S) asks for a name and writes it as a workflow file that stays open with its results. Follows the workflows switch (R-SET-13). |
+| R-FLOW-8 | **Iterations and a delay** for every workflow and run, as in Postman's runner: **Iterations** runs the steps N times without a data file (with one, its rows decide, and the field says so); **Delay** waits N ms between steps, also between iterations, not before the first. Saved in the workflow file as `iterations` and `delay_ms` only when set, so older files stay as they are; `tortuga-cli` follows them. The results say "Iteration N" for repeats and "Row N" for data rows. The web version has no delay yet (D6). |
+| R-FLOW-9 | **Keep variable values** (D66), as Postman's option of that name: a workflow or run with it starts from the project's runtime variables (R-TEST-5), carries what scripts and captures set into the next iterations (below the data row, above the project's values), and writes each step's changes to the runtime variables as it finishes (`workspace.` ones to the workspace's, R-WS-8). Off by default: a run starts clean and changes nothing (R-FLOW-3). Saved as `keep_variables = true`. `tortuga-cli` keeps nothing between runs. |
 
 ## 7. Ideas
 
@@ -315,6 +330,8 @@ R-SET-13; and IDEA-81 to IDEA-85 became R-VAR-9, R-HIST-5, R-SRV-10, R-HIST-4 an
 | D58 | How are several `.http` files and their environment files imported (R-COL-29)? | **Several files are one new project with a folder per file** (D34 still holds: never into an existing project), named after their folder; **environment files are found next to the `.http` files** as the JetBrains client finds them, besides being picked, and go in like Postman's (D49): into the new project, or into an existing one from its menu; `$shared` values are copied into each environment (2026-10-21). | A project per file; `$shared` as project variables; only environment files picked by hand. |
 | D63 | How does the app tell that a new version is available (R-SET-15)? Changes R-P-4. | **A check at start-up, on by default, that can be turned off, plus "Check now" in Settings → About**; the source is GitHub's latest published release; the result is a quiet link in the top bar, never a pop-up (P1) (2026-10-23). Contacting GitHub on its own is the one exception to "only the hosts you send requests to"; it sends nothing but the request. | Only a button the user clicks (R-P-4 unchanged); opt-in (off by default); package managers only (winget, Homebrew, apt); in-app installing (IDEA-15, needs signing). |
 | D64 | How are UI strings translated (IDEA-94)? | **Project Fluent** (`fluent-bundle`), one `.ftl` file per language embedded in the binary, looked up by message ID through one function in `tortuga-ui-egui`; plurals and grammar are handled by translators in the file, and it is pure Rust, so the web build keeps working (D6). Strings move over area by area, with a test that every ID in the code exists in the English file (2026-10-23). | `rust-i18n` (YAML/TOML keys, a macro; simpler, weaker plurals); gettext `.po` files (familiar to translators, C tooling or less maintained Rust crates); English text as the key (no IDs, but every wording change breaks the translations). |
+| D65 | How does an imported Postman collection get run like Postman's "Run collection" (R-COL-41)? | **Run… on a project or folder** opens a run of its requests that is not saved, with **Save as workflow…** to keep it (R-FLOW-7); **the import writes no workflow file** (2026-10-24, replacing the same day's "the import writes a workflow file"): a file nobody asked for in every imported project, while Run… works for every project, imported or not. | The import writes a workflow file (built first, then dropped); both. |
+| D66 | What does "Keep variable values" keep (R-FLOW-9)? | **The project's runtime variables**: the run starts from them, carries its changes across iterations, and writes each step's changes back as it finishes; off by default, so R-FLOW-3's clean runs stay the default (2026-10-24). Values carried over sit below the data row, so a data file still decides its columns. | Write to the project's variables in `tortuga.toml` (Postman's collection variables), which would change files in git on every run; write back only at the end of the run (a cancelled run would lose them); on by default, as in Postman. |
 
 New questions go here as `D24`, `D25`, … with options, until they are decided.
 
@@ -324,7 +341,7 @@ New questions go here as `D24`, `D25`, … with options, until they are decided.
 - Open question: add it to [§8](#8-decisions) as the next `Dn` with options; record the choice and date when decided.
 - When an idea gets a phase, give it a requirement ID in [§6](#6-requirements) (next free number in its area) and
   remove the idea row; the requirement says *(IDEA-n)*.
-- When a requirement is fully met and verified, move its row to FEATURES.md ("Agreed requirements") and record
-  how it was verified there.
+- When a requirement is fully met and verified, move its row to REQUIREMENTS.md and record
+  how it was verified in FEATURES.md.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-25` · `R-CK-7` · `R-COL-39` · `R-WS-11` · `R-VAR-10` · `R-SRV-11` · `R-GIT-15` · `R-HIST-6` · `R-LOC-3` · `R-NF-5` · `IDEA-96` · `D65` · `R-TEST-19` · `R-FLOW-7` · `R-CLI-5` · `R-SET-17` · `R-MOCK-9` · `R-I18N-4`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-25` · `R-CK-7` · `R-COL-42` · `R-WS-11` · `R-VAR-10` · `R-SRV-11` · `R-GIT-15` · `R-HIST-6` · `R-LOC-3` · `R-NF-5` · `IDEA-97` · `D67` · `R-TEST-20` · `R-FLOW-10` · `R-CLI-5` · `R-SET-17` · `R-MOCK-9` · `R-I18N-4`.

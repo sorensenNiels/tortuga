@@ -1,21 +1,27 @@
 //! Translating Postman scripts to Tortuga's script API (R-COL-19, IDEA-48).
 //!
 //! The calls most collections use are rewritten: `pm.test`, `pm.expect(…)` with Chai's
-//! common assertions, `pm.response.to.have.status(…)`/`.header(…)`/`.be.ok`, the
-//! response's code, status, time, size, headers, cookies and body, getting and setting
-//! variables (also the data row's, and `replaceIn`), `pm.info` (R-COL-21) and
-//! `setNextRequest` as `workflow.next`/`stop` (R-FLOW-6), and the legacy `responseBody` as
-//! `res.body` (`xml2Json` is Tortuga's too, R-TEST-18). A translated script runs only when nothing of Postman's API is left and
+//! common assertions as Jest's and the others kept as Chai's (R-TEST-8, R-COL-40),
+//! `pm.response.to.have.status(…)`/`.header(…)`/`.body(…)`/`.jsonBody(…)` and
+//! `.to.be.ok`/`.success`/…, the response's code, status, time, size, headers, cookies
+//! and body, the request's method, URL and headers, getting and setting variables (also
+//! the data row's, `replaceIn` and `toObject`), `pm.info` (R-COL-21) and `setNextRequest`
+//! as `workflow.next`/`stop` (R-FLOW-6), the legacy API before `pm` ([`legacy`]), and
+//! `require('xml2js')` as `xml2Json` ([`xml2js`], R-COL-39; `xml2Json` is Tortuga's too,
+//! R-TEST-18). A translated script runs only when nothing of Postman's API is left and
 //! it still parses; otherwise it is kept as comments, translated as far as it went.
 //!
 //! The scanner only looks at code outside strings and comments, and only splits the
 //! text at ASCII characters, so any text is safe.
 
 use crate::import::js::{
-    Translation, call_args, empty_call, grouped, is_string_literal, member, renamed,
-    rewrite as rewrite_with, uses_any, word,
+    Translation, call_args, empty_call, grouped, is_string_literal, member, renamed, split_args,
+    uses_any, word,
 };
 use crate::script;
+
+mod legacy;
+mod xml2js;
 
 /// Names a script may only use in Postman. A script that still uses one is not run.
 const POSTMAN_GLOBALS: [&str; 13] = [
@@ -35,7 +41,7 @@ const POSTMAN_GLOBALS: [&str; 13] = [
 ];
 
 /// Postman names that are renamed as they are. Each ends where an identifier ends.
-const RENAMES: [(&str, &str); 18] = [
+const RENAMES: [(&str, &str); 17] = [
     ("pm.test", "test"),
     ("pm.response.code", "res.status"),
     ("pm.response.status", "res.statusText"),
@@ -44,16 +50,93 @@ const RENAMES: [(&str, &str); 18] = [
     ("pm.response.json", "res.json"),
     ("pm.response.headers.get", "res.header"),
     ("pm.request.method", "req.method"),
-    ("pm.request.url", "req.url"),
     ("postman.getEnvironmentVariable", "vars.get"),
+    ("postman.getGlobalVariable", "vars.get"),
     ("postman.setEnvironmentVariable", "vars.set"),
-    ("pm.variables.replaceIn", "vars.replaceIn"),
     ("pm.cookies.get", "res.cookie"),
     ("pm.info.eventName", "info.event"),
     ("pm.info.requestName", "info.requestName"),
     ("pm.info.iteration", "info.iteration"),
     ("pm.info.iterationCount", "info.iterationCount"),
     ("pm.iterationData.get", "vars.get"),
+];
+
+/// The words of the Chai chains Tortuga's `expect` has (R-TEST-8, R-TEST-19). A
+/// `pm.expect` chain of only these runs as it is when it has no Jest counterpart.
+const CHAI_WORDS: [&str; 73] = [
+    "to",
+    "be",
+    "been",
+    "is",
+    "that",
+    "which",
+    "and",
+    "has",
+    "have",
+    "with",
+    "at",
+    "of",
+    "same",
+    "but",
+    "does",
+    "still",
+    "also",
+    "not",
+    "deep",
+    "nested",
+    "own",
+    "any",
+    "all",
+    "ordered",
+    "ok",
+    "true",
+    "false",
+    "null",
+    "undefined",
+    "NaN",
+    "exist",
+    "empty",
+    "equal",
+    "equals",
+    "eq",
+    "eql",
+    "eqls",
+    "a",
+    "an",
+    "include",
+    "includes",
+    "contain",
+    "contains",
+    "property",
+    "ownProperty",
+    "haveOwnProperty",
+    "lengthOf",
+    "length",
+    "match",
+    "matches",
+    "above",
+    "gt",
+    "least",
+    "gte",
+    "below",
+    "lt",
+    "most",
+    "lte",
+    "within",
+    "oneOf",
+    "keys",
+    "key",
+    "closeTo",
+    "satisfy",
+    "members",
+    "instanceOf",
+    "instanceof",
+    "string",
+    "approximately",
+    "greaterThan",
+    "greaterThanOrEqual",
+    "lessThan",
+    "lessThanOrEqual",
 ];
 
 /// An Insomnia script (R-COL-32): Insomnia's `insomnia` API is Postman's `pm` API by
@@ -77,19 +160,21 @@ pub(super) fn translate(code: &str) -> Translation {
 
 /// `code` with every Postman call this module knows translated.
 fn rewrite(code: &str) -> String {
-    rewrite_with(code, translate_at)
+    xml2js::rewrite_with_xml2js(code, &translate_at)
 }
 
 /// The translation of the call that `s` starts with, and how much of `s` it replaces.
 fn translate_at(s: &str) -> Option<(usize, String)> {
-    if let Some(end) = word(s, "responseBody") {
-        return Some((end, "res.body".to_owned()));
+    if let Some(found) = legacy::translate_at(s) {
+        return Some(found);
     }
     if !(s.starts_with("pm.") || s.starts_with("postman.")) {
         return None;
     }
     expect_call(s)
+        .or_else(|| chai_expect(s))
         .or_else(|| response_assertion(s))
+        .or_else(|| headers_call(s))
         .or_else(|| variables_call(s))
         .or_else(|| {
             let end = empty_call(s, word(s, "pm.response.text")?)?;
@@ -101,6 +186,7 @@ fn translate_at(s: &str) -> Option<(usize, String)> {
         })
         .or_else(|| cookies_call(s))
         .or_else(|| next_request(s))
+        .or_else(|| request_url(s))
         .or_else(|| {
             RENAMES
                 .iter()
@@ -112,7 +198,7 @@ fn translate_at(s: &str) -> Option<(usize, String)> {
 
 /// `pm.expect(actual).to.….matcher(…)` → `expect(actual).matcher(…)`.
 fn expect_call(s: &str) -> Option<(usize, String)> {
-    let (i, args) = call_args(s, word(s, "pm.expect")?, translate_at)?;
+    let (i, args) = call_args(s, word(s, "pm.expect")?, &translate_at)?;
     // A message as the second argument has no place in `expect`.
     let [actual] = args.as_slice() else {
         return None;
@@ -122,60 +208,198 @@ fn expect_call(s: &str) -> Option<(usize, String)> {
     finish(s, end, &subject, chain.negate, &matcher)
 }
 
-/// `pm.response.to.have.status(200)`, `.header(name[, value])` and `.be.ok`.
-fn response_assertion(s: &str) -> Option<(usize, String)> {
-    let chain = chain(s, word(s, "pm.response")?)?;
-    let (end, args) = match chain.name {
-        "ok" => (chain.end, Vec::new()),
-        _ => call_args(s, chain.end, translate_at)?,
-    };
-    let (subject, matcher) = match (chain.name, args.as_slice()) {
-        ("ok", []) => ("res.status".to_owned(), "toBe(200)".to_owned()),
-        ("status", [code]) if is_string_literal(code) => {
-            ("res.statusText".to_owned(), format!("toBe({code})"))
+/// `pm.expect(actual[, message]).…` that Jest can't say, as `expect(…).…` with the Chai
+/// chain kept (R-COL-40), when Tortuga's `expect` has every word of it. Only the name
+/// is replaced; the rest is translated as the scan goes on.
+fn chai_expect(s: &str) -> Option<(usize, String)> {
+    let at = word(s, "pm.expect")?;
+    let (mut i, args) = call_args(s, at, &translate_at)?;
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let mut words = 0;
+    while let Some((next, name)) = member(s, i) {
+        if !CHAI_WORDS.contains(&name) {
+            return None;
         }
-        ("status", [code]) => ("res.status".to_owned(), format!("toBe({code})")),
-        ("header", [name]) => (format!("res.header({name})"), "toBeDefined()".to_owned()),
-        ("header", [name, value]) => (format!("res.header({name})"), format!("toBe({value})")),
-        _ => return None,
-    };
-    finish(s, end, &subject, chain.negate, &matcher)
+        words += 1;
+        i = call_args(s, next, &translate_at).map_or(next, |(end, _)| end);
+    }
+    (words > 0).then(|| (at, "expect".to_owned()))
 }
 
-/// `pm.environment.set(…)` and the like → `vars.set(…)`. Postman's globals are
-/// workspace variables (R-WS-8).
+/// `pm.response.to.have.status(200)`, `.header(name[, value])`, `.body(text)`,
+/// `.jsonBody(…)`, `.be.ok` and the other statuses and status classes (R-COL-40).
+fn response_assertion(s: &str) -> Option<(usize, String)> {
+    let chain = chain(s, word(s, "pm.response")?)?;
+    if let Some(matcher) = status_matcher(chain.name) {
+        return finish(s, chain.end, "res.status", chain.negate, matcher);
+    }
+    let (end, args) = call_args(s, chain.end, &translate_at)?;
+    let (subject, matcher) = match (chain.name, args.as_slice()) {
+        ("status", [code]) if is_string_literal(code) => {
+            ("res.statusText", format!("toBe({code})"))
+        }
+        ("status", [code]) => ("res.status", format!("toBe({code})")),
+        ("header", [name]) => {
+            return finish(
+                s,
+                end,
+                &format!("res.header({name})"),
+                chain.negate,
+                "toBeDefined()",
+            );
+        }
+        ("header", [name, value]) => {
+            let subject = format!("res.header({name})");
+            return finish(s, end, &subject, chain.negate, &format!("toBe({value})"));
+        }
+        ("body", [text]) if text.starts_with('/') => ("res.body", format!("toMatch({text})")),
+        ("body", [text]) => ("res.body", format!("toBe({text})")),
+        ("jsonBody", [path]) if is_string_literal(path) => {
+            ("res.json()", format!("toHaveProperty({path})"))
+        }
+        ("jsonBody", [path, value]) if is_string_literal(path) => {
+            ("res.json()", format!("toHaveProperty({path}, {value})"))
+        }
+        ("jsonBody", [value]) => ("res.json()", format!("toEqual({value})")),
+        _ => return None,
+    };
+    finish(s, end, subject, chain.negate, &matcher)
+}
+
+/// The matcher on `res.status` for Postman's `pm.response.to.be.<name>`.
+fn status_matcher(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "ok" => "toBe(200)",
+        "accepted" => "toBe(202)",
+        "badRequest" => "toBe(400)",
+        "unauthorized" => "toBe(401)",
+        "forbidden" => "toBe(403)",
+        "notFound" => "toBe(404)",
+        "rateLimited" => "toBe(429)",
+        "info" => "to.be.within(100, 199)",
+        "success" => "to.be.within(200, 299)",
+        "redirection" => "to.be.within(300, 399)",
+        "clientError" => "to.be.within(400, 499)",
+        "serverError" => "to.be.within(500, 599)",
+        "error" => "to.be.within(400, 599)",
+        _ => return None,
+    })
+}
+
+/// The response's and the request's headers (R-COL-40): `pm.response.headers.has(n)`
+/// and `.toObject()`, `pm.response.reason()`, `pm.request.headers.get(n)` and
+/// `.toObject()`, and `pm.request.headers.add`/`upsert({key, value})` as
+/// `req.setHeader`. `req.headers` has lower-case names.
+fn headers_call(s: &str) -> Option<(usize, String)> {
+    let no_args = |name: &str, to: &str| {
+        let end = empty_call(s, word(s, name)?)?;
+        Some((end, to.to_owned()))
+    };
+    let one_arg = |name: &str| {
+        let (end, args) = call_args(s, word(s, name)?, &translate_at)?;
+        let [arg] = <[String; 1]>::try_from(args).ok()?;
+        Some((end, arg))
+    };
+    if let Some(found) = no_args("pm.response.headers.toObject", "res.headers")
+        .or_else(|| no_args("pm.response.reason", "res.statusText"))
+        .or_else(|| no_args("pm.request.headers.toObject", "req.headers"))
+    {
+        return Some(found);
+    }
+    if let Some((end, name)) = one_arg("pm.response.headers.has") {
+        return Some((end, format!("(res.header({name}) !== undefined)")));
+    }
+    if let Some((end, name)) = one_arg("pm.request.headers.get") {
+        let key = if is_string_literal(&name) {
+            name.to_lowercase()
+        } else {
+            format!("String({name}).toLowerCase()")
+        };
+        return Some((end, format!("req.headers[{key}]")));
+    }
+    let (end, header) =
+        one_arg("pm.request.headers.add").or_else(|| one_arg("pm.request.headers.upsert"))?;
+    let (key, value) = key_and_value(&header)?;
+    Some((end, format!("req.setHeader({key}, {value})")))
+}
+
+/// The `key` and `value` of an object literal `{key: …, value: …}` with nothing else.
+fn key_and_value(object: &str) -> Option<(&str, &str)> {
+    let inner = object.strip_prefix('{')?.strip_suffix('}')?;
+    let mut key = None;
+    let mut value = None;
+    for property in split_args(inner) {
+        let (name, expr) = property.split_once(':')?;
+        let slot = match name.trim().trim_matches(['"', '\'']) {
+            "key" => &mut key,
+            "value" => &mut value,
+            _ => return None,
+        };
+        *slot = Some(expr.trim());
+    }
+    Some((key?, value?))
+}
+
+/// `pm.request.url` and `pm.request.url.toString()`: `req.url` is text, so the rest of
+/// Postman's URL object is left for the user (R-COL-40).
+fn request_url(s: &str) -> Option<(usize, String)> {
+    let end = word(s, "pm.request.url")?;
+    match member(s, end) {
+        None => Some((end, "req.url".to_owned())),
+        Some((after, "toString")) if empty_call(s, after).is_some() => {
+            Some((end, "req.url".to_owned()))
+        }
+        Some(_) => None,
+    }
+}
+
+/// `pm.environment.set(…)` and the like → `vars.set(…)`, and `toObject()` of any scope
+/// → `vars.toObject()` (R-COL-40). Postman's globals are workspace variables (R-WS-8).
 fn variables_call(s: &str) -> Option<(usize, String)> {
     let rest = s.strip_prefix("pm.")?;
     let (scope, rest) = rest.split_once('.')?;
-    if scope == "iterationData" {
-        // The data row's values are variables in a workflow run (R-FLOW-4).
-        let end = word(rest, "has")?;
-        return Some(("pm.iterationData.".len() + end, "vars.has".to_owned()));
-    }
-    let op = ["get", "set", "unset", "has"]
+    let op = ["get", "set", "unset", "has", "toObject", "replaceIn"]
         .into_iter()
         .find(|op| word(rest, op).is_some())?;
     let at = "pm.".len() + scope.len() + 1 + op.len();
     match (scope, op) {
+        (
+            "environment"
+            | "variables"
+            | "collectionVariables"
+            | "baseEnvironment"
+            | "globals"
+            | "iterationData",
+            "toObject",
+        ) => Some((empty_call(s, at)?, "vars.toObject()".to_owned())),
+        // The data row's values are variables in a workflow run (R-FLOW-4); `get` is
+        // one of the renames.
+        ("iterationData", "has") => Some((at, "vars.has".to_owned())),
         // Insomnia's base environment (R-COL-32) is the project's variables.
         ("environment" | "variables" | "collectionVariables" | "baseEnvironment", _)
-        | ("globals", "get" | "has") => Some((at, format!("vars.{op}"))),
-        ("globals", _) => {
-            let (end, args) = call_args(s, at, translate_at)?;
-            let (name, rest) = args.split_first()?;
-            let name = match name.strip_prefix(['"', '\'']) {
-                Some(_) if is_string_literal(name) => {
-                    format!("{}workspace.{}", &name[..1], &name[1..])
-                }
-                _ => format!("\"workspace.\" + {}", grouped(name)),
-            };
-            let args: Vec<&str> = std::iter::once(name.as_str())
-                .chain(rest.iter().map(String::as_str))
-                .collect();
-            Some((end, format!("vars.{op}({})", args.join(", "))))
-        }
+        | ("globals", "get" | "has" | "replaceIn") => Some((at, format!("vars.{op}"))),
+        ("globals", _) => workspace_call(s, at, op),
         _ => None,
     }
+}
+
+/// `vars.<op>(…)` of the call at `at` in `s`, its first argument (a variable's name) as
+/// the workspace's variable (R-WS-8).
+fn workspace_call(s: &str, at: usize, op: &str) -> Option<(usize, String)> {
+    let (end, args) = call_args(s, at, &translate_at)?;
+    let (name, rest) = args.split_first()?;
+    let name = match name.strip_prefix(['"', '\'']) {
+        Some(_) if is_string_literal(name) => {
+            format!("{}workspace.{}", &name[..1], &name[1..])
+        }
+        _ => format!("\"workspace.\" + {}", grouped(name)),
+    };
+    let args: Vec<&str> = std::iter::once(name.as_str())
+        .chain(rest.iter().map(String::as_str))
+        .collect();
+    Some((end, format!("vars.{op}({})", args.join(", "))))
 }
 
 /// `pm.cookies.has(name)` and `pm.cookies.toObject()`: the cookies the response set
@@ -184,7 +408,7 @@ fn cookies_call(s: &str) -> Option<(usize, String)> {
     if let Some(end) = word(s, "pm.cookies.toObject").and_then(|i| empty_call(s, i)) {
         return Some((end, "res.cookies".to_owned()));
     }
-    let (end, args) = call_args(s, word(s, "pm.cookies.has")?, translate_at)?;
+    let (end, args) = call_args(s, word(s, "pm.cookies.has")?, &translate_at)?;
     let [name] = args.as_slice() else {
         return None;
     };
@@ -196,7 +420,7 @@ fn cookies_call(s: &str) -> Option<(usize, String)> {
 fn next_request(s: &str) -> Option<(usize, String)> {
     let at =
         word(s, "postman.setNextRequest").or_else(|| word(s, "pm.execution.setNextRequest"))?;
-    let (end, args) = call_args(s, at, translate_at)?;
+    let (end, args) = call_args(s, at, &translate_at)?;
     let [name] = args.as_slice() else {
         return None;
     };
@@ -255,7 +479,7 @@ fn assertion(s: &str, chain: &Chain<'_>, actual: &str) -> Option<(usize, String,
         }
         _ => {}
     }
-    let (end, args) = call_args(s, chain.end, translate_at)?;
+    let (end, args) = call_args(s, chain.end, &translate_at)?;
     let matcher = match chain.name {
         "equal" | "equals" | "eq" if chain.deep => "toEqual",
         "equal" | "equals" | "eq" => "toBe",
@@ -389,8 +613,8 @@ pm.test("Body", () => {
 pm.test("Fails", () => pm.expect(pm.response.code).to.not.equal(200));
 pm.environment.set("userId", pm.response.json().id);
 "#;
-        // `.that` dangling after `an("array")` keeps that one call untranslated.
-        assert!(partial(postman).contains(r#"pm.expect(json.tags).to.be.an("array").that;"#));
+        // R-COL-40: Jest has no `.that` dangling after `an("array")`, so the Chai chain stays.
+        assert!(complete(postman).contains(r#"expect(json.tags).to.be.an("array").that;"#));
 
         let postman = postman.replace(".that;", ";");
         let tortuga = complete(&postman);
@@ -493,13 +717,14 @@ pm.environment.set("userId", pm.response.json().id);
                 "pm.expect(a).to.be.at.most(2)",
                 "expect(a).toBeLessThanOrEqual(2)",
             ),
+            // R-COL-40: what Jest can't say stays Chai's (R-TEST-8).
             (
                 "pm.expect(a, 'msg').to.equal(1)",
-                "pm.expect(a, 'msg').to.equal(1)",
+                "expect(a, 'msg').to.equal(1)",
             ),
             (
                 "pm.expect(a).to.be.a('object')",
-                "pm.expect(a).to.be.a('object')",
+                "expect(a).to.be.a('object')",
             ),
             (
                 "pm.response.to.have.status(\"Created\")",
@@ -548,10 +773,16 @@ pm.environment.set("userId", pm.response.json().id);
             "vars.set('a', 1);\npm.sendRequest('https://x.test', () => {});"
         );
         for postman in [
-            "tests['ok'] = responseCode.code === 200;",
             "const id = _.get(json, 'id');",
-            "pm.expect(a).to.equal(1).and.to.be.above(0);",
+            "pm.expect(a).to.be.frobnicated;",
+            "pm.expect(a).to.equal(1).and.to.frobnicate(0);",
+            "pm.expect().to.equal(1);",
             "pm.expect(a).to.equal(1",
+            "var host = pm.request.url.getHost();",
+            "pm.request.url.query.add('a=1');",
+            "pm.request.headers.add({key: 'X', value: '1', disabled: true});",
+            "pm.request.headers.remove('X');",
+            "pm.response.to.have.jsonSchema(schema);",
             "pm.test(\"broken\", () => {",
         ] {
             partial(postman);
@@ -657,6 +888,198 @@ pm.environment.set("userId", pm.response.json().id);
         );
         // `pm.info.requestId` has no counterpart: kept for the user.
         assert!(partial("console.log(pm.info.requestId);").contains("pm.info.requestId"));
+    }
+
+    /// R-COL-40: each new translation, as written.
+    #[test]
+    fn more_of_the_api_translates() {
+        let cases = [
+            (
+                "pm.expect(b.tags, 'tags').to.have.members(['a'])",
+                "expect(b.tags, 'tags').to.have.members(['a'])",
+            ),
+            (
+                "pm.expect(pm.response.json()).to.have.length.above(pm.collectionVariables.get('n'))",
+                "expect(res.json()).to.have.length.above(vars.get('n'))",
+            ),
+            (
+                "pm.response.to.be.success",
+                "expect(res.status).to.be.within(200, 299)",
+            ),
+            (
+                "pm.response.to.not.be.error",
+                "expect(res.status).not.to.be.within(400, 599)",
+            ),
+            ("pm.response.to.be.notFound", "expect(res.status).toBe(404)"),
+            (
+                "pm.response.to.have.body('ok')",
+                "expect(res.body).toBe('ok')",
+            ),
+            (
+                "pm.response.to.have.body(/ok/i)",
+                "expect(res.body).toMatch(/ok/i)",
+            ),
+            (
+                "pm.response.to.have.jsonBody('user.name')",
+                "expect(res.json()).toHaveProperty('user.name')",
+            ),
+            (
+                "pm.response.to.have.jsonBody(\"id\", 7)",
+                "expect(res.json()).toHaveProperty(\"id\", 7)",
+            ),
+            (
+                "pm.response.to.have.jsonBody({id: 7})",
+                "expect(res.json()).toEqual({id: 7})",
+            ),
+            (
+                "pm.response.to.not.have.header('X-A')",
+                "expect(res.header('X-A')).not.toBeDefined()",
+            ),
+            (
+                "pm.response.headers.has('X-A')",
+                "(res.header('X-A') !== undefined)",
+            ),
+            ("pm.response.headers.toObject()", "res.headers"),
+            ("pm.response.reason()", "res.statusText"),
+            ("pm.request.headers.get('X-Ünï')", "req.headers['x-ünï']"),
+            (
+                "pm.request.headers.get(name)",
+                "req.headers[String(name).toLowerCase()]",
+            ),
+            ("pm.request.headers.toObject()", "req.headers"),
+            (
+                "pm.request.headers.add({key: 'X-Id', value: pm.variables.get('id')})",
+                "req.setHeader('X-Id', vars.get('id'))",
+            ),
+            (
+                "pm.request.headers.upsert({ \"value\": \"1\", \"key\": \"X-A\" })",
+                "req.setHeader(\"X-A\", \"1\")",
+            ),
+            ("pm.request.url", "req.url"),
+            ("pm.request.url.toString()", "req.url.toString()"),
+            ("pm.environment.toObject()", "vars.toObject()"),
+            ("pm.globals.toObject()", "vars.toObject()"),
+            ("pm.iterationData.toObject()", "vars.toObject()"),
+            (
+                "pm.environment.replaceIn('{{a}}')",
+                "vars.replaceIn('{{a}}')",
+            ),
+            (
+                "pm.expect(a).to.be.instanceOf(Array)",
+                "expect(a).to.be.instanceOf(Array)",
+            ),
+            (
+                "tests[\"Status is 200\"] = responseCode.code === 200;",
+                "test(\"Status is 200\", () => expect(Boolean(res.status === 200)).toBe(true));",
+            ),
+            (
+                "tests['fast'] = responseTime < 500\nx();",
+                "test('fast', () => expect(Boolean(res.time < 500)).toBe(true))\nx();",
+            ),
+            ("postman.getResponseHeader('X-A')", "res.header('X-A')"),
+            (
+                "postman.setGlobalVariable('t', 1)",
+                "vars.set('workspace.t', 1)",
+            ),
+            ("postman.getGlobalVariable('t')", "vars.get('t')"),
+            (
+                "postman.clearGlobalVariable(n)",
+                "vars.unset(\"workspace.\" + n)",
+            ),
+            // Not Postman's: left alone.
+            ("tests == 1; tests[0] == 2;", "tests == 1; tests[0] == 2;"),
+            ("x.responseTime", "x.responseTime"),
+        ];
+        for (postman, tortuga) in cases {
+            assert_eq!(rewrite(postman), tortuga, "translating {postman:?}");
+        }
+    }
+
+    /// R-COL-40: a test script in the new and the old API runs after translation and
+    /// passes and fails where Postman's would, with Chai's message before the failure.
+    #[test]
+    fn translated_assertions_and_legacy_tests_run() {
+        let tortuga = complete(
+            "pm.test('statuses', () => {\n\
+             \x20 pm.response.to.be.success;\n\
+             \x20 pm.response.to.not.be.clientError;\n\
+             \x20 pm.response.to.have.jsonBody('tags');\n\
+             \x20 pm.response.to.have.jsonBody('name', 'Ann');\n\
+             \x20 pm.expect(pm.response.headers.has('content-type')).to.be.true;\n\
+             \x20 pm.expect(pm.response.headers.toObject()).to.include.keys('content-type');\n\
+             \x20 pm.expect(pm.response.reason()).to.equal('OK');\n\
+             \x20 pm.expect(pm.response.json().tags).to.include.members(['a']);\n\
+             \x20 pm.expect(pm.response.json().tags).to.have.length.below(2);\n\
+             \x20 pm.expect(pm.request.url).to.include('/users');\n\
+             });\n\
+             pm.test('message', () => pm.expect(pm.response.json().id, 'the id').to.equal(8));\n\
+             tests['legacy'] = responseCode.code === 200 && responseTime < 1000;\n\
+             tests['legacy fails'] = postman.getResponseHeader('Content-Type') === 'text/xml';\n\
+             postman.setGlobalVariable('seen', JSON.stringify(pm.environment.toObject()));",
+        );
+        let run = run_test(&tortuga);
+        assert_eq!(run.error, None, "{tortuga}");
+        let results: Vec<(&str, bool)> = run
+            .tests
+            .iter()
+            .map(|t| (t.name.as_str(), t.passed))
+            .collect();
+        assert_eq!(
+            results,
+            [
+                ("statuses", true),
+                ("message", false),
+                ("legacy", true),
+                ("legacy fails", false)
+            ],
+            "{:?}",
+            run.tests
+        );
+        assert_eq!(
+            run.tests[1].message.as_deref(),
+            Some("the id: Expected 7 to equal 8")
+        );
+        assert_eq!(run.vars["workspace.seen"].as_deref(), Some("{}"));
+    }
+
+    /// R-COL-40: request headers set in a pre-request script are sent.
+    #[test]
+    fn request_headers_are_set_before_sending() {
+        let tortuga = complete(
+            "pm.request.headers.add({key: 'X-Trace', value: 'ü😀'});\n\
+             pm.request.headers.upsert({key: 'X-Id', value: String(1 + 1)});\n\
+             console.log(pm.request.headers.get('X-Trace'));",
+        );
+        let request = Request::new(HttpMethod::Post, "https://api.test/users");
+        let run = crate::script::run(
+            &tortuga,
+            Phase::PreRequest,
+            &BTreeMap::new(),
+            &request,
+            None,
+        );
+        assert_eq!(run.error, None);
+        assert_eq!(
+            run.headers,
+            [KeyValue::new("X-Trace", "ü😀"), KeyValue::new("X-Id", "2")]
+        );
+        assert_eq!(run.console[0].log_text().as_deref(), Some("ü😀"));
+    }
+
+    /// R-COL-40: every word a kept Chai chain may use is one Tortuga's `expect` has.
+    #[test]
+    fn every_chai_word_kept_exists_in_expect() {
+        let words = CHAI_WORDS.map(|w| format!("\"{w}\"")).join(", ");
+        let script = format!(
+            "test('words', () => {{\n\
+             \x20 const e = expect([]);\n\
+             \x20 const missing = [{words}].filter((w) => !(w in e));\n\
+             \x20 expect(missing).toEqual([]);\n\
+             }});"
+        );
+        let run = run_test(&script);
+        assert_eq!(run.error, None);
+        assert!(run.tests[0].passed, "{:?}", run.tests[0].message);
     }
 
     /// R-COL-32: Insomnia's API is renamed only where code uses it, and what can't be

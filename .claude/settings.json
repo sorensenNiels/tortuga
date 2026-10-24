@@ -10,7 +10,24 @@
       "Bash(cargo fmt:*)",
       "Bash(cargo tree:*)",
       "Bash(cargo deny check:*)",
-      "Bash(cargo metadata:*)"
+      "Bash(cargo metadata:*)",
+      "Bash(make help)",
+      "Bash(make fmt)",
+      "Bash(make fmt-check)",
+      "Bash(make verify:*)",
+      "Bash(make test:*)",
+      "Bash(make test-core:*)",
+      "Bash(make test-ui:*)",
+      "Bash(make selftest:*)",
+      "Bash(make lint:*)",
+      "Bash(make lint-web:*)",
+      "Bash(make lint-desktop:*)",
+      "Bash(make deny:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)"
     ]
   }
 }

@@ -1,0 +1,29 @@
+name = "destinationGet"
+seq = 100
+method = "POST"
+server = "synchservicesbase"
+url = "/apixml"
+
+[body]
+kind = "xml"
+content = '<syn:destinationGet destination="CHARREPTST" destinationType="BOR" xmlns:syn="http://www.synchronicer.dk"/>'
+
+[scripts]
+tests = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+test("Status code is 200", function () {
+    expect(res.status).toBe(200);
+});
+if (res.status == 200) {
+    var jsonObject;
+    jsonObject = xml2Json(res.body);
+    var status = jsonObject.destinationGetResponse.$.status;
+    if (status == "success"){
+        workflow.next("registrationCreate");
+    } else {
+        workflow.next("destinationCreate");
+    }
+} else { 
+    workflow.stop();
+}
+"""

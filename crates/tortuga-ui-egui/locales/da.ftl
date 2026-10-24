@@ -336,6 +336,23 @@ workflow-steps-failed =
        *[other] {$count} trin fejlet
     }
 workflow-rows-done = {$done} af {$planned} rækker
+workflow-iteration = Iteration {$n}
+workflow-running-iteration-step = Iteration {$n}, trin {$step} af {$of} …
+workflow-iterations-done = {$done} af {$planned} iterationer
+workflow-iterations = Iterationer
+workflow-iterations-hint = Hvor mange gange trinnene køres
+workflow-iterations-by-rows = Datafilens rækker bestemmer, hvor mange gange trinnene køres
+workflow-delay = Forsinkelse
+workflow-delay-hint = Vent mellem trin, i millisekunder
+workflow-keep-variables = Behold variabelværdier
+workflow-keep-variables-hint = Start fra projektets variabler fra kørsler og behold det, scripts og opsamlinger sætter, på tværs af iterationer og efter kørslen. Fra: hver kørsel starter forfra og ændrer intet.
+workflow-unsaved-run = Kørsel (ikke gemt)
+workflow-save-as = Gem som workflow…
+workflow-save-as-hint = Gem kørslen som en workflowfil i projektet, så den kan committes og køres igen
+workflow-save-as-title = Gem som workflow
+run-requests = Kør…
+run-requests-hint = Kør anmodningerne i rækkefølge, som Postmans Run collection: vælg indstillinger, og tryk så Kør
+palette-run-project = Kør projekt: {$name}
 workflow-step-tests = tests {$passed}/{$total}
 response-body = Svarets body
 workflow-new-title = Nyt workflow
@@ -718,8 +735,8 @@ snippet-read-xml = Læs en XML-body
 scripts-pre-request = Før anmodning
 scripts-pre-request-about = Køres, før variablerne udfyldes og anmodningen sendes.
 scripts-tests-about = Køres, når svaret er kommet.
-scripts-pre-request-reference = vars.get/set/unset/has/replaceIn, req.method/url/headers/body, req.setHeader(name, value), xml2Json(text), info.requestName/iteration, workflow.next(step)/stop() i workflowkørsler, console.log/info/warn/error. Klik på et linjenummer for at sætte et breakpoint: Konsollen viser så variablerne der.
-scripts-tests-reference = test(name, fn); expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (og .not) eller Chais expect(x).to.equal/.to.be.an("object")/.to.have.property/…; res.status, res.json(), res.header(name), res.cookie(name), res.time, res.body; xml2Json(text); vars; info; workflow.next(step)/stop() i workflowkørsler; console.log. Klik på et linjenummer for at sætte et breakpoint: Konsollen viser så variablerne der.
+scripts-pre-request-reference = vars.get/set/unset/has/replaceIn/toObject, req.method/url/headers/body, req.setHeader(name, value), xml2Json(text), btoa/atob(text), info.requestName/iteration, workflow.next(step)/stop() i workflowkørsler, console.log/info/warn/error. Klik på et linjenummer for at sætte et breakpoint: Konsollen viser så variablerne der.
+scripts-tests-reference = test(name, fn), test.skip(name, fn); expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (og .not) eller Chais expect(x).to.equal/.to.be.an("object")/.to.have.property/…; res.status, res.json(), res.header(name), res.cookie(name), res.time, res.body; xml2Json(text); btoa/atob(text); vars; info; workflow.next(step)/stop() i workflowkørsler; console.log. Klik på et linjenummer for at sætte et breakpoint: Konsollen viser så variablerne der.
 scripts-reference = Reference
 scripts-captures-hint = Lægger en værdi fra svaret i en variabel: $.json.path, xpath://xml/path, header:Navn eller status. Opsamlede værdier gemmes, indtil Tortuga lukkes, og går forud for miljøets værdier.
 

@@ -1,0 +1,39 @@
+name = "registrationCreate"
+seq = 300
+method = "POST"
+server = "synchservicesbase"
+url = "/apixml"
+
+[auth]
+kind = "basic"
+username = "{{username_2}}"
+password = "{{password_2}}"
+
+[body]
+kind = "xml"
+content = """
+<syn:registrationCreate registrationType="BOR" earlyDate="2099-01-01" earlyTime="00:00:01" lateDate="2099-01-02" lateTime="23:59:59" tourType="BOR" destinationType="BOR" destination="CHARREPTST" durationMinutes="10" xmlns:syn="http://www.synchronicer.dk"/>\r
+"""
+
+[scripts]
+tests = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+test("Status code is 200", function () {
+    expect(res.status).toBe(200);
+});
+if (res.status == 200){
+    test("status", function(){
+        var jsonObject;
+        jsonObject = xml2Json(res.body);
+        var status = jsonObject.registrationCreateResponse.$.status;
+        if (status != "success") {
+            workflow.stop();
+        }
+        expect(status).toBe("success");
+        var seq = (jsonObject.registrationCreateResponse.registration.$.registrationSequence);
+        vars.set("CharacterCheckRegistration", seq);
+    })
+} else {
+    workflow.stop();
+}
+"""

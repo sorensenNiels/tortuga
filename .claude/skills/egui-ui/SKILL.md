@@ -6,7 +6,8 @@ description: Conventions for writing UI in crates/tortuga-ui-egui with egui 0.37
 # egui UI in Tortuga
 
 egui/eframe version: **0.37** (see workspace `Cargo.toml`). APIs changed a lot recently — check the source in
-`~/.cargo/registry/src/*/egui-0.37*/` rather than relying on memory. Notably: one `Panel` type
+`~/.cargo/registry/src/*/egui-0.37*/` rather than relying on memory (`grep -rn "pub fn name"` there, then read
+that range; the files are large). Notably: one `Panel` type
 (`Panel::left/top(..).show(ui, ..)`), `eframe::App::ui(&mut self, ui, frame)`, buttons/labels take "atoms"
 (`Atom::grow()` pushes the rest right), menus close themselves on click, `Id::new` is deprecated (`Id::unique`).
 

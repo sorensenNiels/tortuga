@@ -13,7 +13,19 @@ change a decision recorded in the roadmap, ask before building.
 | File | Holds | Rule |
 |---|---|---|
 | `docs/ROADMAP.md` | Vision, principles, open work and phases, open requirements (`R-COL-3`), ideas (`IDEA-n`), decisions (`D1`), next free IDs. | The plan and the spec for what is not done. Implement requirements as written; suggest new ideas by adding a row to its Ideas section; record new decisions there. |
-| `docs/FEATURES.md` | Implemented **and verified** features by requirement ID, and the text of every completed requirement ("Agreed requirements"). | Add an entry only when the requirement is fully met, tested, and checked in the running app; record which OS, and move the requirement's row there from the roadmap. Otherwise it goes under "In progress". |
+| `docs/FEATURES.md` | Implemented **and verified** features by requirement ID, and how each was verified. | Add an entry only when the requirement is fully met, tested, and checked in the running app; record which OS. Otherwise it goes under "In progress". |
+| `docs/REQUIREMENTS.md` | The text of every completed requirement. | When a requirement is verified, move its row here from the roadmap. |
+
+## Working efficiently
+
+Context is the budget; spend it on code that changes.
+- Never read `FEATURES.md`, `REQUIREMENTS.md`, `ROADMAP.md` or `README.md` whole. `grep -n` the ID (`"R-COL-3 "`,
+  `"| D42 "`, `IDEA-7`) or heading, then read that range. Planning needs roadmap §4 to §6; next free IDs are its last line.
+- Source files over ~500 lines: `grep -n` the symbol, then read with offset/limit. Don't re-read a file after editing it.
+- While working, run the narrowest check (`cargo test -p <crate> <filter>`); run `/verify` once at the end. Send long
+  command output to a file under `target/` and grep it instead of printing it.
+- Use an Explore subagent only for sweeps across many files where only the conclusion matters.
+- `/audit-context` re-checks these files and settings for token cost and stale references.
 
 IDs are never reused or renumbered. Reference requirement IDs in commit messages and tests.
 When building something that has no requirement yet, add one to the roadmap (next free ID in its area, listed at the end of the roadmap).
@@ -145,3 +157,4 @@ violations in code you touch.
 - `/verify` — full local quality gate; run before saying work is done.
 - `egui-ui` — how to write UI code in this repo.
 - `core-engine` — how to add engine features to `tortuga-core`.
+- `/audit-context` — recurring audit of these files, skills and settings for token cost and stale references.

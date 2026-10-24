@@ -1,10 +1,14 @@
-//! Importing a Postman collection as a project on disk (R-COL-16).
+//! Importing a Postman collection as a project on disk (R-COL-16), and running it as
+//! Postman's "Run collection" does (R-COL-39, R-COL-41).
 
 use std::path::Path;
 
 use tortuga_core::import::{self, ImportKind};
 use tortuga_core::storage::FsStorage;
-use tortuga_core::{Auth, Collection, Item, KeyValue};
+use tortuga_core::workflow::{self, RunOptions, Workflow};
+use tortuga_core::{Auth, Client, Collection, Item, KeyValue};
+use wiremock::matchers::{body_string_contains, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const FS: FsStorage = FsStorage;
 
@@ -94,4 +98,136 @@ fn import_writes_a_project_without_credentials() {
     // Opened again, it is the same project.
     let again = Collection::open(&FS, &root).expect("open");
     assert_eq!(names(&again.items), names(&project.items));
+}
+
+const XML_SUITE: &str = include_str!("fixtures/xml-suite.postman_collection.json");
+
+/// R-COL-39: a real XML test suite, written on Windows and reading XML with `xml2js`,
+/// is imported with every script translated, and no `\r` in its files.
+#[test]
+fn xml_suite_scripts_are_all_translated() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path().join("xml-suite");
+    let import = import::parse(XML_SUITE, "xml-suite.json", ImportKind::Postman).expect("parse");
+    assert!(
+        import
+            .warnings
+            .iter()
+            .any(|w| w.starts_with("4 scripts were translated")),
+        "{:?}",
+        import.warnings
+    );
+    assert!(
+        !import
+            .warnings
+            .iter()
+            .any(|w| w.contains("kept as comments")),
+        "{:?}",
+        import.warnings
+    );
+    import::create_project(&FS, &root, &import).expect("create");
+    let files = all_files(&root);
+    assert!(!files.contains("\\r") && !files.contains('\r'));
+    assert!(!files.contains("require(") && files.contains("xml2Json(res.body)"));
+}
+
+/// Answers `request` (a text in the XML body) with `xml`.
+async fn answer(server: &MockServer, request: &str, xml: &str) {
+    Mock::given(method("POST"))
+        .and(path("/apixml"))
+        .and(header("content-type", "application/xml"))
+        .and(body_string_contains(request))
+        .respond_with(ResponseTemplate::new(200).set_body_string(xml))
+        .mount(server)
+        .await;
+}
+
+/// R-COL-41, R-FLOW-7: run as the project's Run… runs it (every request in order, as
+/// Postman's "Run collection"), the translated scripts jump with `setNextRequest` by
+/// request name and hand values on through variables.
+#[tokio::test]
+async fn an_imported_xml_suite_runs_as_its_workflow() {
+    let server = MockServer::start().await;
+    answer(
+        &server,
+        "destinationGet",
+        r#"<destinationGetResponse status="success"/>"#,
+    )
+    .await;
+    answer(
+        &server,
+        "registrationCreate",
+        r#"<registrationCreateResponse status="success"><registration registrationSequence="4711"/></registrationCreateResponse>"#,
+    )
+    .await;
+    answer(
+        &server,
+        r#"registrationGet registrationSequence="4711""#,
+        r#"<registrationGetResponse status="success"><registration><itemValue item="X" value="ü😀"/><itemValue item="BESKED" value="ABC ? ABC"/></registration></registrationGetResponse>"#,
+    )
+    .await;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path().join("xml-suite");
+    let import = import::parse(XML_SUITE, "xml-suite.json", ImportKind::Postman).expect("parse");
+    let project = import::create_project(&FS, &root, &import).expect("create");
+    assert_eq!(project.workflows, [], "the import writes no workflow (D65)");
+    let suite = Workflow::from_folder(&project, Path::new(""));
+    assert_eq!(suite.name, "XML suite");
+    assert!(suite.continue_on_failure);
+    let steps: Vec<&str> = suite.steps.iter().map(|s| s.request.as_str()).collect();
+    assert_eq!(
+        steps,
+        [
+            "destinationget.toml",
+            "destinationcreate.toml",
+            "registrationcreate.toml",
+            "registrationget.toml"
+        ]
+    );
+
+    let mut environments = project.environments.clone();
+    environments[0]
+        .servers
+        .insert("servicebase".into(), server.uri());
+    project
+        .save_config(&FS, &project.manifest, &environments)
+        .expect("save");
+    let project = Collection::open(&FS, &root).expect("open");
+    let options = RunOptions {
+        environment: Some(environments[0].id.clone()),
+        ..RunOptions::default()
+    };
+    let result = workflow::run(&Client::default(), &project, &suite, &options, |_| {}).await;
+
+    let iteration = &result.iterations[0];
+    let ran: Vec<(usize, &str)> = iteration
+        .steps
+        .iter()
+        .map(|s| (s.index, s.name.as_str()))
+        .collect();
+    assert_eq!(
+        ran,
+        [
+            (0, "destinationGet"),
+            (2, "registrationCreate"),
+            (3, "registrationGet")
+        ]
+    );
+    for step in &iteration.steps {
+        assert!(
+            step.outcome.errors.is_empty(),
+            "{}: {:?}",
+            step.name,
+            step.outcome.errors
+        );
+        assert!(!step.outcome.tests.is_empty(), "{} has tests", step.name);
+        assert!(
+            step.outcome.tests.iter().all(|t| t.passed),
+            "{}: {:?}",
+            step.name,
+            step.outcome.tests
+        );
+    }
+    assert!(result.passed());
 }

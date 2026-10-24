@@ -71,6 +71,6 @@ pub use tab_strip::{GroupChip, TabAction, TabGroup, TabStripState, TabView, tab_
 pub use var_help::{FieldWidth, Lines, VarHelp, VarInfo, var_edit};
 pub use workflow_view::{
     IterationView, RequestChoice, RunView, StepView, WorkflowAction, WorkflowContext,
-    WorkflowEditorState, workflow_editor, workflow_results,
+    WorkflowEditorState, WorkflowFile, workflow_editor, workflow_results,
 };
 pub use workspace_vars::{WorkspaceVarsAction, WorkspaceVarsDialog};

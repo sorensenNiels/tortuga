@@ -330,6 +330,23 @@ workflow-steps-failed =
        *[other] {$count} steps failed
     }
 workflow-rows-done = {$done} of {$planned} rows
+workflow-iteration = Iteration {$n}
+workflow-running-iteration-step = Iteration {$n}, step {$step} of {$of} …
+workflow-iterations-done = {$done} of {$planned} iterations
+workflow-iterations = Iterations
+workflow-iterations-hint = How often to run the steps
+workflow-iterations-by-rows = The data file's rows decide how often the steps run
+workflow-delay = Delay
+workflow-delay-hint = Wait between steps, in milliseconds
+workflow-keep-variables = Keep variable values
+workflow-keep-variables-hint = Start from the project's runtime variables and keep what scripts and captures set, across iterations and after the run. Off: every run starts clean and changes nothing.
+workflow-unsaved-run = Run (not saved)
+workflow-save-as = Save as workflow…
+workflow-save-as-hint = Keep this run as a workflow file in the project, to commit and run again
+workflow-save-as-title = Save as workflow
+run-requests = Run…
+run-requests-hint = Run the requests in order, as Postman's Run collection: choose the options, then Run
+palette-run-project = Run project: {$name}
 workflow-step-tests = tests {$passed}/{$total}
 response-body = Response body
 workflow-new-title = New workflow
@@ -712,8 +729,8 @@ snippet-read-xml = Read an XML body
 scripts-pre-request = Pre-request
 scripts-pre-request-about = Runs before variables are filled in and the request is sent.
 scripts-tests-about = Runs after the response arrives.
-scripts-pre-request-reference = vars.get/set/unset/has/replaceIn, req.method/url/headers/body, req.setHeader(name, value), xml2Json(text), info.requestName/iteration, workflow.next(step)/stop() in workflow runs, console.log/info/warn/error. Click a line number to set a breakpoint: the Console then shows the variables there.
-scripts-tests-reference = test(name, fn); expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not) or Chai's expect(x).to.equal/.to.be.an("object")/.to.have.property/…; res.status, res.json(), res.header(name), res.cookie(name), res.time, res.body; xml2Json(text); vars; info; workflow.next(step)/stop() in workflow runs; console.log. Click a line number to set a breakpoint: the Console then shows the variables there.
+scripts-pre-request-reference = vars.get/set/unset/has/replaceIn/toObject, req.method/url/headers/body, req.setHeader(name, value), xml2Json(text), btoa/atob(text), info.requestName/iteration, workflow.next(step)/stop() in workflow runs, console.log/info/warn/error. Click a line number to set a breakpoint: the Console then shows the variables there.
+scripts-tests-reference = test(name, fn), test.skip(name, fn); expect(x).toBe/toEqual/toContain/toMatch/toHaveProperty/… (and .not) or Chai's expect(x).to.equal/.to.be.an("object")/.to.have.property/…; res.status, res.json(), res.header(name), res.cookie(name), res.time, res.body; xml2Json(text); btoa/atob(text); vars; info; workflow.next(step)/stop() in workflow runs; console.log. Click a line number to set a breakpoint: the Console then shows the variables there.
 scripts-reference = Reference
 scripts-captures-hint = Puts a value from the response into a variable: $.json.path, xpath://xml/path, header:Name or status. Captured values are kept until Tortuga closes and win over environment values.
 

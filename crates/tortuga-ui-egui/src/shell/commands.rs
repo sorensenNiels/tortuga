@@ -50,6 +50,8 @@ pub(super) enum Command {
     Shortcuts,
     /// Workflows (R-FLOW-2, R-FLOW-3) and runtime variables (R-TEST-5).
     RunWorkflow(crate::state::WorkflowKey),
+    /// Open a run of all the project's requests (R-FLOW-7).
+    RunProject(PathBuf),
     NewWorkflow(PathBuf),
     RuntimeVars(Option<PathBuf>),
     /// The workspace's variables (R-WS-8).
@@ -248,6 +250,16 @@ impl TortugaUi {
                 )
                 .detail(c.name())
                 .keywords("test"),
+            );
+        }
+        if workflows {
+            items.push(
+                run(
+                    t!("palette-run-project", name = c.name()),
+                    Command::RunProject(c.root.clone()),
+                )
+                .detail(c.name())
+                .keywords("collection runner test"),
             );
         }
         if workflows && !c.read_only {
@@ -467,6 +479,7 @@ impl TortugaUi {
             Command::ToggleSidebar => self.toggle_sidebar(),
             Command::Shortcuts => self.show_shortcuts(ctx),
             Command::RunWorkflow(key) => self.run_workflow(&key, ctx),
+            Command::RunProject(root) => self.open_run(&root, Path::new("")),
             Command::NewWorkflow(root) => self.new_workflow_dialog(root),
             Command::RuntimeVars(root) => self.show_runtime_vars(root),
             Command::WorkspaceVariables => self.on_workspace(WorkspaceAction::Variables),
@@ -568,6 +581,8 @@ mod tests {
         let has = |labels: &[String], label: &str| labels.iter().any(|l| l == label);
         let before = labels(&ui);
         assert!(has(&before, "Run workflow: Smoke") && has(&before, "Start mock server"));
+        // R-FLOW-7: the project's requests can be run without a workflow.
+        assert!(has(&before, "Run project: C"));
 
         ui.state.update_settings(|s| {
             for feature in [Feature::Workflows, Feature::Examples, Feature::Scripts] {
@@ -575,7 +590,12 @@ mod tests {
             }
         });
         let after = labels(&ui);
-        for gone in ["Run workflow: Smoke", "New workflow…", "Start mock server"] {
+        for gone in [
+            "Run workflow: Smoke",
+            "Run project: C",
+            "New workflow…",
+            "Start mock server",
+        ] {
             assert!(!has(&after, gone), "{gone} is hidden");
         }
         {

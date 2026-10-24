@@ -1,9 +1,11 @@
-//! The workflow editor and its run results (R-FLOW-2, R-FLOW-3, R-FLOW-4).
+//! The workflow editor and its run results (R-FLOW-2, R-FLOW-3, R-FLOW-4), also for a
+//! run of a project's or folder's requests that is not saved (R-FLOW-7), with the
+//! runner's options (R-FLOW-8, R-FLOW-9).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use egui::{ComboBox, Label, RichText, ScrollArea, TextEdit, Ui};
+use egui::{ComboBox, DragValue, Label, RichText, ScrollArea, TextEdit, Ui};
 use tortuga_core::workflow::{FlowEnd, Step, StepResult, Workflow};
 use tortuga_core::{HttpMethod, KeyValue};
 
@@ -128,6 +130,8 @@ pub struct RunView {
     pub current: Option<(usize, usize)>,
     pub steps_per_iteration: usize,
     pub iterations_planned: usize,
+    /// The iterations are a data file's rows (R-FLOW-4), not repeats (R-FLOW-8).
+    pub by_rows: bool,
     pub cancelled: bool,
 }
 
@@ -149,18 +153,24 @@ impl RunView {
     }
 }
 
+/// Where the workflow in the editor is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkflowFile {
+    /// In its file, as edited.
+    Saved,
+    /// In its file, with edits not saved yet.
+    Edited,
+    /// Nowhere: a run of a project's or folder's requests (R-FLOW-7).
+    None,
+}
+
 /// What the editor needs besides the workflow.
 #[derive(Debug, Clone, Copy)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent facts the editor shows"
-)]
 pub struct WorkflowContext<'a> {
     /// The project's requests, for "Add step".
     pub requests: &'a [RequestChoice],
     pub read_only: bool,
-    /// The workflow has unsaved changes.
-    pub dirty: bool,
+    pub file: WorkflowFile,
     pub running: bool,
     pub can_pick_files: bool,
 }
@@ -168,6 +178,8 @@ pub struct WorkflowContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowAction {
     Save,
+    /// Keep a run that is not saved as a workflow file (R-FLOW-7).
+    SaveAs,
     Revert,
     Run,
     Cancel,
@@ -216,6 +228,8 @@ pub fn workflow_editor(
             workflow.data = None;
         }
     });
+    ui.add_space(4.0);
+    run_options(ui, workflow);
     ui.add_space(8.0);
     theme::section_label(ui, &t!("workflow-steps"));
     ScrollArea::vertical()
@@ -259,6 +273,43 @@ fn apply_change(workflow: &mut Workflow, st: &mut WorkflowEditorState, change: O
     st.sync(workflow);
 }
 
+/// Iterations, the delay between steps (R-FLOW-8) and keeping variable values (R-FLOW-9).
+fn run_options(ui: &mut Ui, workflow: &mut Workflow) {
+    ui.horizontal_wrapped(|ui| {
+        let label = ui.label(t!("workflow-iterations"));
+        let mut iterations = workflow.iterations.max(1);
+        let hint = if workflow.data.is_some() {
+            t!("workflow-iterations-by-rows")
+        } else {
+            t!("workflow-iterations-hint")
+        };
+        let edit = ui
+            .add_enabled(
+                workflow.data.is_none(),
+                DragValue::new(&mut iterations).range(1..=10_000),
+            )
+            .labelled_by(label.id)
+            .on_hover_text(hint.clone())
+            .on_disabled_hover_text(hint);
+        if edit.changed() {
+            workflow.iterations = iterations;
+        }
+        ui.add_space(16.0);
+        let label = ui.label(t!("workflow-delay"));
+        ui.add(
+            DragValue::new(&mut workflow.delay_ms)
+                .range(0..=600_000)
+                .speed(10.0)
+                .suffix(" ms"),
+        )
+        .labelled_by(label.id)
+        .on_hover_text(t!("workflow-delay-hint"));
+        ui.add_space(16.0);
+        ui.checkbox(&mut workflow.keep_variables, t!("workflow-keep-variables"))
+            .on_hover_text(t!("workflow-keep-variables-hint"));
+    });
+}
+
 fn header(ui: &mut Ui, workflow: &mut Workflow, cx: WorkflowContext<'_>) -> Option<WorkflowAction> {
     let p = theme::palette(ui);
     let mut action = None;
@@ -266,7 +317,11 @@ fn header(ui: &mut Ui, workflow: &mut Workflow, cx: WorkflowContext<'_>) -> Opti
         ui,
         |ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new(t!("workflow")).small().color(p.muted));
+                let caption = match cx.file {
+                    WorkflowFile::Saved | WorkflowFile::Edited => t!("workflow"),
+                    WorkflowFile::None => t!("workflow-unsaved-run"),
+                };
+                ui.label(RichText::new(caption).small().color(p.muted));
                 ui.horizontal(|ui| {
                     let title =
                         egui::FontId::new(18.0, egui::FontFamily::Name(theme::SEMIBOLD.into()));
@@ -280,7 +335,7 @@ fn header(ui: &mut Ui, workflow: &mut Workflow, cx: WorkflowContext<'_>) -> Opti
                             .desired_width(24.0),
                     )
                     .on_hover_text(t!("workflow-name"));
-                    if cx.dirty {
+                    if cx.file == WorkflowFile::Edited {
                         theme::badge(ui, t!("unsaved"), p.redirect);
                     }
                 });
@@ -301,15 +356,29 @@ fn header(ui: &mut Ui, workflow: &mut Workflow, cx: WorkflowContext<'_>) -> Opti
             {
                 action = Some(WorkflowAction::Run);
             }
-            if ui
-                .add_enabled(cx.dirty && !cx.read_only, egui::Button::new(t!("save")))
-                .on_hover_text(t!("save-shortcut"))
-                .clicked()
-            {
-                action = Some(WorkflowAction::Save);
-            }
-            if cx.dirty && ui.button(t!("revert")).clicked() {
-                action = Some(WorkflowAction::Revert);
+            match cx.file {
+                WorkflowFile::Saved | WorkflowFile::Edited => {
+                    let edited = cx.file == WorkflowFile::Edited;
+                    if ui
+                        .add_enabled(edited && !cx.read_only, egui::Button::new(t!("save")))
+                        .on_hover_text(t!("save-shortcut"))
+                        .clicked()
+                    {
+                        action = Some(WorkflowAction::Save);
+                    }
+                    if edited && ui.button(t!("revert")).clicked() {
+                        action = Some(WorkflowAction::Revert);
+                    }
+                }
+                WorkflowFile::None => {
+                    if ui
+                        .add_enabled(!cx.read_only, egui::Button::new(t!("workflow-save-as")))
+                        .on_hover_text(t!("workflow-save-as-hint"))
+                        .clicked()
+                    {
+                        action = Some(WorkflowAction::SaveAs);
+                    }
+                }
             }
         },
     );
@@ -567,7 +636,12 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         mark(ui, !failed);
-                        ui.label(theme::semibold(t!("workflow-row", row = n + 1)));
+                        let label = if run.by_rows {
+                            t!("workflow-row", row = n + 1)
+                        } else {
+                            t!("workflow-iteration", n = n + 1)
+                        };
+                        ui.label(theme::semibold(label));
                         ui.add(Label::new(RichText::new(row).small().color(p.muted)).truncate());
                     });
                 }
@@ -589,10 +663,17 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                 ui.horizontal(|ui| {
                     ui.spinner();
                     let of = run.steps_per_iteration;
-                    let label = if multi {
+                    let label = if multi && run.by_rows {
                         t!(
                             "workflow-running-row-step",
                             row = n + 1,
+                            step = i + 1,
+                            of = of
+                        )
+                    } else if multi {
+                        t!(
+                            "workflow-running-iteration-step",
+                            n = n + 1,
                             step = i + 1,
                             of = of
                         )
@@ -634,11 +715,13 @@ fn summary(ui: &mut Ui, run: &RunView) {
             parts.push(t!("workflow-steps-failed", count = failed_steps));
         }
         if run.iterations_planned > 1 {
-            parts.push(t!(
-                "workflow-rows-done",
-                done = run.iterations.len(),
-                planned = run.iterations_planned
-            ));
+            let done = run.iterations.len();
+            let planned = run.iterations_planned;
+            parts.push(if run.by_rows {
+                t!("workflow-rows-done", done = done, planned = planned)
+            } else {
+                t!("workflow-iterations-done", done = done, planned = planned)
+            });
         }
         ui.label(RichText::new(parts.join(" · ")).color(p.muted));
     });
@@ -775,7 +858,7 @@ mod tests {
                 let cx = WorkflowContext {
                     requests: &requests,
                     read_only: false,
-                    dirty: true,
+                    file: WorkflowFile::Edited,
                     running: false,
                     can_pick_files: false,
                 };
@@ -814,7 +897,7 @@ mod tests {
             let cx = WorkflowContext {
                 requests: &requests,
                 read_only: false,
-                dirty: false,
+                file: WorkflowFile::Saved,
                 running: true,
                 can_pick_files: false,
             };

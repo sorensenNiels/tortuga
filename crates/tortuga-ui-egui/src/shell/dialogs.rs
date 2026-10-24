@@ -60,6 +60,7 @@ impl TortugaUi {
             Modal::NewWorkflow(..)
             | Modal::RenameWorkflow(..)
             | Modal::DeleteWorkflow(..)
+            | Modal::SaveRunAs(..)
             | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
             Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
             Modal::Mock(d) => self.show_mock_dialog(ctx, d),

@@ -1,0 +1,168 @@
+{
+	"info": {
+		"_postman_id": "00000000-0000-0000-0000-000000000000",
+		"name": "XML suite",
+		"description": "A trimmed copy of a real test suite for an XML service (R-COL-39, R-COL-41): run with \"Run collection\", it jumps with setNextRequest and reads XML with xml2js.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "destinationGet",
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": { "exec": [""], "type": "text/javascript" }
+				},
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {\r",
+							"    pm.response.to.have.status(200);\r",
+							"});\r",
+							"if (pm.response.code == 200) {\r",
+							"    const xml2js = require('xml2js');\r",
+							"    var jsonObject;\r",
+							"    xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+							"        jsonObject = result;\r",
+							"    });\r",
+							"    var status = jsonObject.destinationGetResponse.$.status;\r",
+							"    if (status == \"success\"){\r",
+							"        pm.execution.setNextRequest(\"registrationCreate\");\r",
+							"    } else {\r",
+							"        pm.execution.setNextRequest(\"destinationCreate\");\r",
+							"    }\r",
+							"} else { \r",
+							"    pm.execution.setNextRequest(null);\r",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "<syn:destinationGet destination=\"CHARREPTST\" xmlns:syn=\"http://example.test/syn\"/>",
+					"options": { "raw": { "language": "xml" } }
+				},
+				"url": { "raw": "{{serviceBase}}/apixml", "host": ["{{serviceBase}}"], "path": ["apixml"] }
+			},
+			"response": []
+		},
+		{
+			"name": "destinationCreate",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"status\", function(){\r",
+							"    const xml2js = require('xml2js');\r",
+							"    var jsonObject;\r",
+							"    xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+							"        jsonObject = result;\r",
+							"    });\r",
+							"    var status = jsonObject.destinationCreateResponse.$.status;\r",
+							"    if (status != \"success\"){\r",
+							"        pm.execution.setNextRequest(null);\r",
+							"    }\r",
+							"    pm.expect(status).to.equal(\"success\");\r",
+							"})"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "<syn:destinationCreate destination=\"CHARREPTST\" city=\"Dyssegård\" xmlns:syn=\"http://example.test/syn\"/>",
+					"options": { "raw": { "language": "xml" } }
+				},
+				"url": { "raw": "{{serviceBase}}/apixml", "host": ["{{serviceBase}}"], "path": ["apixml"] }
+			},
+			"response": []
+		},
+		{
+			"name": "registrationCreate",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"status\", function(){\r",
+							"    const xml2js = require('xml2js');\r",
+							"    var jsonObject;\r",
+							"    xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+							"        jsonObject = result;\r",
+							"    });\r",
+							"    pm.expect(jsonObject.registrationCreateResponse.$.status).to.equal(\"success\");\r",
+							"    var seq = (jsonObject.registrationCreateResponse.registration.$.registrationSequence);\r",
+							"    pm.collectionVariables.set(\"CharacterCheckRegistration\", seq);\r",
+							"})"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "<syn:registrationCreate destination=\"CHARREPTST\" xmlns:syn=\"http://example.test/syn\"/>",
+					"options": { "raw": { "language": "xml" } }
+				},
+				"url": { "raw": "{{serviceBase}}/apixml", "host": ["{{serviceBase}}"], "path": ["apixml"] }
+			},
+			"response": []
+		},
+		{
+			"name": "registrationGet",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"values\", function(){\r",
+							"    const xml2js = require('xml2js');\r",
+							"    var jsonObject;\r",
+							"    xml2js.parseString(pm.response.text(),{explicitArray: false}, (err, result)=>{\r",
+							"        jsonObject = result;\r",
+							"    });\r",
+							"    var len = jsonObject.registrationGetResponse.registration.itemValue.length;\r",
+							"    for (i = 0; i < len; i++){\r",
+							"        var item = jsonObject.registrationGetResponse.registration.itemValue[i].$.item;\r",
+							"        var val = jsonObject.registrationGetResponse.registration.itemValue[i].$.value;\r",
+							"        if (item == \"BESKED\"){\r",
+							"            pm.expect(val).to.equal(\"ABC ? ABC\");\r",
+							"        }\r",
+							"    }\r",
+							"})"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "<syn:registrationGet registrationSequence=\"{{CharacterCheckRegistration}}\" xmlns:syn=\"http://example.test/syn\"/>",
+					"options": { "raw": { "language": "xml" } }
+				},
+				"url": { "raw": "{{serviceBase}}/apixml", "host": ["{{serviceBase}}"], "path": ["apixml"] }
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{ "key": "CharacterCheckRegistration", "value": "" }
+	]
+}

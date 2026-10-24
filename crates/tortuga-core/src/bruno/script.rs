@@ -72,7 +72,7 @@ const GETTERS: [(&str, &str); 11] = [
 ];
 
 pub(super) fn translate(code: &str) -> Translation {
-    let translated = rewrite(code, translate_at);
+    let translated = rewrite(code, &translate_at);
     if uses_any(&translated, &BRUNO_GLOBALS)
         || uses_missing_member(&translated)
         || !script::parses(&translated)
@@ -105,7 +105,7 @@ fn translate_at(s: &str) -> Option<(usize, String)> {
 
 /// `req.getHeader(name)` → Tortuga's headers, which are keyed in lower case.
 fn request_header(s: &str) -> Option<(usize, String)> {
-    let (end, args) = call_args(s, word(s, "req.getHeader")?, translate_at)?;
+    let (end, args) = call_args(s, word(s, "req.getHeader")?, &translate_at)?;
     let [name] = args.as_slice() else {
         return None;
     };
@@ -114,7 +114,7 @@ fn request_header(s: &str) -> Option<(usize, String)> {
 
 /// `bru.setGlobalEnvVar(name, value)` → a workspace variable (R-WS-8).
 fn global_set(s: &str) -> Option<(usize, String)> {
-    let (end, args) = call_args(s, word(s, "bru.setGlobalEnvVar")?, translate_at)?;
+    let (end, args) = call_args(s, word(s, "bru.setGlobalEnvVar")?, &translate_at)?;
     let [name, value] = args.as_slice() else {
         return None;
     };
@@ -131,7 +131,7 @@ fn flow(s: &str) -> Option<(usize, String)> {
         return Some((end, "workflow.stop()".to_owned()));
     }
     let at = word(s, "bru.setNextRequest").or_else(|| word(s, "bru.runner.setNextRequest"))?;
-    let (end, args) = call_args(s, at, translate_at)?;
+    let (end, args) = call_args(s, at, &translate_at)?;
     let [name] = args.as_slice() else {
         return None;
     };

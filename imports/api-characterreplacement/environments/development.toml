@@ -1,0 +1,6 @@
+name = "Development"
+seq = 2
+color = "green"
+
+[servers]
+synchservicesbase = "https://udvxml.synchronicer.dk/express/site/synchronicer/services"

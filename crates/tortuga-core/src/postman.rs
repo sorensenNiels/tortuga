@@ -20,7 +20,7 @@
 //! What can't be imported as written is reported in [`Import::warnings`].
 //! [`crate::import::create_project`] writes the result.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -29,7 +29,8 @@ use crate::collection::NewItem;
 use crate::format::{FolderDefaults, Manifest};
 use crate::import::auth::{AuthSpec, Credentials, Inherited};
 use crate::import::{
-    Collected, Import, ImportKind, graphql_body, json_text as text, short_name, unique_name,
+    Collected, Import, ImportKind, graphql_body, json_text as text, requests, short_name,
+    unique_name,
 };
 use crate::mock::Example;
 use crate::model::{
@@ -134,7 +135,32 @@ impl<'a> Importer<'a> {
         let creds = self.credentials(self.doc.get("auth"), "the collection");
         let top = Inherited::top(creds, &mut manifest);
         let items = self.items(self.doc.get("item"), &top);
+        self.check_jumps(&items);
         self.c.finish(ImportKind::Postman, manifest, items)
+    }
+
+    /// Warns about `setNextRequest` names that find no step when the project runs, or
+    /// the first of several: steps are named after their requests (R-COL-41, R-FLOW-7).
+    fn check_jumps(&mut self, items: &[NewItem]) {
+        let requests = requests(items);
+        let targets: BTreeSet<&str> = requests
+            .iter()
+            .flat_map(|r| [r.scripts.pre_request.as_str(), r.scripts.tests.as_str()])
+            .flat_map(jump_targets)
+            .collect();
+        for target in targets {
+            match requests.iter().filter(|r| r.name == target).count() {
+                0 => self.c.warn(format!(
+                    "A script goes on with “{target}”, which is not a request of the \
+                     collection: a run fails there."
+                )),
+                1 => {}
+                _ => self.c.warn(format!(
+                    "Several requests are named “{target}”: a script that goes on with it \
+                     runs the first of them."
+                )),
+            }
+        }
     }
 
     /// Enabled variables of a `variable` list; those of type `secret` become secret
@@ -596,16 +622,30 @@ fn is_disabled(value: &Value) -> bool {
     value.get("disabled").and_then(Value::as_bool) == Some(true)
 }
 
-/// A script's `exec`: a list of lines or one text.
+/// The step names `code` goes on with: `workflow.next("name")` with a name as text.
+fn jump_targets(code: &str) -> Vec<&str> {
+    code.match_indices("workflow.next(")
+        .filter_map(|(i, call)| {
+            let arg = code.get(i + call.len()..)?.trim_start();
+            let quote = arg.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+            let (name, _) = arg.get(1..)?.split_once(quote)?;
+            (!name.contains('\\')).then_some(name)
+        })
+        .collect()
+}
+
+/// A script's `exec`: a list of lines or one text, with `\n` line ends (R-COL-39):
+/// Postman keeps the `\r` of scripts written on Windows.
 fn script_code(script: Option<&Value>) -> String {
-    match script.and_then(|s| s.get("exec")) {
+    let code = match script.and_then(|s| s.get("exec")) {
         Some(Value::Array(lines)) => lines
             .iter()
             .map(|l| text(Some(l)))
             .collect::<Vec<_>>()
             .join("\n"),
         other => text(other),
-    }
+    };
+    code.replace("\r\n", "\n")
 }
 
 #[cfg(test)]
@@ -985,6 +1025,67 @@ mod tests {
             pre_request
                 .ends_with("// vars.set(\"n\", 1);\n// pm.sendRequest(\"https://shop.test\");\n"),
             "{pre_request}"
+        );
+    }
+
+    /// R-COL-39: scripts written on Windows lose their `\r`, in both forms of `exec`.
+    #[test]
+    fn script_lines_end_without_carriage_returns() {
+        let collection = r#"{
+          "info": { "name": "CRLF", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+          "item": [{
+            "name": "A",
+            "request": { "method": "GET", "url": "https://a.test" },
+            "event": [
+              { "listen": "prerequest", "script": { "exec": "var c = 1;\r\nc++;\r\n" } },
+              { "listen": "test", "script": { "exec": ["var ø = 1;\r", "ø++;"] } }
+            ]
+          }]
+        }"#;
+        let import = parse(collection).expect("parse");
+        let scripts = &find(&import, "A").scripts;
+        let note = translated_note(ImportKind::Postman);
+        assert_eq!(scripts.pre_request, format!("{note}var c = 1;\nc++;\n"));
+        assert_eq!(scripts.tests, format!("{note}var ø = 1;\nø++;\n"));
+    }
+
+    /// R-COL-41: `setNextRequest` names that find no request, or several, are warned
+    /// about.
+    #[test]
+    fn jumps_to_missing_or_repeated_names() {
+        let collection = r#"{
+          "info": { "name": "Jumps ü", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+          "item": [
+            { "name": "Twice", "request": "https://a.test/1" },
+            { "name": "F", "item": [{ "name": "Twice", "request": "https://a.test/2" }] },
+            {
+              "name": "Jumper",
+              "request": "https://a.test/3",
+              "event": [{ "listen": "test", "script": { "exec": [
+                "postman.setNextRequest('Twice');",
+                "pm.execution.setNextRequest(\"Gøne 😀\");",
+                "pm.execution.setNextRequest('Jumper'); pm.execution.setNextRequest(name);",
+                "pm.sendRequest('x'); pm.execution.setNextRequest('Kept as comment');"
+              ] } }]
+            }
+          ]
+        }"#;
+        let import = parse(collection).expect("parse");
+        let jumps: Vec<&String> = import
+            .warnings
+            .iter()
+            .filter(|w| w.contains("goes on with"))
+            .collect();
+        assert_eq!(
+            jumps,
+            [
+                "A script goes on with “Gøne 😀”, which is not a request of the collection: \
+                 a run fails there.",
+                "A script goes on with “Kept as comment”, which is not a request of the \
+                 collection: a run fails there.",
+                "Several requests are named “Twice”: a script that goes on with it runs the \
+                 first of them."
+            ]
         );
     }
 

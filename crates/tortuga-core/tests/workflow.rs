@@ -338,3 +338,115 @@ async fn scripts_stop_the_run_or_name_a_missing_step() {
         Some("workflow.next(\"Nope ü\"): the workflow has no step called “Nope ü”.")
     );
 }
+
+/// Runs the project's workflow, changed by `change`, with `options`; the login step
+/// counts `n` up by one.
+async fn run_counting(
+    dir: &Path,
+    change: impl FnOnce(&mut Workflow),
+    options: RunOptions,
+) -> RunResult {
+    let server = server().await;
+    let col = project(dir, &server.uri());
+    let mut wf = col.workflows[0].clone();
+    wf.steps[0].tests = r#"vars.set("n", Number(vars.get("n") || 0) + 1);
+vars.set("seen", info.iteration + "/" + info.iterationCount + " " + vars.get("user"));"#
+        .into();
+    change(&mut wf);
+    workflow::run(&Client::default(), &col, &wf, &options, |_| {}).await
+}
+
+/// The `n` the login step set in each iteration.
+fn counts(result: &RunResult) -> Vec<&str> {
+    result
+        .iterations
+        .iter()
+        .map(|i| i.steps[0].outcome.vars["n"].as_deref().unwrap_or_default())
+        .collect()
+}
+
+fn ann() -> BTreeMap<String, String> {
+    row(&[("user", "ann"), ("name", "Ann")])
+}
+
+/// R-FLOW-8: without a data file a workflow runs `iterations` times, and scripts see
+/// how many; with one, its rows decide.
+#[tokio::test]
+async fn iterations_repeat_the_run_unless_a_data_file_decides() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let options = RunOptions {
+        overrides: ann(),
+        ..RunOptions::default()
+    };
+    let three = run_counting(&dir.path().join("a"), |w| w.iterations = 3, options).await;
+    assert_eq!(three.iterations.len(), 3);
+    assert!(three.passed());
+    // Each iteration starts without the values of the last (R-FLOW-3).
+    assert_eq!(counts(&three), ["1", "1", "1"]);
+    let seen = three.iterations[2].steps[0].outcome.vars["seen"].as_deref();
+    assert_eq!(seen, Some("2/3 ann"));
+
+    let options = RunOptions {
+        rows: vec![ann()],
+        ..RunOptions::default()
+    };
+    let rows = run_counting(&dir.path().join("b"), |w| w.iterations = 3, options).await;
+    assert_eq!(rows.iterations.len(), 1);
+}
+
+/// R-FLOW-8: `delay_ms` passes between steps, also between iterations, and not
+/// before the first.
+#[tokio::test]
+async fn the_delay_passes_between_steps() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let options = RunOptions {
+        overrides: ann(),
+        ..RunOptions::default()
+    };
+    let start = std::time::Instant::now();
+    let result = run_counting(
+        dir.path(),
+        |w| {
+            w.iterations = 2;
+            w.delay_ms = 150;
+        },
+        options,
+    )
+    .await;
+    let took = start.elapsed();
+    assert_eq!(result.iterations.len(), 2);
+    // Four steps, three waits.
+    assert!(took >= std::time::Duration::from_millis(450), "{took:?}");
+}
+
+/// R-FLOW-9, D66: a workflow that keeps variable values starts from the project's
+/// runtime variables and carries what it sets into the next iterations, below the
+/// data row; without it, runtime variables are not seen.
+#[tokio::test]
+async fn kept_variables_carry_over_below_the_data_row() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let runtime = row(&[("n", "5"), ("user", "bob"), ("only", "ü😀")]);
+    let options = RunOptions {
+        runtime: runtime.clone(),
+        rows: vec![ann(), ann()],
+        ..RunOptions::default()
+    };
+    let kept = run_counting(&dir.path().join("a"), |w| w.keep_variables = true, options).await;
+    assert_eq!(counts(&kept), ["6", "7"]);
+    // The data row's user wins over the kept one.
+    assert!(
+        kept.passed(),
+        "{:?}",
+        kept.iterations[0].steps[1].outcome.failure()
+    );
+    let seen = kept.iterations[1].steps[0].outcome.vars["seen"].as_deref();
+    assert_eq!(seen, Some("1/2 ann"));
+
+    let options = RunOptions {
+        runtime,
+        rows: vec![ann(), ann()],
+        ..RunOptions::default()
+    };
+    let clean = run_counting(&dir.path().join("b"), |_| {}, options).await;
+    assert_eq!(counts(&clean), ["1", "1"]);
+}

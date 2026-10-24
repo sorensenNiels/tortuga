@@ -1,6 +1,7 @@
 //! Workflows in the shell: opening, editing, saving and running them (R-FLOW-1..4),
-//! unsaved workflow edits kept across restarts (R-FLOW-5), and the runtime variables
-//! dialog (R-TEST-5).
+//! unsaved workflow edits kept across restarts (R-FLOW-5), a project's or folder's
+//! requests run without a file, as Postman's runner does (R-FLOW-7), the runner's
+//! options (R-FLOW-8, R-FLOW-9), and the runtime variables dialog (R-TEST-5).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -15,7 +16,7 @@ use crate::components::SidebarAction;
 use crate::components::{
     ConfirmDialog, DialogResult, IterationView, NameDialog, RequestChoice, RunView,
     RuntimeVarsDialog, StepView, WorkflowAction, WorkflowContext, WorkflowEditorState,
-    workflow_editor, workflow_results,
+    WorkflowFile, workflow_editor, workflow_results,
 };
 use crate::host::SavedWorkflowDraft;
 use crate::state::{ItemKey, WorkflowKey};
@@ -31,6 +32,23 @@ pub(super) struct OpenWorkflow {
     run: Option<RunView>,
     run_id: u64,
     abort: Option<AbortHandle>,
+    /// The run going on keeps variable values (R-FLOW-9): its steps' changes go to the
+    /// project's runtime variables.
+    keeps_variables: bool,
+}
+
+impl OpenWorkflow {
+    fn new(draft: Workflow, base: Option<Workflow>) -> Self {
+        Self {
+            st: WorkflowEditorState::new(&draft),
+            draft,
+            base,
+            run: None,
+            run_id: 0,
+            abort: None,
+            keeps_variables: false,
+        }
+    }
 }
 
 /// Progress of a run, from the task to the UI.
@@ -81,19 +99,65 @@ impl TortugaUi {
             let Some(saved) = self.saved_workflow(&key) else {
                 return;
             };
-            let st = WorkflowEditorState::new(&saved);
-            self.workflows.editors.insert(
-                key.clone(),
-                OpenWorkflow {
-                    base: Some(saved.clone()),
-                    draft: saved,
-                    st,
-                    run: None,
-                    run_id: 0,
-                    abort: None,
-                },
-            );
+            let open = OpenWorkflow::new(saved.clone(), Some(saved));
+            self.workflows.editors.insert(key.clone(), open);
         }
+        self.workflows.open = Some(key);
+    }
+
+    /// Opens the project's run of the requests in `folder` (`""`: all of them), in tree
+    /// order and going on after failures, as Postman's "Run collection" (R-FLOW-7). It
+    /// replaces the project's last run; nothing is written until "Save as workflow…".
+    pub(super) fn open_run(&mut self, root: &Path, folder: &Path) {
+        let Some(c) = self.state.collection(root) else {
+            return;
+        };
+        let draft = Workflow::from_folder(c, folder);
+        let key = WorkflowKey::run(root);
+        self.close_workflow(&key);
+        self.auto_save();
+        self.workflows
+            .editors
+            .insert(key.clone(), OpenWorkflow::new(draft, None));
+        self.workflows.open = Some(key);
+    }
+
+    fn save_run_as_dialog(&mut self, root: PathBuf) {
+        let name = self
+            .workflows
+            .editors
+            .get(&WorkflowKey::run(&root))
+            .map(|o| o.draft.name.clone())
+            .unwrap_or_default();
+        self.modal = Some(Modal::SaveRunAs(
+            root,
+            NameDialog::new(&t!("workflow-save-as-title"), &t!("save"), &name),
+        ));
+    }
+
+    /// Writes the project's run as a new workflow file, which then stays open with the
+    /// run's results (R-FLOW-7).
+    pub(super) fn save_run_as(&mut self, root: &Path, name: &str) {
+        let run = WorkflowKey::run(root);
+        let Some(mut draft) = self.workflows.editors.get(&run).map(|o| o.draft.clone()) else {
+            return;
+        };
+        name.trim().clone_into(&mut draft.name);
+        let saved = self.state.run(root, |c, s| {
+            draft.id = c.new_workflow(s, name)?;
+            c.save_workflow(s, &draft)?;
+            Ok(draft.id.clone())
+        });
+        let (Some(id), Some(mut open)) = (saved, self.workflows.editors.remove(&run)) else {
+            return;
+        };
+        let key = WorkflowKey {
+            root: root.to_owned(),
+            id,
+        };
+        open.base = self.saved_workflow(&key);
+        open.draft = draft;
+        self.workflows.editors.insert(key.clone(), open);
         self.workflows.open = Some(key);
     }
 
@@ -195,8 +259,9 @@ impl TortugaUi {
         }
     }
 
-    /// Forgets open workflows whose project closed or whose file is gone. Unsaved edits
-    /// of a closed project wait until it opens again (R-FLOW-5).
+    /// Forgets open workflows whose project closed or whose file is gone, and the runs
+    /// of closed projects. Unsaved edits of a closed project wait until it opens again
+    /// (R-FLOW-5).
     pub(super) fn drop_missing_workflows(&mut self) {
         let gone: Vec<WorkflowKey> = self
             .workflows
@@ -205,7 +270,7 @@ impl TortugaUi {
             .filter(|k| {
                 self.state
                     .collection(&k.root)
-                    .is_none_or(|c| c.workflow(&k.id).is_none())
+                    .is_none_or(|c| !k.is_run() && c.workflow(&k.id).is_none())
             })
             .cloned()
             .collect();
@@ -220,6 +285,7 @@ impl TortugaUi {
         }
         for key in gone {
             if self.state.collection(&key.root).is_none()
+                && !key.is_run()
                 && let Some(open) = self.workflows.editors.get(&key)
                 && open.base.as_ref() != Some(&open.draft)
             {
@@ -232,9 +298,13 @@ impl TortugaUi {
 
     // ------------------------------------------------------------ unsaved edits (R-FLOW-5)
 
-    /// Workflows with unsaved edits as they should be kept now, in a stable order.
+    /// Workflows with unsaved edits as they should be kept now, in a stable order. Runs
+    /// are not kept (R-FLOW-7).
     pub(super) fn workflow_drafts_snapshot(&self) -> Vec<SavedWorkflowDraft> {
         let open = self.workflows.editors.iter().filter_map(|(key, open)| {
+            if key.is_run() {
+                return None;
+            }
             let base = self.saved_workflow(key);
             (base.as_ref() != Some(&open.draft)).then(|| (key, open.draft.clone(), base))
         });
@@ -304,18 +374,9 @@ impl TortugaUi {
                     draft.name
                 ));
             }
-            let st = WorkflowEditorState::new(&draft);
-            self.workflows.editors.insert(
-                key,
-                OpenWorkflow {
-                    draft,
-                    base: Some(saved),
-                    st,
-                    run: None,
-                    run_id: 0,
-                    abort: None,
-                },
-            );
+            self.workflows
+                .editors
+                .insert(key, OpenWorkflow::new(draft, Some(saved)));
         }
         if !notes.is_empty() {
             self.state.notify(notes.join("\n"));
@@ -332,7 +393,11 @@ impl TortugaUi {
             .collect()
     }
 
+    /// Whether a workflow has edits its file doesn't have. A run has no file to save to.
     pub(super) fn workflow_dirty(&self, key: &WorkflowKey) -> bool {
+        if key.is_run() {
+            return false;
+        }
         let saved = self.saved_workflow(key);
         self.workflows
             .editors
@@ -340,11 +405,14 @@ impl TortugaUi {
             .is_some_and(|o| saved.as_ref() != Some(&o.draft))
     }
 
-    /// Saves the open workflow (Ctrl+S).
+    /// Saves the open workflow (Ctrl+S); a run asks for a name to save it as.
     pub(super) fn save_open_workflow(&mut self) {
         let Some(key) = self.workflows.open.clone() else {
             return;
         };
+        if key.is_run() {
+            return self.save_run_as_dialog(key.root);
+        }
         let Some(draft) = self.workflows.editors.get(&key).map(|o| o.draft.clone()) else {
             return;
         };
@@ -362,7 +430,13 @@ impl TortugaUi {
         };
         let requests = request_choices(c);
         let read_only = c.read_only;
-        let dirty = self.workflow_dirty(&key);
+        let file = if key.is_run() {
+            WorkflowFile::None
+        } else if self.workflow_dirty(&key) {
+            WorkflowFile::Edited
+        } else {
+            WorkflowFile::Saved
+        };
         let can_pick_files = self.state.host.can_pick_folders();
         let Some(open) = self.workflows.editors.get_mut(&key) else {
             return;
@@ -381,7 +455,7 @@ impl TortugaUi {
                 let cx = WorkflowContext {
                     requests: &requests,
                     read_only,
-                    dirty,
+                    file,
                     running,
                     can_pick_files,
                 };
@@ -402,7 +476,7 @@ impl TortugaUi {
         ctx: &egui::Context,
     ) {
         match action {
-            WorkflowAction::Save => self.save_open_workflow(),
+            WorkflowAction::Save | WorkflowAction::SaveAs => self.save_open_workflow(),
             WorkflowAction::Revert => {
                 if let (Some(saved), Some(open)) = (
                     self.saved_workflow(key),
@@ -470,15 +544,15 @@ impl TortugaUi {
         self.modal = Some(Modal::Protected(Guarded::RunWorkflow(key.clone()), dialog));
     }
 
-    /// Runs a workflow, without asking.
-    pub(super) fn start_workflow(&mut self, key: &WorkflowKey, egui_ctx: &egui::Context) {
-        self.open_workflow(key.clone());
-        let Some((collection, environment)) = self.state.collection_for_run(&key.root) else {
-            return;
-        };
-        let Some(draft) = self.workflows.editors.get(key).map(|o| o.draft.clone()) else {
-            return;
-        };
+    /// What a run of `draft` starts from: the data file's rows, this machine's secret
+    /// values, the workspace's values and the project's runtime variables. `None`, with
+    /// a notice, when the data file can't be read.
+    fn run_options(
+        &mut self,
+        key: &WorkflowKey,
+        draft: &Workflow,
+        environment: Option<String>,
+    ) -> Option<RunOptions> {
         let rows = match &draft.data {
             None => Vec::new(),
             Some(file) => {
@@ -497,7 +571,7 @@ impl TortugaUi {
                             file = file.as_str(),
                             error = e
                         ));
-                        return;
+                        return None;
                     }
                 }
             }
@@ -509,15 +583,34 @@ impl TortugaUi {
             .get(&key.root)
             .map(|s| s.for_environment(self.state.active_environment(&key.root).as_deref()))
             .unwrap_or_default();
-        let options = RunOptions {
+        Some(RunOptions {
             environment,
             secrets,
             overrides: BTreeMap::new(),
+            runtime: self
+                .state
+                .runtime_vars(Some(&key.root))
+                .cloned()
+                .unwrap_or_default(),
             workspace: self.state.workspace_values(),
             workspace_defaults: self.state.workspace().defaults.clone(),
             rows,
             // Workflows pass and fail as in CI, where checking is opt-in (R-MOCK-8, D47).
             check_examples: false,
+        })
+    }
+
+    /// Runs a workflow, without asking.
+    pub(super) fn start_workflow(&mut self, key: &WorkflowKey, egui_ctx: &egui::Context) {
+        self.open_workflow(key.clone());
+        let Some((collection, environment)) = self.state.collection_for_run(&key.root) else {
+            return;
+        };
+        let Some(draft) = self.workflows.editors.get(key).map(|o| o.draft.clone()) else {
+            return;
+        };
+        let Some(options) = self.run_options(key, &draft, environment) else {
+            return;
         };
         self.workflows.next_run += 1;
         let run_id = self.workflows.next_run;
@@ -525,7 +618,13 @@ impl TortugaUi {
         let tx = self.workflow_events.sender();
         let repaint = egui_ctx.clone();
         let event_key = key.clone();
-        let iterations_planned = options.rows.len().max(1);
+        let by_rows = !options.rows.is_empty();
+        let iterations_planned = if by_rows {
+            options.rows.len()
+        } else {
+            draft.iterations.max(1) as usize
+        };
+        let keeps_variables = draft.keep_variables;
         let (task, abort) = abortable(async move {
             let send = |kind| {
                 // The receiver only goes away with the app.
@@ -562,18 +661,22 @@ impl TortugaUi {
                 old.abort();
             }
             open.run_id = run_id;
+            open.keeps_variables = keeps_variables;
             open.st.selected_result = None;
             open.run = Some(RunView {
                 running: true,
                 steps_per_iteration: open.draft.steps.len(),
                 iterations_planned,
+                by_rows,
                 ..RunView::default()
             });
         }
     }
 
-    /// Takes in progress from running workflows.
+    /// Takes in progress from running workflows. A run that keeps variable values
+    /// changes the project's runtime variables as each step finishes (R-FLOW-9).
     pub(super) fn collect_workflow_events(&mut self) {
+        let mut kept = Vec::new();
         while let Some(event) = self.workflow_events.try_recv() {
             let Some(open) = self.workflows.editors.get_mut(&event.key) else {
                 continue;
@@ -593,6 +696,9 @@ impl TortugaUi {
                     run.current = Some((iteration, step));
                 }
                 EventKind::Step { iteration, view } => {
+                    if open.keeps_variables && !view.tests.vars.is_empty() {
+                        kept.push((event.key.root.clone(), view.tests.vars.clone()));
+                    }
                     if let Some(it) = run.iterations.get_mut(iteration) {
                         it.steps.push(*view);
                     }
@@ -608,6 +714,9 @@ impl TortugaUi {
                 }
             }
         }
+        for (root, changes) in kept {
+            self.state.apply_runtime(Some(&root), &changes);
+        }
     }
 
     /// Sidebar actions about workflows and runtime variables.
@@ -616,6 +725,7 @@ impl TortugaUi {
             SidebarAction::NewWorkflow(root) => self.new_workflow_dialog(root),
             SidebarAction::SelectWorkflow(key) => self.open_workflow(key),
             SidebarAction::RunWorkflow(key) => self.run_workflow(&key, ctx),
+            SidebarAction::RunRequests(root, folder) => self.open_run(&root, &folder),
             SidebarAction::RenameWorkflow(key) => self.rename_workflow_dialog(key),
             SidebarAction::DeleteWorkflow(key) => self.confirm_delete_workflow(key),
             SidebarAction::RuntimeVariables(root) => self.show_runtime_vars(Some(root)),
@@ -638,6 +748,14 @@ impl TortugaUi {
                 DialogResult::Done(name) => {
                     let key = key.clone();
                     self.rename_workflow(&key, &name);
+                    false
+                }
+                result => result == DialogResult::Open,
+            },
+            Modal::SaveRunAs(root, d) => match d.show(ctx) {
+                DialogResult::Done(name) => {
+                    let root = root.clone();
+                    self.save_run_as(&root, &name);
                     false
                 }
                 result => result == DialogResult::Open,
@@ -891,6 +1009,165 @@ mod tests {
             .workflow(id)
             .expect("workflow")
             .clone()
+    }
+
+    /// R-FLOW-7: Run… opens a run of a project's or folder's requests in order, not
+    /// saved, not kept for next time and not closed as a missing file; Save as
+    /// workflow… writes it with its options (R-FLOW-8, R-FLOW-9) and keeps it open.
+    #[test]
+    fn a_project_or_folder_runs_without_a_file() {
+        let (mut ui, root, first) = crate::shell::tests::setup("run-requests");
+        let c = Collection::open(&FsStorage, &root).expect("open");
+        let folder = c
+            .new_folder(&FsStorage, Path::new(""), "Ünï 😀")
+            .expect("folder");
+        let inner = Request::new(HttpMethod::Post, "https://a.test/inner");
+        let inner = Collection::open(&FsStorage, &root)
+            .expect("open")
+            .new_request(&FsStorage, &folder, &inner)
+            .expect("request");
+        ui.on_disk_change(&root);
+
+        ui.open_run(&root, Path::new(""));
+        let run = WorkflowKey::run(&root);
+        assert_eq!(ui.workflows.open.as_ref(), Some(&run));
+        let draft = &ui.workflows.editors[&run].draft;
+        assert_eq!(draft.name, "C");
+        assert!(draft.continue_on_failure);
+        let steps: Vec<PathBuf> = draft.steps.iter().map(Step::request_path).collect();
+        assert_eq!(steps, [first.path.clone(), inner.clone()]);
+        assert!(!ui.workflow_dirty(&run));
+        assert_eq!(ui.workflow_drafts_snapshot(), []);
+        ui.drop_missing_workflows();
+        assert!(ui.workflows.editors.contains_key(&run));
+
+        // A folder's run replaces the project's.
+        ui.open_run(&root, &folder);
+        let draft = &ui.workflows.editors[&run].draft;
+        assert_eq!(draft.name, "Ünï 😀");
+        assert_eq!(draft.steps.len(), 1);
+        assert_eq!(ui.workflows.editors.len(), 1);
+
+        // Ctrl+S asks for a name; saving writes the file and keeps it open.
+        let open = ui.workflows.editors.get_mut(&run).expect("run");
+        open.draft.iterations = 3;
+        open.draft.delay_ms = 250;
+        open.draft.keep_variables = true;
+        ui.save_open_workflow();
+        assert!(matches!(ui.modal, Some(Modal::SaveRunAs(..))));
+        ui.modal = None;
+        ui.save_run_as(&root, "Nightly");
+        let saved = WorkflowKey {
+            root: root.clone(),
+            id: "nightly".into(),
+        };
+        assert_eq!(ui.workflows.open.as_ref(), Some(&saved));
+        assert!(!ui.workflows.editors.contains_key(&run));
+        assert!(!ui.workflow_dirty(&saved));
+        let text =
+            std::fs::read_to_string(root.join("workflows").join("nightly.toml")).expect("file");
+        for line in [
+            "name = \"Nightly\"",
+            "iterations = 3",
+            "delay_ms = 250",
+            "keep_variables = true",
+        ] {
+            assert!(text.contains(line), "{line} in {text}");
+        }
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-FLOW-9: a run that keeps variable values changes the project's runtime
+    /// variables as its steps finish; one that doesn't leaves them alone (R-FLOW-3).
+    #[test]
+    fn kept_variables_reach_the_runtime_variables() {
+        let (mut ui, root, _) = crate::shell::tests::setup("run-keeps");
+        let send_step = |ui: &mut TortugaUi, keeps: bool, value: &str| {
+            ui.open_run(&root, Path::new(""));
+            let key = WorkflowKey::run(&root);
+            let open = ui.workflows.editors.get_mut(&key).expect("run");
+            open.keeps_variables = keeps;
+            open.run_id = 7;
+            open.run = Some(RunView {
+                running: true,
+                ..RunView::default()
+            });
+            let result = tortuga_core::workflow::StepResult {
+                index: 0,
+                name: "Get user".into(),
+                request: "get-user.toml".into(),
+                outcome: tortuga_core::runner::StepOutcome {
+                    vars: [
+                        ("n".to_owned(), Some(value.to_owned())),
+                        ("gone".to_owned(), None),
+                    ]
+                    .into(),
+                    ..Default::default()
+                },
+            };
+            let events = ui.workflow_events.sender();
+            for kind in [
+                EventKind::Started {
+                    iteration: 0,
+                    step: 0,
+                },
+                EventKind::Step {
+                    iteration: 0,
+                    view: Box::new(StepView::new(&result)),
+                },
+            ] {
+                events
+                    .send(WorkflowEvent {
+                        key: key.clone(),
+                        run_id: 7,
+                        kind,
+                    })
+                    .expect("send");
+            }
+            ui.collect_workflow_events();
+        };
+        ui.state.apply_runtime(
+            Some(&root),
+            &[("gone".to_owned(), Some("x".to_owned()))].into(),
+        );
+        send_step(&mut ui, false, "1");
+        let vars = ui
+            .state
+            .runtime_vars(Some(&root))
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(vars, [("gone".to_owned(), "x".to_owned())].into());
+        send_step(&mut ui, true, "ü😀");
+        let vars = ui
+            .state
+            .runtime_vars(Some(&root))
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(vars, [("n".to_owned(), "ü😀".to_owned())].into());
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-FLOW-7, R-FLOW-8, R-FLOW-9: the run's page offers its options and Save as
+    /// workflow… instead of Save and Revert.
+    #[test]
+    fn the_run_page_shows_its_options() {
+        let (mut ui, root, _) = crate::shell::tests::setup("run-page");
+        ui.open_run(&root, Path::new(""));
+        let mut h = crate::test_host::harness(move |egui_ui| ui.ui(egui_ui));
+        h.run_steps(3);
+        for label in [
+            "Run (not saved)",
+            "Save as workflow…",
+            "Iterations",
+            "Delay",
+            "Keep variable values",
+            "Continue after a failed step",
+        ] {
+            egui_kittest::kittest::Queryable::get_by_label(&h, label);
+        }
+        assert!(egui_kittest::kittest::Queryable::query_by_label(&h, "Revert").is_none());
+        drop(h);
+        std::fs::remove_dir_all(root).expect("clean up");
     }
 
     /// R-SET-11: the open workflow is saved like a request.

@@ -2,10 +2,12 @@
 //! with optional extra captures and tests, run one after the other with the values
 //! captured along the way. Stored as TOML files in the project's `workflows/` folder.
 //! Scripts may change the order with `workflow.next(name)` and `workflow.stop()`
-//! (R-FLOW-6, D50).
+//! (R-FLOW-6, D50). Like Postman's runner, a workflow can run its steps several times,
+//! wait between them, and keep the variables its scripts set (R-FLOW-8, R-FLOW-9, D66).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +41,16 @@ pub struct Workflow {
     /// A CSV or JSON data file, relative to the project, to run once per row (R-FLOW-4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// How often the steps run without a data file; 0 and 1 are once (R-FLOW-8).
+    #[serde(default, skip_serializing_if = "is_once")]
+    pub iterations: u32,
+    /// Milliseconds to wait between steps (R-FLOW-8).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub delay_ms: u64,
+    /// Start from the project's runtime variables and keep what scripts and captures
+    /// set, across iterations and after the run (R-FLOW-9, D66).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_variables: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<Step>,
 }
@@ -70,6 +82,26 @@ impl Step {
     pub fn request_path(&self) -> PathBuf {
         PathBuf::from(&self.request)
     }
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde passes a reference"
+)]
+fn is_once(n: &u32) -> bool {
+    *n <= 1
+}
+
+// On wasm32 a reference is narrower than a `u64`, so the lint doesn't fire there.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde passes a reference"
+    )
+)]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A request path as written in a workflow file: `/`-separated on every OS.
@@ -163,6 +195,9 @@ pub struct RunOptions {
     pub workspace: BTreeMap<String, String>,
     /// The workspace's settings, headers and auth (R-SET-1, R-SET-2), below the project's.
     pub workspace_defaults: crate::workspace::WorkspaceDefaults,
+    /// The project's runtime variables (R-TEST-5), which a workflow that keeps variable
+    /// values starts from (R-FLOW-9); other runs start without them (R-FLOW-3).
+    pub runtime: BTreeMap<String, String>,
     /// One iteration per row; none means one iteration without a row.
     pub rows: Vec<BTreeMap<String, String>>,
     /// Compare each response with its request's examples (R-MOCK-8, `--check-examples`).
@@ -268,9 +303,11 @@ pub enum Progress<'a> {
     },
 }
 
-/// Runs `workflow` (R-FLOW-3, R-FLOW-4): each iteration starts with no captured values
-/// and an empty cookie jar; a failed step ends the iteration unless the workflow
-/// continues after failures.
+/// Runs `workflow` (R-FLOW-3, R-FLOW-4): once per data row, else `iterations` times
+/// (R-FLOW-8); each iteration starts with no captured values and an empty cookie jar,
+/// apart from the variables a workflow keeps (R-FLOW-9); a failed step ends the
+/// iteration unless the workflow continues after failures. `delay_ms` passes between
+/// steps.
 pub async fn run(
     client: &Client,
     collection: &Collection,
@@ -279,12 +316,18 @@ pub async fn run(
     mut progress: impl FnMut(Progress<'_>) + Send,
 ) -> RunResult {
     let rows: Vec<Option<&BTreeMap<String, String>>> = if options.rows.is_empty() {
-        vec![None]
+        vec![None; workflow.iterations.max(1) as usize]
     } else {
         options.rows.iter().map(Some).collect()
     };
     let names = step_names(collection, workflow);
     let iterations = rows.len();
+    let delay = Duration::from_millis(workflow.delay_ms);
+    let mut kept = if workflow.keep_variables {
+        options.runtime.clone()
+    } else {
+        BTreeMap::new()
+    };
     let mut result = RunResult::default();
     for (n, row) in rows.into_iter().enumerate() {
         let jar = CookieJar::default();
@@ -299,11 +342,16 @@ pub async fn run(
                 iteration.ended = Some(FlowEnd::TooManySteps);
                 break;
             }
+            if !delay.is_zero() && (n, iteration.steps.len()) != (0, 0) {
+                pause(delay).await;
+            }
             progress(Progress::Started {
                 iteration: n,
                 step: i,
             });
-            let mut variables = options.overrides.clone();
+            // Kept values are below the data row; this iteration's own are above it.
+            let mut variables = kept.clone();
+            variables.extend(options.overrides.clone());
             variables.extend(row.cloned().unwrap_or_default());
             variables.extend(captured.clone());
             let at = StepRun {
@@ -316,6 +364,9 @@ pub async fn run(
             };
             let mut outcome = run_one(client, collection, step, options, at).await;
             runner::apply_changes(&mut captured, &outcome.vars);
+            if workflow.keep_variables {
+                runner::apply_changes(&mut kept, &outcome.vars);
+            }
             let next = next_step(&mut outcome, &names, i);
             let done = StepResult {
                 index: i,
@@ -344,6 +395,18 @@ pub async fn run(
         result.iterations.push(iteration);
     }
     result
+}
+
+/// Waits between steps (R-FLOW-8).
+#[cfg(not(target_arch = "wasm32"))]
+async fn pause(delay: Duration) {
+    tokio::time::sleep(delay).await;
+}
+
+/// The web version has no timer in the engine yet (D6): no wait.
+#[cfg(target_arch = "wasm32")]
+fn pause(_: Duration) -> std::future::Ready<()> {
+    std::future::ready(())
 }
 
 /// Where a step runs: the variables it gets on top of the project's (overrides, the
@@ -437,6 +500,9 @@ mod tests {
             name: "User lifecycle".into(),
             continue_on_failure: true,
             data: Some("data/users.csv".into()),
+            iterations: 3,
+            delay_ms: 250,
+            keep_variables: true,
             steps: vec![
                 Step {
                     request: "auth/login.toml".into(),
@@ -457,6 +523,9 @@ mod tests {
             r#"name = "User lifecycle"
 continue_on_failure = true
 data = "data/users.csv"
+iterations = 3
+delay_ms = 250
+keep_variables = true
 
 [[steps]]
 request = "auth/login.toml"
@@ -480,6 +549,23 @@ test("created", () => expect(res.status).toBe(201));
                 ..back
             },
             wf
+        );
+    }
+
+    /// R-FLOW-8, R-FLOW-9: once, without delay and without keeping variables is not
+    /// written, so older files load as they were and stay unchanged on save.
+    #[test]
+    fn run_options_are_written_only_when_set() {
+        let wf = Workflow {
+            name: "Once".into(),
+            iterations: 1,
+            ..Workflow::default()
+        };
+        assert_eq!(crate::format::write_workflow(&wf), "name = \"Once\"\n");
+        let old = crate::format::parse_workflow("name = \"Old\"\n", "old").expect("parse");
+        assert_eq!(
+            (old.iterations, old.delay_ms, old.keep_variables),
+            (0, 0, false)
         );
     }
 

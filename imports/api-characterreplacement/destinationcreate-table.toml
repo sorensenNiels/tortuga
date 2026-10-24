@@ -1,0 +1,30 @@
+name = "destinationCreate Table"
+seq = 1300
+method = "POST"
+server = "synchservicesbase"
+url = "/apixml"
+
+[body]
+kind = "xml"
+content = '<syn:destinationCreate destination="CHARREPTST" destinationType="LYS" name="CharacterReplaceTest" address="Plantevej 27" address2="" zipCode="2870" city="Dyssegård" country="DK" xmlns:syn="http://www.synchronicer.dk"/>'
+
+[scripts]
+tests = """
+// Translated from Postman's `pm` API by the import: check that it tests what it did.
+test("Status code is 200", function () {
+    expect(res.status).toBe(200);
+});
+if (res.status == 200){
+    test("status", function(){
+        var jsonObject;
+        jsonObject = xml2Json(res.body);
+        var status = jsonObject.destinationCreateResponse.$.status;
+        if (status != "success"){
+            workflow.stop();
+        }
+        expect(status).toBe("success");
+    })
+} else {
+    workflow.stop();
+}
+"""
