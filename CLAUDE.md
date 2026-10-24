@@ -55,10 +55,8 @@ make run         # desktop app (cargo run)
 make package     # installers for this OS (docs/RELEASING.md)
 ```
 
-Without the GTK 3 headers (Linux), `make test`/`make lint` fall back to what can be built and say so:
-- UI tests drive components headlessly with `egui_kittest`: `make test-ui` (`cargo test -p tortuga-ui-egui`),
-  no window or system libraries needed.
-- `make lint-web` type-checks the UI and launcher for wasm32, which also needs no GTK.
+Without the GTK 3 headers (Linux), `make test`/`make lint` skip the desktop launcher and say so; `make test-ui` and
+`make lint-web` need no system libraries.
 
 ## Conventions
 
@@ -101,21 +99,14 @@ violations in code you touch.
 - Before writing a helper, grep for an existing one. Known shared helpers: `error::sentence`/`error::message`,
   `slug`, `import.rs` (`unique_name`, `variable_name`, `variables_in`, `short_name`), `query`,
   `model::is_json_content_type`, `KeyValue::is_named`, `Request::header`/`has_header`,
-  `Response::header`/`content_type`; in `tortuga-ui-egui`: `format::truncate`, `theme::*` (`sized_edit`,
-  `icon_button`, `section_label`, `hint`, `palette`), `components::key_value_table`,
-  `components/variable_row.rs` (variable name + 🔒 cell, "Add … (press Enter)" input), and
-  `shell::Inbox` for results that background tasks send to the UI thread.
+  `Response::header`/`content_type`; UI helpers are listed in the `egui-ui` skill.
 - A rule that has to agree everywhere (e.g. "is this content type JSON?", "is this header Content-Type?")
   lives in one function in `tortuga-core`, never as inline `contains("json")` or
   `eq_ignore_ascii_case` copies.
 - The second time you copy a block of more than ~10 lines, extract it into a function.
 
 **State that belongs together stays together**
-- Don't add another `HashMap<ItemKey | Selection | PathBuf, _>` next to existing ones holding state for the
-  same request or project. Parallel maps drift apart on rename and delete. Put the field into a struct
-  that is already keyed that way (e.g. `shell::Sent` for what a request's last send left to show). If a
-  new map really can't be avoided, update `TortugaUi::remap` and `TortugaUi::forget` (and
-  `AppState::load_project`/`unload_project` for per-project maps) too, and test rename and delete.
+- Don't keep parallel maps for the same item: they drift apart on rename and delete (UI details in `egui-ui`).
 - Use enums, not `bool` pairs or magic strings, for states, and an enum or newtype where `Option<T>`
   carries a meaning such as "the scratch request". In `match` on this workspace's own enums, list the
   variants rather than `_ =>` when a new variant would need a decision.

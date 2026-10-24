@@ -27,6 +27,17 @@ that range; the files are large). Notably: one `Panel` type
   - `format.rs` — pure display helpers with unit tests.
 - `tortuga-app` (binary) — eframe launch + `Host` impls only (`desktop.rs`, `web.rs`, `dialogs.rs`, `local_store.rs`).
 
+## Shared helpers and state
+
+- Search before writing a helper. Known ones: `format::truncate`, `theme::*` (`sized_edit`, `icon_button`,
+  `section_label`, `hint`, `palette`), `components::key_value_table`, `components/variable_row.rs` (variable name +
+  🔒 cell, "Add … (press Enter)" input), and `shell::Inbox` for results that background tasks send to the UI thread.
+- Don't add another `HashMap<ItemKey | Selection | PathBuf, _>` next to existing ones holding state for the same
+  request or project. Put the field into a struct that is already keyed that way (e.g. `shell::Sent` for what a
+  request's last send left to show). If a new map really can't be avoided, update `TortugaUi::remap` and
+  `TortugaUi::forget` (and `AppState::load_project`/`unload_project` for per-project maps) too, and test rename and
+  delete.
+
 ## Rules
 
 - **UI only.** Parsing, HTTP, variable substitution, persistence formats → `tortuga-core`.
