@@ -6209,7 +6209,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tortuga-app"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "directories",
@@ -6232,7 +6232,7 @@ dependencies = [
 
 [[package]]
 name = "tortuga-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -6243,7 +6243,7 @@ dependencies = [
 
 [[package]]
 name = "tortuga-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "base64 0.23.1",
  "boa_engine",
@@ -6274,7 +6274,7 @@ dependencies = [
 
 [[package]]
 name = "tortuga-ui-egui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "egui",
  "egui_commonmark",
