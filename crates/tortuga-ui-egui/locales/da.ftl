@@ -1173,6 +1173,7 @@ menu-cookies = Cookies ({$count})…
 menu-reload = Genindlæs fra disk
 menu-file-manager = Åbn i filhåndtering
 menu-terminal = Åbn i terminal
+menu-more = Mere
 menu-folder-defaults = Mappens standarder…
 menu-folder-defaults-hint = Headers, godkendelse og variabler, som alle anmodninger i denne mappe arver
 menu-folder-description-hint = Hvad denne mappe indeholder, i Markdown

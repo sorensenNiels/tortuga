@@ -1167,6 +1167,7 @@ menu-cookies = Cookies ({$count})…
 menu-reload = Reload from disk
 menu-file-manager = Open in file manager
 menu-terminal = Open in terminal
+menu-more = More
 menu-folder-defaults = Folder defaults…
 menu-folder-defaults-hint = Headers, auth and variables every request in this folder inherits
 menu-folder-description-hint = What this folder holds, in Markdown

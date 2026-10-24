@@ -14,55 +14,59 @@ use crate::components::{ENVIRONMENT_KINDS, environments_entry};
 use crate::state::ItemKey;
 use crate::theme;
 
-/// The "+ Add" menu: new, existing and imported projects; only the importers that are
-/// on (R-COL-18).
+/// The "+ Add" menu: new and existing projects, and under "More" the importers that are
+/// on (R-COL-18, R-COL-42).
 pub(super) fn add_menu(ui: &mut Ui, importers: &ImporterSettings) -> Option<SidebarAction> {
-    let entries = [
-        (
-            t!("cmd-new-project"),
-            t!("add-new-project-hint"),
-            SidebarAction::NewProject,
-        ),
-        (
-            t!("cmd-add-projects"),
-            t!("add-existing-hint"),
-            SidebarAction::AddProjects,
-        ),
-        (
-            t!("cmd-import-openapi"),
-            t!("add-openapi-hint"),
-            SidebarAction::Import(ImportKind::OpenApi),
-        ),
-        (
-            t!("cmd-import-postman"),
-            t!("add-postman-hint"),
-            SidebarAction::Import(ImportKind::Postman),
-        ),
-        (
-            t!("cmd-import-insomnia"),
-            t!("add-insomnia-hint"),
-            SidebarAction::Import(ImportKind::Insomnia),
-        ),
-        (
-            t!("cmd-import-http"),
-            t!("add-http-hint"),
-            SidebarAction::Import(ImportKind::Http),
-        ),
-        (
-            t!("cmd-import-bruno"),
-            t!("add-bruno-hint"),
-            SidebarAction::Import(ImportKind::Bruno),
-        ),
-    ];
     let mut action = None;
-    let shown = entries.into_iter().filter(|(_, _, entry)| match entry {
-        SidebarAction::Import(kind) => importers.enabled(*kind),
-        _ => true,
-    });
-    for (label, hover, entry) in shown {
+    let mut button = |ui: &mut Ui, label: String, hover: String, entry: SidebarAction| {
         if ui.button(label).on_hover_text(hover).clicked() {
             action = Some(entry);
         }
+    };
+    button(
+        ui,
+        t!("cmd-new-project"),
+        t!("add-new-project-hint"),
+        SidebarAction::NewProject,
+    );
+    button(
+        ui,
+        t!("cmd-add-projects"),
+        t!("add-existing-hint"),
+        SidebarAction::AddProjects,
+    );
+    let imports: Vec<_> = [
+        (
+            ImportKind::OpenApi,
+            t!("cmd-import-openapi"),
+            t!("add-openapi-hint"),
+        ),
+        (
+            ImportKind::Postman,
+            t!("cmd-import-postman"),
+            t!("add-postman-hint"),
+        ),
+        (
+            ImportKind::Insomnia,
+            t!("cmd-import-insomnia"),
+            t!("add-insomnia-hint"),
+        ),
+        (ImportKind::Http, t!("cmd-import-http"), t!("add-http-hint")),
+        (
+            ImportKind::Bruno,
+            t!("cmd-import-bruno"),
+            t!("add-bruno-hint"),
+        ),
+    ]
+    .into_iter()
+    .filter(|(kind, _, _)| importers.enabled(*kind))
+    .collect();
+    if !imports.is_empty() {
+        ui.menu_button(t!("menu-more"), |ui| {
+            for (kind, label, hover) in imports {
+                button(ui, label, hover, SidebarAction::Import(kind));
+            }
+        });
     }
     action
 }
@@ -117,12 +121,19 @@ pub(super) fn collection_menu(
     item(ui, "🌐", t!("workspace-environments"), &|| {
         MenuChoice::Action(SidebarAction::EditEnvironments(root.clone()))
     });
-    for kind in ENVIRONMENT_KINDS {
-        if offers.environments(kind) && !c.read_only {
-            item(ui, "📥", environments_entry(kind), &|| {
-                MenuChoice::Action(SidebarAction::ImportEnvironments(root.clone(), kind))
-            });
-        }
+    let imports: Vec<_> = ENVIRONMENT_KINDS
+        .into_iter()
+        .filter(|kind| offers.environments(*kind) && !c.read_only)
+        .collect();
+    if !imports.is_empty() {
+        // R-COL-42: the importers wait under "More", so many of them don't crowd the menu.
+        ui.menu_button((icon(ui, RichText::new("📥")), t!("menu-more")), |ui| {
+            for kind in imports {
+                item(ui, "📥", environments_entry(kind), &|| {
+                    MenuChoice::Action(SidebarAction::ImportEnvironments(root.clone(), kind))
+                });
+            }
+        });
     }
     item(ui, "⚙", t!("menu-project-defaults"), &|| {
         MenuChoice::Action(SidebarAction::EditDefaults(root.clone()))
@@ -272,12 +283,16 @@ fn entry(ui: &mut Ui, icon: &str, label: &str) -> egui::Response {
     entry_text(ui, RichText::new(icon), RichText::new(label))
 }
 
-fn entry_text(ui: &mut Ui, icon: RichText, label: RichText) -> egui::Response {
+fn entry_text(ui: &mut Ui, icon_text: RichText, label: RichText) -> egui::Response {
+    ui.button((icon(ui, icon_text), label))
+}
+
+/// An entry's icon, in a column of fixed width.
+fn icon(ui: &Ui, icon: RichText) -> egui::Atom<'static> {
     let height = ui.text_style_height(&egui::TextStyle::Button);
-    let icon = egui::Atom::from(icon)
+    egui::Atom::from(icon)
         .atom_size(egui::vec2(ICON_WIDTH, height))
-        .atom_align(egui::Align2::CENTER_CENTER);
-    ui.button((icon, label))
+        .atom_align(egui::Align2::CENTER_CENTER)
 }
 
 pub(super) fn menu_button(

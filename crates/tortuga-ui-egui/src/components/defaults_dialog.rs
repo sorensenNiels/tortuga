@@ -4,12 +4,13 @@ use std::path::PathBuf;
 use egui::{ComboBox, Context, TextEdit, Ui};
 use tortuga_core::format::FolderDefaults;
 use tortuga_core::settings::{Feature, Inherited, Level, RequestSettings, ResolvedSettings};
-use tortuga_core::{Auth, Item, KeyValue};
+use tortuga_core::vars::Context as VarContext;
+use tortuga_core::{Auth, HttpMethod, Item, KeyValue, Request};
 
 use super::auth_editor::{auth_fields, kind_picker};
 use super::request_editor::parse_timeout;
 use super::{DialogResult, VarHelp, description_editor, dialog, key_value_table};
-use crate::state::AppState;
+use crate::state::{AppState, ItemKey};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,15 +161,11 @@ impl DefaultsDialog {
         let ws = state.workspace();
         let folder = matches!(self.target, DefaultsTarget::Folder(..));
         let workspace = self.target == DefaultsTarget::Workspace;
+        let mut vars = var_help(state, root.as_deref(), &self.headers, self.auth.as_ref());
         // Each project defines its own variables, so a workspace's can't be checked.
-        let vars = VarHelp {
-            undefined: if workspace {
-                Vec::new()
-            } else {
-                undefined_names(state, root.as_deref(), &self.headers, self.auth.as_ref())
-            },
-            ..VarHelp::default()
-        };
+        if workspace {
+            vars.undefined.clear();
+        }
         dialog(ctx, "collection-defaults", &title, 640.0, false, |ui| {
             theme::hint(ui, explanation(&self.target));
             ui.add_space(8.0);
@@ -465,14 +462,28 @@ fn auth_tab(
     theme::hint(ui, hint);
 }
 
-/// Variables used in the defaults that the active environment does not define (R-VAR-5).
-fn undefined_names(
+/// What the fields can tell about the variables the defaults use (R-VAR-5, R-VAR-9):
+/// the value and source of each, as in a request, and the ones the active environment
+/// does not define.
+fn var_help(
     state: &AppState,
     root: Option<&std::path::Path>,
     headers: &[KeyValue],
     auth: Option<&Auth>,
-) -> Vec<String> {
+) -> VarHelp {
     let ctx = state.context(root);
+    let mut request = Request::new(HttpMethod::Get, "");
+    request.headers = headers.to_vec();
+    request.auth = auth.cloned();
+    let key = root.map(|r| ItemKey::new(r, ""));
+    let mut help = state.var_help(key.as_ref(), &request, &ctx);
+    help.undefined = undefined_names(&ctx, headers, auth);
+    help
+}
+
+/// Variables used in the defaults that the active environment does not define (R-VAR-5).
+/// Only the dialog's own headers and auth count, not what the project has saved.
+fn undefined_names(ctx: &VarContext, headers: &[KeyValue], auth: Option<&Auth>) -> Vec<String> {
     let mut texts: Vec<&str> = auth.map(Auth::fields).unwrap_or_default();
     for h in headers.iter().filter(|h| h.enabled) {
         texts.extend([h.name.as_str(), h.value.as_str()]);
@@ -496,6 +507,39 @@ mod tests {
 
     use super::*;
     use crate::test_host::TestHost;
+
+    /// R-VAR-9: hovering `{{username}}` in a project's default auth shows where its
+    /// value comes from, not "Not defined", when the project defines it as a secret.
+    #[test]
+    fn variables_in_default_auth_show_their_source() {
+        let root =
+            std::env::temp_dir().join(format!("tortuga-defaults-vars-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let c = Collection::create(&FsStorage, &root, "C").expect("create");
+        let mut manifest = c.manifest.clone();
+        manifest.secrets = vec!["username".into()];
+        c.save_config(&FsStorage, &manifest, &[]).expect("config");
+        let mut state = AppState::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let mut secrets = tortuga_core::secrets::SecretValues::default();
+        secrets
+            .values
+            .insert((None, "username".into()), "ü😀".into());
+        state.secrets.insert(root.clone(), secrets);
+        let auth = Auth::Basic {
+            username: "{{username}}".into(),
+            password: "{{password}}".into(),
+        };
+
+        let help = var_help(&state, Some(&root), &[], Some(&auth));
+
+        assert!(help.known.get("username").is_some_and(|v| v.from.is_some()));
+        assert!(!help.known.contains_key("password"));
+        assert_eq!(help.undefined, ["password"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn typing_a_default_header_and_saving() {

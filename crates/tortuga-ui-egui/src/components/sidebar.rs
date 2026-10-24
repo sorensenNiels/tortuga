@@ -956,7 +956,8 @@ mod tests {
 
     use super::*;
 
-    /// R-COL-18: importers that are off are not in "+ Add".
+    /// R-COL-18, R-COL-42: importers that are off are not in "+ Add"; those that are on
+    /// are under "More".
     #[test]
     fn add_menu_lists_only_importers_that_are_on() {
         use egui_kittest::kittest::Queryable;
@@ -967,9 +968,29 @@ mod tests {
             add_menu(ui, &importers);
         });
         h.run();
+        h.get_by_label("New project…");
+        assert!(h.query_by_label("Import OpenAPI…").is_none());
+        h.get_by_label("More").click();
+        h.run();
         h.get_by_label("Import OpenAPI…");
         h.get_by_label("Import .http file…");
         assert!(h.query_by_label("Import Postman collection…").is_none());
+    }
+
+    /// R-COL-42: with every importer off, "+ Add" has no "More".
+    #[test]
+    fn add_menu_has_no_more_without_importers() {
+        use egui_kittest::kittest::Queryable;
+
+        let mut importers = ImporterSettings::default();
+        for kind in ImportKind::ALL {
+            importers.set_enabled(kind, false);
+        }
+        let mut h = crate::test_host::harness(|ui| {
+            add_menu(ui, &importers);
+        });
+        h.run();
+        assert!(h.query_by_label("More").is_none());
     }
 
     /// R-COL-20, R-COL-29, R-COL-31: a project's menu offers Postman, HTTP Client and
@@ -997,6 +1018,13 @@ mod tests {
                         choices.push(collection_menu(ui, &c, 0, offers, None));
                     });
                     h.run();
+                    // R-COL-42: environment imports are under "More".
+                    let more = h.query_by_label_contains("More");
+                    assert_eq!(more.is_some(), on, "More");
+                    if let Some(more) = more {
+                        more.click();
+                        h.run();
+                    }
                     let found = h.query_by_label_contains(entry);
                     assert_eq!(found.is_some(), on, "{entry}");
                     if let Some(found) = found {
