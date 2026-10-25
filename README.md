@@ -293,6 +293,9 @@ runs once per row; `--report json` writes JSON instead of JUnit XML; `--workspac
 environments of a `.tortuga-workspace.toml` (the project's own values win), so `--env Staging` finds the workspace's
 *Staging*. Download it from a release (`tortuga-cli-<version>-<os>` archive, R-CLI-4) or build it with `make cli`.
 
+**In VS Code.** The extension in [editors/vscode](editors/vscode/README.md) lists your projects in the Testing view and
+runs them with `tortuga-cli`, with an environment picker and "Open in Tortuga". `make vscode` builds it.
+
 ## Make targets
 
 | Target | What it does |
@@ -310,6 +313,8 @@ environments of a `.tortuga-workspace.toml` (the project's own values win), so `
 | `make package` | Installers for this OS in `target/packages/` (see [docs/RELEASING.md](docs/RELEASING.md)). |
 | `make startup-time` | Open the optimised app with your workspace, print how long start-up took, and quit. |
 | `make doc` | Build and open the API documentation. |
+| `make vscode` | The VS Code extension as a `.vsix` in `editors/vscode` (needs Node.js). |
+| `make vscode-test` | The extension's unit tests, then VS Code started on `selftest/` with it loaded (needs a display). |
 | `make clean` | Remove build output. |
 
 On Linux without the GTK 3 headers installed, `make test` and `make lint` still check everything that can be built
@@ -325,6 +330,7 @@ crates/
   tortuga-app/     Launches the UI on desktop (web later) and provides files, dialogs and settings storage.
                    Builds the `tortuga` binary.
   tortuga-cli/     The command-line runner for workflows and tests in CI (`tortuga-cli` binary). No GUI libraries.
+editors/vscode/    The VS Code extension over `tortuga-cli` (TypeScript).
 docs/
   ROADMAP.md       The plan: vision, milestones and phases, requirements, ideas and decisions.
   FEATURES.md      What is implemented and verified, per requirement.

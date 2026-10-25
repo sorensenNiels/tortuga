@@ -593,6 +593,19 @@ impl AppState {
         self.workspace().variables.resolved(&self.workspace_secrets)
     }
 
+    /// Names of the workspace's secrets: its variables' (R-WS-8) and the chosen
+    /// environment's (R-WS-9). Their values are hidden like the project's (P6).
+    pub fn workspace_secret_names(&self) -> BTreeSet<String> {
+        let chosen = self.chosen_environment().map(|e| &e.secrets);
+        self.workspace()
+            .variables
+            .secrets
+            .iter()
+            .chain(chosen.into_iter().flatten())
+            .cloned()
+            .collect()
+    }
+
     /// Saves the workspace's variables: shared ones to local data and the workspace
     /// file, secret values (`secret_values`, by name) to this machine's secret store.
     /// Values of secrets that were removed are deleted from the store.

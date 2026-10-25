@@ -229,3 +229,41 @@ fn captures_from_xml_with_xpath() {
         Err("the response body is not XML".to_owned())
     );
 }
+
+/// P6, R-HTTP-14: a step's request is sent with its secret values, but shown with them
+/// as `<secret:name>` and dynamic variables as written; one without secrets is shown
+/// as sent.
+#[tokio::test]
+async fn secrets_are_hidden_in_the_request_as_shown() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/items"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let mut ctx = ctx(&[("key", "s3cret ü😀"), ("page", "2")]);
+    ctx.secrets.insert("key".into());
+    let mut req = Request::new(HttpMethod::Get, format!("{}/items", server.uri()));
+    req.params = vec![
+        KeyValue::new("api_key", "{{key}}"),
+        KeyValue::new("page", "{{page}}"),
+        KeyValue::new("id", "{{$uuid}}"),
+    ];
+
+    let out = run_step(&Client::default(), None, &req, &ctx, Extra::default()).await;
+
+    let value = |r: Option<&Request>, name: &str| {
+        r.and_then(|r| r.params.iter().find(|p| p.name == name))
+            .map(|p| p.value.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(value(out.sent.as_ref(), "api_key"), "s3cret ü😀");
+    assert_eq!(value(out.shown(), "api_key"), "<secret:key>");
+    assert_eq!(value(out.shown(), "page"), "2");
+    assert_eq!(value(out.shown(), "id"), "{{$uuid}}");
+
+    req.params.remove(0);
+    let out = run_step(&Client::default(), None, &req, &ctx, Extra::default()).await;
+    assert_eq!(out.shown(), out.sent.as_ref(), "no secret: shown as sent");
+    assert_ne!(value(out.shown(), "id"), "{{$uuid}}");
+}

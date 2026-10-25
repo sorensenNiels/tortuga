@@ -6234,6 +6234,7 @@ dependencies = [
 name = "tortuga-cli"
 version = "0.10.0"
 dependencies = [
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

@@ -20,8 +20,21 @@ impl TortugaUi {
                 result => result == DialogResult::Open,
             },
             Modal::Defaults(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(defaults) => !self.save_defaults(&d.target.clone(), defaults),
-                result => result == DialogResult::Open,
+                DialogResult::Done(defaults) => {
+                    let saved = self.save_defaults(&d.target.clone(), defaults);
+                    if saved && let Some(name) = d.take_go_to() {
+                        self.open_default_variable(&d.target, &name);
+                    }
+                    !saved
+                }
+                DialogResult::Close => {
+                    // A read-only project's: nothing to save first.
+                    if let Some(name) = d.take_go_to() {
+                        self.open_default_variable(&d.target, &name);
+                    }
+                    false
+                }
+                DialogResult::Open => true,
             },
             Modal::ConfirmDelete(..) | Modal::MoveTo(_) | Modal::CopyTo(_) => {
                 self.show_item_modal(ctx, &mut modal)
@@ -321,6 +334,24 @@ impl TortugaUi {
                 )));
             }
             (_, None) => self.state.inform(t!("scratch-no-variables")),
+        }
+    }
+
+    /// Opens where `{{name}}` in the defaults of `target` gets its value (a Ctrl+click,
+    /// R-VAR-9). The workspace's defaults can only use the workspace's variables, so an
+    /// undefined one is defined there.
+    pub(super) fn open_default_variable(
+        &mut self,
+        target: &crate::components::DefaultsTarget,
+        name: &str,
+    ) {
+        let key = target.variable_key();
+        if key.is_none() && self.state.variable_source(None, name).is_none() {
+            self.modal = Some(Modal::WorkspaceVars(
+                crate::components::WorkspaceVarsDialog::new(&self.state),
+            ));
+        } else {
+            self.open_variable(key.as_ref(), name);
         }
     }
 

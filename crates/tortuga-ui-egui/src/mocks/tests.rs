@@ -195,3 +195,43 @@ fn workflow_runs_use_the_mock_environment() {
         "the project itself is left as it is on disk"
     );
 }
+
+/// R-MOCK-2, P6: a workspace environment's secret values never reach a mock answer.
+#[test]
+fn mock_answers_never_hold_workspace_secrets() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    project(dir.path());
+    let (mut state, probe) = state(dir.path(), vec![]);
+    let root = dir.path();
+    let dev = tortuga_core::workspace::WorkspaceEnvironment {
+        id: "dev".into(),
+        name: "Dev".into(),
+        secrets: ["greeting".to_owned()].into(),
+        ..tortuga_core::workspace::WorkspaceEnvironment::default()
+    };
+    let secrets = [(
+        "dev".to_owned(),
+        [("greeting".to_owned(), "s3cret ü😀".to_owned())].into(),
+    )]
+    .into();
+    state
+        .save_workspace_environments(vec![dev], &secrets)
+        .expect("saved");
+    state.set_workspace_environment("Dev");
+    state.run(root, |c, s| {
+        let config = c.environments.iter().map(|e| Environment {
+            variables: BTreeMap::new(),
+            ..e.clone()
+        });
+        c.save_config(s, &c.manifest, &config.collect::<Vec<_>>())
+    });
+    assert_eq!(
+        state.context(Some(root)).variables["greeting"],
+        "s3cret ü😀",
+        "requests do get it"
+    );
+
+    state.start_mock(root).expect("start");
+
+    assert!(!answer(&probe).contains("s3cret"), "{}", answer(&probe));
+}

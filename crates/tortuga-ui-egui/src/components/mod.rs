@@ -68,7 +68,7 @@ pub use settings_dialog::{SettingsDialog, UpdateStatus};
 pub use shortcuts_dialog::{ShortcutRow, ShortcutsDialog};
 pub use sidebar::{Marks, SidebarAction, SidebarState, sidebar};
 pub use tab_strip::{GroupChip, TabAction, TabGroup, TabStripState, TabView, tab_strip};
-pub use var_help::{FieldWidth, Lines, VarHelp, VarInfo, var_edit};
+pub use var_help::{DefineIn, FieldWidth, Lines, VarHelp, VarInfo, var_edit};
 pub use workflow_view::{
     IterationView, RequestChoice, RunView, StepView, WorkflowAction, WorkflowContext,
     WorkflowEditorState, WorkflowFile, workflow_editor, workflow_results,

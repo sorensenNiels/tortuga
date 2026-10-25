@@ -38,6 +38,7 @@ When building something that has no requirement yet, add one to the roadmap (nex
 | `crates/tortuga-ui-egui` | The UI, built with egui 0.37: components, UI state (`AppState`, `TortugaUi`), display formatting. No platform code: files, dialogs, settings storage and task spawning come in through the `Host` trait. |
 | `crates/tortuga-app` | Thin eframe launcher (`tortuga` binary): window, tokio runtime, `local_store`, native dialogs (`rfd`), and the `Host` impls. Features: `desktop` (default, native), `web` (wasm32). Also the app icon (`icons/`) and the installer settings (`[package.metadata.packager]`, see `docs/RELEASING.md`). |
 | `crates/tortuga-cli` | `tortuga-cli` binary: runs a workflow, folder or request from a terminal or CI with the same project files (R-CLI-1..4). Only a thin layer over `tortuga-core`. |
+| `editors/vscode` | VS Code extension (TypeScript) over `tortuga-cli` (R-VSC-1..4): Testing view from `tortuga-cli list`, runs via `run --report json`. Never reads project files itself. `make vscode-test`. |
 | `selftest/` | Tortuga testing itself (R-MOCK-7): a workspace whose workflows run against their projects' mocks in `cargo test` (`make selftest`). |
 | `scripts/` | One-time dev setup per OS. |
 | `deny.toml` | Dependency licence/advisory policy (`cargo deny check`). |

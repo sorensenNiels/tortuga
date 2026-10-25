@@ -45,6 +45,9 @@ pub struct Extra<'a> {
 pub struct StepOutcome {
     /// The request as sent (variables filled in); `None` if it never got that far.
     pub sent: Option<Request>,
+    /// `sent` as it may be shown, when it uses secrets: their values as `<secret:name>`
+    /// and dynamic variables as written, like the request preview (R-HTTP-14, P6).
+    pub masked: Option<Request>,
     /// The response, or why there is none.
     pub response: Option<Result<Response, String>>,
     /// The pre-request script's result, if the request has one.
@@ -63,6 +66,11 @@ pub struct StepOutcome {
 }
 
 impl StepOutcome {
+    /// The request as sent, as it may be shown: secret values hidden (P6).
+    pub fn shown(&self) -> Option<&Request> {
+        self.masked.as_ref().or(self.sent.as_ref())
+    }
+
     pub fn failed_tests(&self) -> usize {
         self.tests.iter().filter(|t| !t.passed).count()
     }
@@ -158,6 +166,13 @@ pub async fn run_step(
     };
     let result = client.execute_with_cookies(&prepared, jar).await;
     out.sent = Some(prepared);
+    if vars::names_in(&request, &ctx)
+        .iter()
+        .any(|n| ctx.secrets.contains(n))
+    {
+        // It was prepared once already, so this does not fail.
+        out.masked = vars::preview(&request, &ctx).ok();
+    }
     let response = match result {
         Ok(r) => r,
         Err(e) => {

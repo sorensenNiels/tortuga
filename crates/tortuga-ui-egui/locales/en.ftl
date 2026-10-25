@@ -115,6 +115,7 @@ var-from = From {$from}
 var-ctrl-click-open = Ctrl+click to open where it is defined
 var-not-defined = Not defined
 var-ctrl-click-define = Ctrl+click to define it in the project's environments
+var-ctrl-click-define-workspace = Ctrl+click to define it in the workspace's variables
 var-source-runtime = a capture or script, kept while the app runs
 var-source-workspace-runtime = a capture or script for the workspace, kept while the app runs
 var-source-secret = this computer's secret value

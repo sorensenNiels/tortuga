@@ -246,6 +246,36 @@ impl TortugaUi {
         )));
     }
 
+    /// R-VSC-3: opens the project that holds `path` (a project folder or a file in one),
+    /// adding it to the workspace, and a request file in a tab. Used when the app is
+    /// started with a path, e.g. from the VS Code extension.
+    pub fn open_path(&mut self, path: &Path) {
+        let manifest = tortuga_core::collection::MANIFEST_FILE;
+        let Some(root) = path
+            .ancestors()
+            .find(|dir| self.state.storage().exists(&dir.join(manifest)))
+            .map(Path::to_path_buf)
+        else {
+            self.state
+                .notify(t!("not-a-project", path = path.display().to_string()));
+            return;
+        };
+        if let Err(e) = self.state.open_collection(&root) {
+            self.state.notify(e.to_string());
+            return;
+        }
+        let Ok(relative) = path.strip_prefix(&root) else {
+            return;
+        };
+        let is_request = self
+            .state
+            .collection(&root)
+            .is_some_and(|c| c.request(relative).is_some());
+        if is_request {
+            self.open_tab(Some(ItemKey::new(&root, relative)), true);
+        }
+    }
+
     /// R-WS-3: pick a folder or repository and list the projects in it.
     pub(super) fn add_projects(&mut self) {
         let Some(dir) = self.state.host.pick_folder(&t!("add-projects-pick-folder")) else {
@@ -288,5 +318,56 @@ impl TortugaUi {
         if let Err(e) = self.state.locate_missing(old, &dir) {
             self.state.notify(e.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use tortuga_core::storage::FsStorage;
+    use tortuga_core::{Collection, HttpMethod, Request};
+
+    use crate::TortugaUi;
+    use crate::state::ItemKey;
+    use crate::test_host::TestHost;
+
+    /// R-VSC-3: starting the app with a request file adds its project and opens it.
+    #[test]
+    fn a_request_file_opens_its_project_and_the_request() {
+        let root = std::env::temp_dir().join(format!("tortuga-open-ü😀-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let collection = Collection::create(&FsStorage, &root, "Shop").expect("create");
+        let folder = collection
+            .new_folder(&FsStorage, Path::new(""), "Users")
+            .expect("folder");
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/users");
+        request.name = "List users".into();
+        let path = collection
+            .new_request(&FsStorage, &folder, &request)
+            .expect("request");
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+
+        ui.open_path(&root.join(&path));
+
+        assert!(ui.state.collection(&root).is_some());
+        assert_eq!(ui.selection, Some(ItemKey::new(&root, path)));
+        // A folder (or the project itself) only opens the project.
+        ui.open_path(&root.join(&folder));
+        assert_eq!(ui.state.collections.len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_path_outside_any_project_says_so() {
+        let dir = std::env::temp_dir().join(format!("tortuga-open-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let mut ui = TortugaUi::new(Box::new(TestHost::default()));
+
+        ui.open_path(&dir);
+
+        let notice = ui.state.notice.clone().unwrap_or_default();
+        assert!(notice.contains("not a Tortuga project"), "{notice}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -9,7 +9,7 @@ use tortuga_core::{Auth, HttpMethod, Item, KeyValue, Request};
 
 use super::auth_editor::{auth_fields, kind_picker};
 use super::request_editor::parse_timeout;
-use super::{DialogResult, VarHelp, description_editor, dialog, key_value_table};
+use super::{DefineIn, DialogResult, VarHelp, description_editor, dialog, key_value_table};
 use crate::state::{AppState, ItemKey};
 use crate::theme;
 
@@ -32,6 +32,19 @@ pub enum DefaultsTarget {
     Folder(PathBuf, PathBuf),
     /// The active workspace (R-SET-1, R-SET-2).
     Workspace,
+}
+
+impl DefaultsTarget {
+    /// Where its `{{variables}}` are looked up: as from a request directly in the
+    /// project or folder, so what the folder and the folders around it define counts
+    /// (R-COL-11). `None` for the workspace, which has only its own variables.
+    pub fn variable_key(&self) -> Option<ItemKey> {
+        match self {
+            Self::Project(root) => Some(ItemKey::new(root, "")),
+            Self::Folder(root, folder) => Some(ItemKey::new(root, folder.join("_"))),
+            Self::Workspace => None,
+        }
+    }
 }
 
 /// What the dialog saves. `variables` is only used for folders, `settings` only for
@@ -60,6 +73,9 @@ pub struct DefaultsDialog {
     description: String,
     editing_description: bool,
     tab: Tab,
+    /// A Ctrl+clicked `{{name}}`: where it is defined opens once the dialog has saved
+    /// (R-VAR-9).
+    go_to: Option<String>,
 }
 
 impl DefaultsDialog {
@@ -74,6 +90,7 @@ impl DefaultsDialog {
             description: String::new(),
             editing_description: false,
             tab: Tab::Headers,
+            go_to: None,
         }
     }
 
@@ -153,20 +170,27 @@ impl DefaultsDialog {
         self
     }
 
-    /// Done with the new defaults.
+    /// The variable to open where it is defined, after a Ctrl+click on it (R-VAR-9).
+    pub fn take_go_to(&mut self) -> Option<String> {
+        self.go_to.take()
+    }
+
+    /// Done with the new defaults. A Ctrl+click on a `{{name}}` saves too, so nothing
+    /// is lost when its definition opens (R-VAR-9); a read-only project only closes.
     pub fn show(&mut self, ctx: &Context, state: &AppState) -> DialogResult<EditedDefaults> {
-        let Some((title, read_only, root, inherited)) = self.heading(state) else {
+        let Some((title, read_only, _, inherited)) = self.heading(state) else {
             return DialogResult::Close;
         };
         let ws = state.workspace();
         let folder = matches!(self.target, DefaultsTarget::Folder(..));
         let workspace = self.target == DefaultsTarget::Workspace;
-        let mut vars = var_help(state, root.as_deref(), &self.headers, self.auth.as_ref());
+        let mut vars = var_help(state, &self.target, &self.headers, self.auth.as_ref());
         // Each project defines its own variables, so a workspace's can't be checked.
         if workspace {
             vars.undefined.clear();
+            vars.define_in = DefineIn::Workspace;
         }
-        dialog(ctx, "collection-defaults", &title, 640.0, false, |ui| {
+        let result = dialog(ctx, "collection-defaults", &title, 640.0, false, |ui| {
             theme::hint(ui, explanation(&self.target));
             ui.add_space(8.0);
             // Descriptions that are off still show one that was written (R-SET-13).
@@ -234,24 +258,39 @@ impl DefaultsDialog {
                 })
                 .inner;
             if save {
-                DialogResult::Done(EditedDefaults {
-                    description: self.description.clone(),
-                    headers: self.headers.clone(),
-                    auth: self.auth.clone(),
-                    variables: self
-                        .variables
-                        .iter()
-                        .filter(|v| v.is_active())
-                        .map(|v| (v.name.trim().to_owned(), v.value.clone()))
-                        .collect(),
-                    settings: self.settings,
-                })
+                DialogResult::Done(self.edited())
             } else if cancel {
                 DialogResult::Close
             } else {
                 DialogResult::Open
             }
-        })
+        });
+        match vars.open.take() {
+            Some(name) if result == DialogResult::Open => {
+                self.go_to = Some(name);
+                if read_only {
+                    DialogResult::Close
+                } else {
+                    DialogResult::Done(self.edited())
+                }
+            }
+            _ => result,
+        }
+    }
+
+    fn edited(&self) -> EditedDefaults {
+        EditedDefaults {
+            description: self.description.clone(),
+            headers: self.headers.clone(),
+            auth: self.auth.clone(),
+            variables: self
+                .variables
+                .iter()
+                .filter(|v| v.is_active())
+                .map(|v| (v.name.trim().to_owned(), v.value.clone()))
+                .collect(),
+            settings: self.settings,
+        }
     }
 
     /// The title, whether it is read-only, the project's root (for undefined variables)
@@ -467,15 +506,15 @@ fn auth_tab(
 /// does not define.
 fn var_help(
     state: &AppState,
-    root: Option<&std::path::Path>,
+    target: &DefaultsTarget,
     headers: &[KeyValue],
     auth: Option<&Auth>,
 ) -> VarHelp {
-    let ctx = state.context(root);
+    let key = target.variable_key();
+    let ctx = state.request_context(key.as_ref());
     let mut request = Request::new(HttpMethod::Get, "");
     request.headers = headers.to_vec();
     request.auth = auth.cloned();
-    let key = root.map(|r| ItemKey::new(r, ""));
     let mut help = state.var_help(key.as_ref(), &request, &ctx);
     help.undefined = undefined_names(&ctx, headers, auth);
     help
@@ -533,11 +572,114 @@ mod tests {
             password: "{{password}}".into(),
         };
 
-        let help = var_help(&state, Some(&root), &[], Some(&auth));
+        let help = var_help(
+            &state,
+            &DefaultsTarget::Project(root.clone()),
+            &[],
+            Some(&auth),
+        );
 
         assert!(help.known.get("username").is_some_and(|v| v.from.is_some()));
         assert!(!help.known.contains_key("password"));
         assert_eq!(help.undefined, ["password"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R-VAR-9: a Ctrl+click on `{{username}}` in the default auth saves the dialog, so
+    /// nothing is lost, and says which variable to open.
+    #[test]
+    fn ctrl_click_on_a_variable_saves_and_goes_to_it() {
+        use egui::Modifiers;
+        let root =
+            std::env::temp_dir().join(format!("tortuga-defaults-goto-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Collection::create(&FsStorage, &root, "C").expect("create");
+        let state = AppState::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let mut dialog = DefaultsDialog::new(&state, root.clone()).on_auth();
+        dialog.auth = Some(Auth::Basic {
+            username: "{{username}}".into(),
+            password: "ü😀".into(),
+        });
+        let mut result = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                if let DialogResult::Done(r) = dialog.show(ui.ctx(), &state) {
+                    result = Some(r);
+                }
+            });
+            h.run();
+            let rect = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .find(|f| f.value().as_deref() == Some("{{username}}"))
+                .expect("username field")
+                .rect();
+            let at = egui::pos2(rect.left() + 24.0, rect.center().y);
+            h.hover_at(at);
+            h.run_steps(8);
+            for pressed in [true, false] {
+                h.event_modifiers(
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::COMMAND,
+                    },
+                    Modifiers::COMMAND,
+                );
+            }
+            h.run();
+        }
+        let saved = result.expect("saved before going");
+        assert!(matches!(saved.auth, Some(Auth::Basic { .. })));
+        assert_eq!(dialog.take_go_to().as_deref(), Some("username"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R-COL-11, R-VAR-5: a folder's defaults see the variables of the folder and of
+    /// the folders around it, as its requests do.
+    #[test]
+    fn folder_defaults_see_the_folders_variables() {
+        let root = std::env::temp_dir().join(format!(
+            "tortuga-defaults-folder-vars-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let c = Collection::create(&FsStorage, &root, "C").expect("create");
+        let outer = c
+            .new_folder(&FsStorage, std::path::Path::new(""), "Admin")
+            .expect("folder");
+        let c = Collection::open(&FsStorage, &root).expect("reopen");
+        let inner = c.new_folder(&FsStorage, &outer, "Users").expect("folder");
+        let c = Collection::open(&FsStorage, &root).expect("reopen");
+        let defaults = |name: &str| FolderDefaults {
+            variables: [(name.to_owned(), "ü😀".to_owned())].into(),
+            ..FolderDefaults::default()
+        };
+        c.save_folder_defaults(&FsStorage, &outer, &defaults("tenant"))
+            .expect("outer");
+        c.save_folder_defaults(&FsStorage, &inner, &defaults("team"))
+            .expect("inner");
+        let state = AppState::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let headers = [
+            KeyValue::new("X-Tenant", "{{tenant}}"),
+            KeyValue::new("X-Team", "{{team}}"),
+        ];
+
+        let help = var_help(
+            &state,
+            &DefaultsTarget::Folder(root.clone(), inner),
+            &headers,
+            None,
+        );
+
+        assert!(help.undefined.is_empty(), "{:?}", help.undefined);
+        assert!(help.known.contains_key("tenant") && help.known.contains_key("team"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -237,7 +237,7 @@ fn field(
     width: f32,
     sensitive: bool,
 ) -> bool {
-    ui.label(RichText::new(label).color(theme::palette(ui).muted));
+    let label = ui.label(RichText::new(label).color(theme::palette(ui).muted));
     // Literal credentials are masked; `{{variables}}` stay readable.
     let mask = sensitive && looks_like_plain_credential(value);
     let field_id = ui.make_persistent_id(id);
@@ -254,6 +254,8 @@ fn field(
                 .hint_text(if sensitive { "{{secret}}" } else { "" })
         },
     )
+    // Named by its label also when masked, for screen readers.
+    .labelled_by(label.id)
     .changed();
     ui.end_row();
     changed

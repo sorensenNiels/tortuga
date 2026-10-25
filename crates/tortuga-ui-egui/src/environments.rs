@@ -56,6 +56,15 @@ impl AppState {
         self.environment_named(root, &name)
     }
 
+    /// [`Self::effective_environment`] without this machine's secret values of the
+    /// workspace's environment, for what the app gives away, such as mock answers (P6).
+    pub fn effective_environment_without_secrets(&self, root: &Path) -> Option<Environment> {
+        let shared = self.chosen_environment()?;
+        let c = self.collection(root)?;
+        let own = c.environments.iter().find(|e| e.is_named(&shared.name));
+        workspace::effective_environment(Some(shared), &BTreeMap::new(), own, &c.manifest)
+    }
+
     /// The environment called `name` as the project's requests use it: the workspace's,
     /// with its server URLs and this machine's secret values, and the project's own
     /// values over it.
@@ -320,6 +329,13 @@ mod tests {
         let ctx = state.context(Some(&b));
         assert_eq!(ctx.variables["tenant"], "b", "B's own wins");
         assert_eq!(ctx.variables["token"], "s3cret");
+        // The preview, the hover box, curl copies and workflow results hide it (P6).
+        assert!(state.workspace_secret_names().contains("token"));
+        assert_eq!(ctx.masked().variables["token"], "<secret:token>");
+        assert_eq!(
+            state.context(Some(&a)).masked().variables["token"],
+            "<secret:token>"
+        );
         assert_eq!(
             ctx.server_urls["users"], "https://users.stg",
             "by server name"

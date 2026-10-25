@@ -121,6 +121,7 @@ var-from = Fra {$from}
 var-ctrl-click-open = Ctrl+klik for at åbne, hvor den er defineret
 var-not-defined = Ikke defineret
 var-ctrl-click-define = Ctrl+klik for at definere den i projektets miljøer
+var-ctrl-click-define-workspace = Ctrl+klik for at definere den i arbejdsområdets variabler
 var-source-runtime = en opsamling eller et script, gemt mens appen kører
 var-source-workspace-runtime = en opsamling eller et script for arbejdsområdet, gemt mens appen kører
 var-source-secret = denne computers hemmelige værdi

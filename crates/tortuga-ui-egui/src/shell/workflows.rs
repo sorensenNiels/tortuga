@@ -593,6 +593,7 @@ impl TortugaUi {
                 .cloned()
                 .unwrap_or_default(),
             workspace: self.state.workspace_values(),
+            secret_names: self.state.workspace_secret_names(),
             workspace_defaults: self.state.workspace().defaults.clone(),
             rows,
             // Workflows pass and fail as in CI, where checking is opt-in (R-MOCK-8, D47).

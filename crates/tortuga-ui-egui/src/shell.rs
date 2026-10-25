@@ -1806,6 +1806,43 @@ mod tests {
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
+    /// R-VAR-9: a Ctrl+click on a variable in defaults opens where it can be defined:
+    /// the project's environments, or the workspace's variables for the workspace's
+    /// defaults; a folder's variable opens that folder's Variables.
+    #[test]
+    fn ctrl_click_in_defaults_opens_the_definition() {
+        use crate::components::DefaultsTarget;
+
+        let (mut ui, root, _) = setup("defaults-goto");
+        let folder = ui
+            .state
+            .run(&root, |c, s| c.new_folder(s, Path::new(""), "Admin ü😀"))
+            .expect("folder");
+        let defaults = tortuga_core::format::FolderDefaults {
+            variables: [("tenant".to_owned(), "acme".to_owned())].into(),
+            ..Default::default()
+        };
+        ui.state
+            .run(&root, |c, s| c.save_folder_defaults(s, &folder, &defaults))
+            .expect("defaults");
+
+        ui.open_default_variable(&DefaultsTarget::Project(root.clone()), "nowhere");
+        assert!(matches!(ui.modal.take(), Some(Modal::Environments(_))));
+
+        ui.open_default_variable(&DefaultsTarget::Workspace, "nowhere");
+        assert!(matches!(ui.modal.take(), Some(Modal::WorkspaceVars(_))));
+
+        ui.open_default_variable(
+            &DefaultsTarget::Folder(root.clone(), folder.clone()),
+            "tenant",
+        );
+        assert!(matches!(
+            ui.modal.take(),
+            Some(Modal::Defaults(d)) if d.target == DefaultsTarget::Folder(root.clone(), folder)
+        ));
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
     /// R-SET-6: with history off nothing is recorded; a smaller size trims what is kept.
     #[test]
     fn history_size_and_off() {

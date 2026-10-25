@@ -16,7 +16,10 @@ use tortuga_ui_egui::{
 use crate::{App, dialogs, discover, folders, git, local_store, secret_store, watch};
 
 const USAGE: &str = "\
-Usage: tortuga [OPTION]
+Usage: tortuga [OPTION] [PATH]
+
+Opens the app with your workspace. With PATH (a project folder, or a request file in
+one), that project is added to the workspace and the request opened.
 
 Options:
   --startup-time  Open the app, print how long start-up took, and quit
@@ -26,6 +29,7 @@ Options:
 pub fn run() -> eframe::Result {
     let started = Instant::now();
     let mut measure_startup = false;
+    let mut open = None;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--startup-time" => measure_startup = true,
@@ -39,6 +43,11 @@ pub fn run() -> eframe::Result {
             }
             // Older macOS versions pass a process serial number to apps opened from Finder.
             _ if arg.starts_with("-psn_") => {}
+            _ if !arg.starts_with('-') && open.is_none() => {
+                // The project is matched by its path, so a relative one must not be
+                // added to the workspace as it was typed.
+                open = Some(std::fs::canonicalize(&arg).unwrap_or_else(|_| PathBuf::from(&arg)));
+            }
             _ => {
                 eprintln!("tortuga: unknown option '{arg}'\n\n{USAGE}");
                 std::process::exit(2);
@@ -78,7 +87,11 @@ pub fn run() -> eframe::Result {
                 watchers: watch::Watchers::default(),
                 history_lock: Arc::default(),
             };
-            let app = App(TortugaUi::new(Box::new(host)));
+            let mut ui = TortugaUi::new(Box::new(host));
+            if let Some(path) = &open {
+                ui.open_path(path);
+            }
+            let app = App(ui);
             if measure_startup {
                 Ok(Box::new(StartupTimer {
                     app,

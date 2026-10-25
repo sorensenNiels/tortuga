@@ -1,0 +1,119 @@
+{
+  "name": "tortuga",
+  "displayName": "Tortuga",
+  "description": "Run the requests, folders and workflows of Tortuga projects from VS Code's Testing view, through tortuga-cli.",
+  "version": "0.1.0",
+  "publisher": "tortuga",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sorensenNiels/tortuga.git",
+    "directory": "editors/vscode"
+  },
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Testing",
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/tortuga.toml"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tortuga.run",
+        "title": "Run",
+        "category": "Tortuga",
+        "icon": "$(play)"
+      },
+      {
+        "command": "tortuga.runWithMock",
+        "title": "Run Against the Mock",
+        "category": "Tortuga"
+      },
+      {
+        "command": "tortuga.openInApp",
+        "title": "Open in Tortuga",
+        "category": "Tortuga"
+      },
+      {
+        "command": "tortuga.selectEnvironment",
+        "title": "Select Environment",
+        "category": "Tortuga"
+      },
+      {
+        "command": "tortuga.refresh",
+        "title": "Refresh Projects",
+        "category": "Tortuga"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "tortuga.openInApp",
+          "when": "resourcePath in tortuga.files",
+          "group": "navigation@90"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "tortuga.run",
+          "when": "resourcePath in tortuga.files",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "tortuga.run",
+          "when": "resourcePath in tortuga.files"
+        },
+        {
+          "command": "tortuga.runWithMock",
+          "when": "resourcePath in tortuga.files"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tortuga",
+      "properties": {
+        "tortuga.cliPath": {
+          "type": "string",
+          "default": "tortuga-cli",
+          "description": "The tortuga-cli program that lists and runs projects: a name on PATH or a full path."
+        },
+        "tortuga.appPath": {
+          "type": "string",
+          "default": "tortuga",
+          "description": "The Tortuga desktop app that \"Open in Tortuga\" starts: a name on PATH or a full path."
+        },
+        "tortuga.environment": {
+          "type": "string",
+          "default": "",
+          "description": "The environment requests run in (its name or id), as tortuga-cli --env. Empty: none."
+        },
+        "tortuga.workspaceFile": {
+          "type": "string",
+          "default": "",
+          "description": "A .tortuga-workspace.toml whose variables, environments, settings, headers and auth runs use, as tortuga-cli --workspace. Relative to the first folder."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test out/test/*.test.js",
+    "package": "tsc -p . && vsce package --no-dependencies --skip-license",
+    "test:vscode": "tsc -p . && node out/test/integration/main.js"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.0.0",
+    "typescript": "5.9.3"
+  }
+}

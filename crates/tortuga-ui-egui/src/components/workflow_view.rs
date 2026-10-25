@@ -88,7 +88,7 @@ impl StepView {
                 errors,
                 vars: o.vars.clone(),
             },
-            sent: o.sent.as_ref().map(|r| {
+            sent: o.shown().map(|r| {
                 format!(
                     "{} {}",
                     r.method.as_str(),

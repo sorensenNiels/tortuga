@@ -193,6 +193,9 @@ pub struct RunOptions {
     pub overrides: BTreeMap<String, String>,
     /// The workspace's variables (R-WS-8); every value of the project wins over them.
     pub workspace: BTreeMap<String, String>,
+    /// Names of secrets besides the project's: the workspace's variables (R-WS-8) and
+    /// its environment's (R-WS-9). Their values are hidden like the project's (P6).
+    pub secret_names: std::collections::BTreeSet<String>,
     /// The workspace's settings, headers and auth (R-SET-1, R-SET-2), below the project's.
     pub workspace_defaults: crate::workspace::WorkspaceDefaults,
     /// The project's runtime variables (R-TEST-5), which a workflow that keeps variable
@@ -439,7 +442,8 @@ async fn run_one(
         vars::Context::for_request(collection, options.environment.as_deref(), Some(&path))
             .with_workspace_defaults(&options.workspace_defaults)
             .with_secrets(options.secrets.clone())
-            .with_workspace(&options.workspace, &std::collections::BTreeSet::new());
+            .with_workspace(&options.workspace, &options.secret_names);
+    ctx.secrets.extend(options.secret_names.iter().cloned());
     ctx.variables.extend(at.variables);
     let extra = Extra {
         capture: Some(&step.capture),

@@ -30,6 +30,18 @@ pub struct VarHelp {
     pub names: Vec<(String, String)>,
     /// Set by a Ctrl+click on a `{{name}}`; the shell opens where it is defined.
     pub open: Cell<Option<String>>,
+    /// Where a Ctrl+click defines an undefined one.
+    pub define_in: DefineIn,
+}
+
+/// Where an undefined variable is defined (R-VAR-9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DefineIn {
+    /// The project's environments, for requests and their projects' and folders' defaults.
+    #[default]
+    Project,
+    /// The workspace's variables, for the workspace's defaults.
+    Workspace,
 }
 
 impl std::fmt::Debug for VarHelp {
@@ -406,9 +418,12 @@ fn hover_card(ui: &mut Ui, name: &str, help: &VarHelp) {
     } else {
         ui.label(RichText::new(t!("var-not-defined")).color(p.fail));
         ui.label(
-            RichText::new(t!("var-ctrl-click-define"))
-                .small()
-                .color(p.muted),
+            RichText::new(match help.define_in {
+                DefineIn::Project => t!("var-ctrl-click-define"),
+                DefineIn::Workspace => t!("var-ctrl-click-define-workspace"),
+            })
+            .small()
+            .color(p.muted),
         );
     }
 }
@@ -552,6 +567,40 @@ mod tests {
 
     /// R-VAR-9: typing `{{` and part of a name suggests names; Enter puts in the first
     /// as `{{name}}`, also before text that follows.
+    /// R-VAR-9: an undefined variable says where a Ctrl+click defines it: the project's
+    /// environments, or the workspace's variables in the workspace's defaults.
+    #[test]
+    fn an_undefined_variable_says_where_it_is_defined() {
+        use egui_kittest::kittest::Queryable;
+        for (define_in, hint) in [
+            (
+                DefineIn::Project,
+                "Ctrl+click to define it in the project's environments",
+            ),
+            (
+                DefineIn::Workspace,
+                "Ctrl+click to define it in the workspace's variables",
+            ),
+        ] {
+            let text = std::cell::RefCell::new("{{nowhere_ü😀}}".to_owned());
+            let help = VarHelp {
+                define_in,
+                ..help()
+            };
+            let mut h = field(&text, &help);
+            h.run();
+            let rect = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .next()
+                .expect("field")
+                .rect();
+            h.hover_at(egui::pos2(rect.left() + 24.0, rect.center().y));
+            h.run_steps(8);
+            h.get_by_label("Not defined");
+            h.get_by_label(hint);
+        }
+    }
+
     #[test]
     fn typing_braces_suggests_names() {
         use egui_kittest::kittest::Queryable;

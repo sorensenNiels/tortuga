@@ -96,6 +96,7 @@ impl AppState {
             known,
             names,
             open: std::cell::Cell::new(None),
+            define_in: crate::components::DefineIn::Project,
         }
     }
 
@@ -152,6 +153,7 @@ impl AppState {
     }
 
     /// Servers and variables for requests of the collection at `root`; empty for scratch requests.
+    #[cfg(test)]
     pub fn context(&self, root: Option<&Path>) -> vars::Context {
         match root {
             Some(root) => self.context_at(root, None),
@@ -246,7 +248,7 @@ impl AppState {
         } else {
             None
         };
-        let ctx = self
+        let mut ctx = self
             .collection(root)
             .map(|c| {
                 let env = mock.as_ref().or(env);
@@ -255,6 +257,10 @@ impl AppState {
                     .with_secrets(secrets)
             })
             .unwrap_or_default();
+        // The workspace environment's secrets are masked like the project's (P6).
+        if let Some(shared) = env.and_then(|e| self.workspace_environment(&e.name)) {
+            ctx.secrets.extend(shared.secrets.iter().cloned());
+        }
         self.with_runtime(ctx, Some(root))
     }
 }

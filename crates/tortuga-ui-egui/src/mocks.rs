@@ -225,7 +225,8 @@ impl AppState {
         let c = self
             .collection(root)
             .ok_or_else(|| t!("mock-project-not-open"))?;
-        match self.effective_environment(root) {
+        // Secret values never reach a mock answer (P6).
+        match self.effective_environment_without_secrets(root) {
             Some(env) => {
                 let id = env.id.clone();
                 Ok(MockApi::new(&c.clone().with_environment(env), Some(&id)))

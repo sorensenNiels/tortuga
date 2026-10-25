@@ -35,7 +35,7 @@ RUN_ENV := $(if $(IS_WSL),GALLIUM_DRIVER=$${GALLIUM_DRIVER:-d3d12} ,)
 .DEFAULT_GOAL := help
 .PHONY: help setup run run-web build release cli package startup-time icons test test-core test-ui \
         selftest lint lint-desktop lint-web fmt fmt-check deny verify doc clean outdated update upgrade \
-        release-patch release-minor release-major
+        release-patch release-minor release-major vscode vscode-test
 
 help:
 	@echo "Tortuga - make targets ($(PLATFORM), desktop deps: $(if $(DESKTOP_DEPS),found,MISSING - run 'make setup'))"
@@ -74,6 +74,8 @@ help:
 	@echo "    startup-time  Measure start-up of the optimised build (R-NF-1)"
 	@echo "    icons         Render the app icon from crates/tortuga-app/icons/tortuga.svg (needs resvg)"
 	@echo "    doc           Build and open the API docs"
+	@echo "    vscode        The VS Code extension as a .vsix in editors/vscode (needs Node.js)"
+	@echo "    vscode-test   The extension's tests; the second part starts VS Code (needs a display)"
 	@echo "    clean         Remove build output"
 
 # ---------------------------------------------------------------- setup
@@ -130,6 +132,20 @@ doc:
 
 clean:
 	cargo clean
+
+# The VS Code extension (R-VSC-1..4, editors/vscode/README.md). Not part of verify: it needs
+# Node.js, and its integration test downloads VS Code and needs a display.
+VSCODE := editors/vscode
+
+vscode:
+	npm --prefix $(VSCODE) ci
+	npm --prefix $(VSCODE) run package
+
+vscode-test:
+	cargo build -p $(CLI)
+	npm --prefix $(VSCODE) ci
+	npm --prefix $(VSCODE) test
+	npm --prefix $(VSCODE) run test:vscode
 
 # ---------------------------------------------------------------- quality
 

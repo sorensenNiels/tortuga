@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod list;
 mod mock;
 
 use tortuga_core::storage::FsStorage;
@@ -21,11 +22,14 @@ use tortuga_core::{Client, ClientSettings, Collection, Environment, data, report
 const USAGE: &str = "\
 Usage: tortuga-cli run <project> [<workflow, folder or request>] [options]
        tortuga-cli mock <project> [--port N] [--env NAME]
+       tortuga-cli list <project> [--workspace FILE]
 
 run:  Runs a workflow (by name or id), the requests of a folder, or one request of
       the Tortuga project in <project>. Without a target, every request runs.
 mock: Serves the example responses saved with the project's requests on
       http://127.0.0.1:<port> (default 4010) until stopped with Ctrl+C.
+list: Prints the project's folders, requests, workflows and environments as JSON,
+      for editor extensions.
 
 Options:
   --env NAME            Use this environment (by name or id): the project's, or with
@@ -84,10 +88,15 @@ enum ReportKind {
     Json,
 }
 
+/// Makes the command from its parsed arguments.
+type Subcommand = fn(Box<Args>) -> Command;
+
 enum Command {
     Run(Box<Args>),
     /// Serve the project's mock (R-MOCK-5).
     Mock(Box<Args>),
+    /// List the project for an editor (R-VSC-1).
+    List(Box<Args>),
     Help,
     Version,
 }
@@ -111,6 +120,16 @@ fn main() -> ExitCode {
         }
         Command::Mock(args) => match mock::serve(&args) {
             Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("tortuga-cli: {e}");
+                ExitCode::from(2)
+            }
+        },
+        Command::List(args) => match list::list(&args) {
+            Ok(json) => {
+                println!("{json}");
+                ExitCode::SUCCESS
+            }
             Err(e) => {
                 eprintln!("tortuga-cli: {e}");
                 ExitCode::from(2)
@@ -144,11 +163,13 @@ fn main() -> ExitCode {
 
 fn parse(input: Vec<String>) -> Result<Command, String> {
     let mut words = input.into_iter();
-    let serve_mock = match words.next().as_deref() {
+    // Mock and list take the whole project, never a target.
+    let (command, whole_project): (Subcommand, Option<&str>) = match words.next().as_deref() {
         None | Some("-h" | "--help" | "help") => return Ok(Command::Help),
         Some("-V" | "--version") => return Ok(Command::Version),
-        Some("run") => false,
-        Some("mock") => true,
+        Some("run") => (Command::Run, None),
+        Some("mock") => (Command::Mock, Some("mock serves")),
+        Some("list") => (Command::List, Some("list shows")),
         Some(other) => return Err(format!("unknown command '{other}'")),
     };
     let mut args = Args::default();
@@ -208,13 +229,10 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
     if let Some(extra) = positional.next() {
         return Err(format!("unexpected '{extra}'"));
     }
-    if serve_mock {
-        if let Some(target) = args.target {
-            return Err(format!("mock serves the whole project; remove '{target}'"));
-        }
-        return Ok(Command::Mock(Box::new(args)));
+    if let (Some(what), Some(target)) = (whole_project, &args.target) {
+        return Err(format!("{what} the whole project; remove '{target}'"));
     }
-    Ok(Command::Run(Box::new(args)))
+    Ok(command(Box::new(args)))
 }
 
 /// `TORTUGA_VAR_<name>=value` environment variables (R-CLI-2, D30).
@@ -354,6 +372,7 @@ fn run(args: &Args) -> Result<bool, String> {
         // The command line keeps no variables between runs (R-FLOW-9).
         runtime: BTreeMap::new(),
         workspace: workspace.variables.values,
+        secret_names: workspace.variables.secrets,
         workspace_defaults: workspace.defaults,
         rows,
         check_examples: args.check_examples,

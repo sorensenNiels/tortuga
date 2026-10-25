@@ -450,3 +450,34 @@ async fn kept_variables_carry_over_below_the_data_row() {
     let clean = run_counting(&dir.path().join("b"), |_| {}, options).await;
     assert_eq!(counts(&clean), ["1", "1"]);
 }
+
+/// R-WS-8, P6: a workspace secret is sent, but hidden in the step's request as shown.
+#[tokio::test]
+async fn workspace_secrets_are_hidden_in_step_results() {
+    let server = server().await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let col = project(dir.path(), &server.uri());
+    let options = RunOptions {
+        workspace: row(&[("user", "ann")]),
+        secret_names: ["user".to_owned()].into(),
+        ..RunOptions::default()
+    };
+
+    let result = workflow::run(
+        &Client::default(),
+        &col,
+        &col.workflows[0],
+        &options,
+        |_| {},
+    )
+    .await;
+
+    let get = &result.iterations[0].steps[1].outcome;
+    let url = |r: Option<&Request>| r.map(|r| r.url.clone()).unwrap_or_default();
+    assert!(url(get.sent.as_ref()).ends_with("/users/ann"));
+    assert!(
+        url(get.shown()).ends_with("/users/<secret:user>"),
+        "{}",
+        url(get.shown())
+    );
+}
