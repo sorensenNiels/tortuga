@@ -613,6 +613,111 @@ pub fn ghost_button<'a>(text: impl Into<egui::WidgetText>) -> egui::Button<'a> {
     egui::Button::new(text).frame_when_inactive(false)
 }
 
+// ---------------------------------------------------------------- choices
+
+/// An on/off switch; a click flips `on`. Name it with `labelled_by` (settings rows).
+pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
+    let height = ui.spacing().interact_size.y * 0.8;
+    let (rect, mut response) =
+        ui.allocate_exact_size(egui::vec2(height * 1.8, height), egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let enabled = ui.is_enabled();
+    let state = *on;
+    response.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, state, ""));
+    if ui.is_rect_visible(rect) {
+        let p = palette(ui);
+        let how_on = ui.ctx().animate_bool_responsive(response.id, *on);
+        let off_fill = if response.hovered() {
+            p.muted.gamma_multiply(0.6)
+        } else {
+            p.muted.gamma_multiply(0.4)
+        };
+        let fill = lerp_color(off_fill, p.accent_fill, how_on);
+        let radius = rect.height() / 2.0;
+        ui.painter().rect_filled(rect, radius, fill);
+        let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
+        let knob = egui::pos2(x, rect.center().y);
+        ui.painter()
+            .circle_filled(knob, radius - 2.5, Color32::WHITE);
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect.expand(2.0),
+                radius + 2.0,
+                Stroke::new(1.0, p.accent),
+                egui::StrokeKind::Outside,
+            );
+        }
+    }
+    response
+}
+
+fn lerp_color(from: Color32, to: Color32, t: f32) -> Color32 {
+    let mix = |a: u8, b: u8| {
+        let v = f32::from(a) + (f32::from(b) - f32::from(a)) * t;
+        // Within 0..=255 by construction.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "0..=255"
+        )]
+        let v = v.round().clamp(0.0, 255.0) as u8;
+        v
+    };
+    Color32::from_rgba_premultiplied(
+        mix(from.r(), to.r()),
+        mix(from.g(), to.g()),
+        mix(from.b(), to.b()),
+        mix(from.a(), to.a()),
+    )
+}
+
+/// One of a few choices as joined buttons, the chosen one raised. Returns whether the
+/// choice changed.
+pub fn segmented<T: PartialEq + Copy>(
+    ui: &mut Ui,
+    current: &mut T,
+    options: &[(T, String)],
+) -> bool {
+    let p = palette(ui);
+    let mut changed = false;
+    Frame::new()
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(7))
+        .inner_margin(Margin::same(2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (value, text) in options {
+                    let chosen = *current == *value;
+                    let label = if chosen {
+                        semibold(text.as_str()).color(p.text)
+                    } else {
+                        RichText::new(text.as_str()).color(p.muted)
+                    };
+                    let mut button = egui::Button::new(label).corner_radius(CornerRadius::same(5));
+                    button = if chosen {
+                        button.fill(p.bg).stroke(Stroke::new(1.0, p.border))
+                    } else {
+                        button.frame_when_inactive(false)
+                    };
+                    let response = ui.add(button);
+                    response.widget_info(|| {
+                        WidgetInfo::selected(Role::RadioButton, true, chosen, text)
+                    });
+                    if response.clicked() && !chosen {
+                        *current = *value;
+                        changed = true;
+                    }
+                }
+            });
+        });
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;

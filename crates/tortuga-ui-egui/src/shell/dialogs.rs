@@ -524,30 +524,28 @@ mod tests {
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 
-    /// The settings dialog fits the shown tab: after a tall tab, a short one leaves Save
-    /// right under its content (the button row used to keep the tallest height).
+    /// R-SET-17: the settings dialog keeps one size whatever the page, so it doesn't jump,
+    /// and Save stays in the window.
     #[test]
-    fn the_settings_dialog_shrinks_to_a_short_tab() {
+    fn the_settings_dialog_keeps_its_size_across_pages() {
         use egui_kittest::kittest::Queryable;
 
         let mut ui = TortugaUi::new(Box::new(crate::test_host::TestHost::default()));
-        let mut settings = ui.state.settings.clone();
-        settings.client.proxy = tortuga_core::ProxyMode::Manual;
         ui.modal = Some(super::Modal::Settings(Box::new(SettingsDialog::new(
-            &settings,
+            &ui.state.settings,
         ))));
         let mut h = egui_kittest::Harness::builder()
             .with_size(egui::vec2(1400.0, 860.0))
             .build_ui(|egui_ui| ui.ui(egui_ui));
         h.run_steps(6);
-        h.get_by_label("Editing").click();
-        h.run_steps(6);
-        let last = h.get_by_label("Save automatically").rect().bottom();
-        let save = h.get_by_label("Save").rect().top();
-        assert!(
-            save - last < 120.0,
-            "Save at {save}, content ends at {last}"
-        );
+        let mut saves = Vec::new();
+        for page in ["Script editor", "Editing", "Network", "About"] {
+            h.get_by_label(page).click();
+            h.run_steps(6);
+            saves.push(h.get_by_label("Save").rect());
+        }
+        assert!(saves.windows(2).all(|w| w[0] == w[1]), "{saves:?}");
+        assert!(saves[0].bottom() < 860.0, "{saves:?}");
     }
 
     /// The title bar's ⚙ opens Settings; it is named "Settings" for screen readers.

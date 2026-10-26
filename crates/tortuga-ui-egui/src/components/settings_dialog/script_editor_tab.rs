@@ -1,9 +1,11 @@
-//! The Script editor tab of Settings (R-SET-16): the editor whose keys to start from,
+//! The Script editor page of Settings (R-SET-16): the editor whose keys to start from,
 //! every line command's keys, changed by pressing new ones, and whether brackets and quotes are paired (R-TEST-17).
 
 use egui::{Event, Key, KeyboardShortcut, Modifiers, RichText, Ui};
 use tortuga_core::settings::{KeyScheme, ScriptCommand, ScriptEditorSettings};
 
+use super::layout::{About, group};
+use super::network::switch_row;
 use crate::components::script_keys::{command_name, key_label, key_text, parse};
 use crate::theme;
 
@@ -53,41 +55,53 @@ impl ScriptEditorTab {
             }
             .map(|note| (command, note));
         }
-        ui.checkbox(&mut settings.close_pairs, t!("settings-close-pairs"));
-        ui.indent("close-pairs", |ui| {
-            theme::hint(ui, t!("settings-close-pairs-hint"));
+        group(ui, &t!("settings-group-typing"), None, |rows| {
+            switch_row(
+                rows,
+                &t!("settings-close-pairs"),
+                About::both(
+                    &t!("settings-close-pairs-about"),
+                    &t!("settings-close-pairs-hint"),
+                ),
+                &mut settings.close_pairs,
+            );
         });
-        ui.add_space(10.0);
-        theme::section_label(ui, &t!("settings-keys"));
-        theme::hint(ui, t!("settings-keys-hint"));
-        ui.add_space(4.0);
-        self.scheme_choice(ui, settings);
-        ui.add_space(4.0);
-        egui::Grid::new("script-keys")
-            .num_columns(2)
-            .spacing([16.0, 6.0])
-            .show(ui, |ui| {
-                for command in ScriptCommand::ALL {
-                    ui.label(command_name(command));
+        let note = (t!("settings-keys-about"), t!("settings-keys-hint"));
+        group(ui, &t!("settings-keys"), Some((&note.0, &note.1)), |rows| {
+            let changed = ScriptCommand::ALL.into_iter().any(|c| settings.changed(c));
+            let replaces = t!("settings-scheme-replaces");
+            let about = if changed {
+                About::short(&replaces)
+            } else {
+                About::default()
+            };
+            rows.row(&t!("settings-keys-like"), about, |ui, name| {
+                self.scheme_choice(ui, settings, changed, name);
+            });
+            for command in ScriptCommand::ALL {
+                rows.row(&command_name(command), About::default(), |ui, _| {
                     ui.horizontal_wrapped(|ui| self.keys_row(ui, settings, command, mac));
-                    ui.end_row();
                     if let Some((_, note)) = self.note.as_ref().filter(|(c, _)| *c == command) {
-                        ui.label("");
                         match note {
                             Note::Refused(text) => theme::error(ui, text),
                             Note::Elsewhere(text) => theme::warning(ui, text),
                         }
-                        ui.end_row();
                     }
-                }
-            });
+                });
+            }
+        });
     }
 
     /// The editor whose keys to start from; choosing one drops the changed keys.
-    fn scheme_choice(&mut self, ui: &mut Ui, settings: &mut ScriptEditorSettings) {
-        let changed = ScriptCommand::ALL.into_iter().any(|c| settings.changed(c));
+    /// `changed`: some keys differ from the scheme's. `name` names the list.
+    fn scheme_choice(
+        &mut self,
+        ui: &mut Ui,
+        settings: &mut ScriptEditorSettings,
+        changed: bool,
+        name: egui::Id,
+    ) {
         ui.horizontal(|ui| {
-            let label = ui.label(t!("settings-keys-like"));
             let mut chosen = settings.scheme;
             let shown = if changed {
                 t!("settings-scheme-changed", scheme = settings.scheme.name())
@@ -102,7 +116,7 @@ impl ScriptEditorTab {
                     }
                 })
                 .response
-                .labelled_by(label.id);
+                .labelled_by(name);
             if chosen != settings.scheme {
                 self.use_scheme(settings, chosen);
             }
@@ -115,9 +129,6 @@ impl ScriptEditorTab {
                 self.use_scheme(settings, settings.scheme);
             }
         });
-        if changed {
-            theme::hint(ui, t!("settings-scheme-replaces"));
-        }
     }
 
     fn use_scheme(&mut self, settings: &mut ScriptEditorSettings, scheme: KeyScheme) {

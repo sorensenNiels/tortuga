@@ -60,7 +60,8 @@ cookies, live git collaboration, workspaces, the v1 extras, release builds, the 
 features, and Phase 3: scripts, captures, workflows and the `tortuga-cli` runner. Since then: request tabs,
 imports from OpenAPI, Postman (with its scripts) and `.http` files, settings on three levels, XML, scripts in depth
 (console, breakpoints, Beautify, snippets, tests from the response), mock APIs with the contract check, imports
-from Bruno and Insomnia, one list of environments per workspace, and the editor and layout settings. See
+from Bruno and Insomnia, one list of environments per workspace, the editor and layout settings, Postman test suites
+run as Postman runs them, the UI in Danish, the VS Code extension, and where a send's time went. See
 [FEATURES.md](FEATURES.md) for what each one does and how it was verified.
 
 Pre-releases v0.1.0 to v0.11.0 are tagged, each built by the Release workflow on every OS. **v1** is the `v1.0.0` tag,
@@ -69,14 +70,11 @@ once this is checked:
 | Work | Requirement | What is left |
 |---|---|---|
 | Installers on every OS | R-NF-4 | Install and check the `.msi` and `.dmg` from a Release workflow run (and the `.deb` with `apt`). See [RELEASING.md](RELEASING.md). |
-| macOS and Windows | R-P-3, R-HTTP-8 | Run the app on macOS at all, and use it beyond start-up on Windows; system proxy settings on both. |
+| macOS and Windows | R-P-3, R-HTTP-8 | Run the app on macOS at all (Windows was used beyond start-up on 2026-10-26); system proxy settings on both. |
 | OS credential store | R-LOC-2 | Check Keychain, Credential Manager and Secret Service (only the file fallback is verified). |
 | No telemetry | R-P-4 | Confirm with a network monitor. |
 | CLI archives | R-CLI-4 | Check the archives from a Release workflow run on each OS (only the Linux one was checked, built locally). |
-
-Built and tested but not yet checked in the running app: the Postman test-suite work (R-COL-39 to R-COL-41,
-R-TEST-19), Run… with iterations and kept values (R-FLOW-7 to R-FLOW-9), importers under "More" (R-COL-42), the VS Code
-extension (R-VSC-1 to R-VSC-4) and the Danish UI (R-I18N-1 to R-I18N-3); FEATURES.md, "In progress", says what is left.
+| R-SET-17 | **A calmer settings dialog** (D69). One size whatever the page, so it doesn't jump; the pages listed on the left under General (Appearance, Editing, Script editor), Connections (Requests, Network) and App (Features with the importers, History, About), opening on Appearance. Each page is a few titled groups of rows: the setting's name with at most one short line about it, the long explanation on hover, and the control beside it. On/off settings are switches, one-of-a-few choices segmented buttons. |
 
 Next: **Phase 4 — Reach**, picked by demand.
 
@@ -88,16 +86,17 @@ collections safely), Phase 2 (daily driver) and Phase 3 (workflows and tests, v2
 ### Phase 4 — Reach
 
 Picked by demand, not in a fixed order. Done so far: imports from OpenAPI, Postman, Insomnia, `.http` files and Bruno (R-COL-15
-to R-COL-17, R-COL-31, R-COL-32, D7), settings on three levels (R-SET-1 to R-SET-7, D39), and mock APIs with the contract check (R-MOCK-1 to
-R-MOCK-8, D43 to D47). Still open:
+to R-COL-17, R-COL-31, R-COL-32, D7), settings on three levels (R-SET-1 to R-SET-7, D39), mock APIs with the contract check (R-MOCK-1 to
+R-MOCK-8, D43 to D47), the UI in English and Danish (R-I18N-1 to R-I18N-3, D64), and a VS Code extension over
+`tortuga-cli` (R-VSC-1 to R-VSC-4, D67). Still open:
 
 - More from the importers, and new ones (see [Importers](#importers) below).
 - GraphQL, WebSockets, Server-Sent Events, gRPC (IDEA-25).
 - Client certificates / mTLS (IDEA-20).
 - Code snippets for other languages (IDEA-22).
-- The UI in English and Danish (R-I18N-1 to R-I18N-3, D64); more languages when someone offers to keep one up to date.
+- More languages, when someone offers to keep one up to date (D64).
 - Web version (IDEA-11): the code keeps compiling for wasm, but nothing is built for it until a team asks (D6).
-- A VS Code extension over `tortuga-cli` (R-VSC-1 to R-VSC-4, D67); the full UI in VS Code is still IDEA-97 (b).
+- The full UI in VS Code (IDEA-97 (b)).
 - In-app commit/pull/push (IDEA-21) — only if working outside the app proves to be a real pain point.
 
 ### Not on the roadmap
@@ -128,16 +127,12 @@ its numbering; one that gets a phase becomes an `R-COL-` requirement in [§6](#6
 
 #### Postman
 
-**In progress:** the scripts of a real test-suite collection (XML service, 26 requests, run with "Run collection")
-were checked on 2026-10-24: 25 of 26 stayed comments, all because of `require('xml2js')`, and the collection couldn't
-be run in the app as Postman runs it. R-COL-39 to R-COL-41 and R-TEST-19 close that and the other gaps found in `pm.*`
-coverage, with Run… on a project or folder and Postman's runner options (R-FLOW-7 to R-FLOW-9, D65, D66); built and
-tested, not yet checked in the running app (FEATURES.md, "In progress").
-
 **Done:** collections v2.0 and v2.1 with folders, variables, servers, auth, bodies and scripts (R-COL-16, D36);
 scripts translated to Tortuga's API (R-COL-19), with Chai-style assertions to translate to (R-TEST-8);
 environment files into a new or an existing project (R-COL-20, D49); descriptions of the collection, folders and
-requests (R-COL-22); cookies, `pm.info`, `replaceIn`, the data row and `setNextRequest` translated (R-COL-21), with
+requests (R-COL-22); a real test-suite collection run as Postman's "Run collection" runs it: `xml2js`, more
+assertions and the legacy API translated, with Run… on a project or folder and Postman's runner options (R-COL-39 to
+R-COL-41, R-TEST-19, R-FLOW-7 to R-FLOW-9, D65, D66); cookies, `pm.info`, `replaceIn`, the data row and `setNextRequest` translated (R-COL-21), with
 the script API they need (R-TEST-16, R-FLOW-6, D50); saved responses as examples and `disableCookies` (R-COL-30).
 
 | ID | Idea | Notes |
@@ -197,25 +192,9 @@ Requirements still open: not built yet, or implemented but not yet verified ever
 | R-P-3 | **Cross-platform.** Windows, Linux, macOS desktop in v1. Web later, so the engine must not depend on desktop-only APIs. |
 | R-P-4 | **No telemetry.** Tortuga only contacts hosts the user sends requests to, and GitHub to look for a new version (R-SET-15, D63), which sends nothing about the user or their projects. |
 | R-HTTP-8 | Settings: follow redirects (on/off), verify TLS certificates (on/off, with a visible warning when off), proxy from system settings. |
-| R-HTTP-25 | **Where the time went.** The time in the response line opens a breakdown of the send (D68): DNS lookup, Connect + TLS, Waiting for the server (sending the request and the server's work) and Download, each as a bar in a waterfall with its time, and below them the total, the HTTP version and whether the connection was new or reused. A reused connection has no lookup or connecting, an IP address no lookup; with redirects followed each phase is the sum over every hop. The web build shows only waiting and download, which is what the browser tells. A response from history has no breakdown, and its time stays plain text. *(IDEA-104)* |
 | R-LOC-2 | Secret values are stored in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service). If none is available, they fall back to a file in the app-data directory readable only by the current user, and the app shows a warning. |
 | R-NF-4 | Installable packages: `.msi` (Windows), `.dmg` (macOS), `.deb` and `.AppImage` (Linux). |
-| R-I18N-1 | **The UI in the user's language: English or Danish.** By default the language follows the OS (English when the OS language is neither); Settings → Appearance can choose one. An app setting, never in project files. *(IDEA-94, D64)* |
-| R-I18N-2 | Every text of the app's own UI is translated: menus, buttons, labels, tooltips, hints, dialogs and notices. English is the source and the fallback for any missing text. Project files, their keys and `{{variables}}`, the script API, HTTP, `tortuga-cli` output, and messages that come from the engine (errors, import warnings, test results) stay English (IDEA-95). |
-| R-I18N-3 | Sizes, durations and dates follow the language: in Danish `1,5 KB`, `1,23 s`, `tors. 14. okt.`, "I dag", "I går". |
 | R-CLI-4 | Each release has a `tortuga-cli` archive per OS next to the installers, for CI: the binary with the README and licences, `.zip` on Windows, `.tar.gz` elsewhere. *(IDEA-43)* |
-| R-COL-39 | **Postman's `xml2js` is translated** on import (R-COL-19): a declaration `NAME = require('xml2js')` is removed, and `NAME.parseString(text, options, callback)` becomes `callback(null, xml2Json(text))`, or `V = xml2Json(text);` when the callback only assigns its result to `V`. Only when `options` is an object literal with `explicitArray: false` and nothing else, since that is the shape `xml2Json` gives (R-TEST-18); without it xml2js puts every child in an array, so such calls (and `new xml2js.Parser`, `parseStringPromise`) are left for the user and the script stays as comments. Lines of imported scripts lose their `\r`. Tested with a trimmed copy of the collection that prompted this, without its credentials or hosts: every script translated, and the `registrationGet` tests passing against an XML response. |
-| R-COL-40 | **More of Postman's assertions and legacy API are translated** (R-COL-19, R-COL-21). A `pm.expect(…)` chain with no Jest counterpart becomes `expect(…)` with the Chai chain kept (R-TEST-8), also with a message as the second argument, instead of leaving the script as comments. `pm.response.to.be.success`/`info`/`redirection`/`clientError`/`serverError`/`error` (status ranges) and `ok`/`accepted`/`badRequest`/`unauthorized`/`forbidden`/`notFound`/`rateLimited` (statuses), with `not`; `.to.have.body(text)` and `.to.have.jsonBody(path[, value])`; `pm.response.headers.has(n)`/`.toObject()`, `pm.response.reason()`; `pm.request.headers.get(n)`, and `pm.request.headers.add`/`upsert` in pre-request scripts → `req.setHeader`; `pm.*.toObject()` → `vars.toObject()`. Legacy: `tests["name"] = cond` → a `test`, `responseCode.code`, `responseTime`, `postman.getResponseHeader`, `postman.get`/`set`/`clearGlobalVariable` (workspace variables, R-WS-8). Only bare `pm.request.url` and `.toString()` are translated: `req.url` is text, so `getHost()`, `query.add(…)` and the like stay for the user (today they are translated and fail when run). |
-| R-TEST-19 | **Script API for what Postman scripts use**: Chai's `members` (with `include`, `same`, `deep`, `ordered`) and `length`/`lengthOf` as a chain before `above`/`below`/`least`/`most`/`within`; `test.skip(name, fn)`, which neither runs nor counts the test and says "Skipped test: name" in the console (translated from `pm.test.skip` today, but missing, so the script fails); `btoa` and `atob` (Postman has them; a script using them is translated today but fails); `vars.toObject()`, the variables a script sees by name. |
-| R-COL-41 | **An imported collection runs as Postman's "Run collection"** does: **Run…** on the project (R-FLOW-7) runs every request in collection order, continuing after a failed request, with step names that are the request names so `setNextRequest` names find their step (R-FLOW-6). The import writes no workflow file (D65). It warns when a script goes on with a name no request has, or one that several requests share. |
-| R-FLOW-7 | **Run a project or folder** (D65), as Postman's "Run collection": **Run…** in a project's and a folder's menu, and **Run project: …** in the command palette, open the workflow view with a run of every request below it in tree order, continuing after failures, named after the project or folder. It is not saved: no file, nothing kept for the next start, one per project (a new one replaces it). Its steps and options are edited as a workflow's and **Run** runs it; **Save as workflow…** (or Ctrl+S) asks for a name and writes it as a workflow file that stays open with its results. Follows the workflows switch (R-SET-13). |
-| R-FLOW-8 | **Iterations and a delay** for every workflow and run, as in Postman's runner: **Iterations** runs the steps N times without a data file (with one, its rows decide, and the field says so); **Delay** waits N ms between steps, also between iterations, not before the first. Saved in the workflow file as `iterations` and `delay_ms` only when set, so older files stay as they are; `tortuga-cli` follows them. The results say "Iteration N" for repeats and "Row N" for data rows. The web version has no delay yet (D6). |
-| R-FLOW-9 | **Keep variable values** (D66), as Postman's option of that name: a workflow or run with it starts from the project's runtime variables (R-TEST-5), carries what scripts and captures set into the next iterations (below the data row, above the project's values), and writes each step's changes to the runtime variables as it finishes (`workspace.` ones to the workspace's, R-WS-8). Off by default: a run starts clean and changes nothing (R-FLOW-3). Saved as `keep_variables = true`. `tortuga-cli` keeps nothing between runs. |
-| R-COL-42 | **Importers under "More"**, so that many importers turned on (R-COL-18) don't crowd the menus: **+ Add** lists New project and Add existing projects, and a **More** submenu with the import entries that are on; a project's menu has a **More** submenu with its environment imports. A menu with no importer on has no "More". |
-| R-VSC-1 | **Tortuga projects in VS Code's Testing view** (D67). An extension in `editors/vscode` lists every folder with a `tortuga.toml` in the window as a project, with its workflows, folders and requests in the app's order, read through `tortuga-cli list <project>` (JSON), so the extension never re-implements how a project is read. The tree follows the files as they change. *(IDEA-97)* |
-| R-VSC-2 | **Run from the editor.** A project, folder, request or workflow runs from the Testing view, a code lens at the top of its file, or **Tortuga: Run**, through `tortuga-cli run --report json`. Each request passes or fails with its failed tests, errors and data rows as messages; a project runs every request, then every workflow. A second profile, **Run against the mock**, adds `--mock`. A missing `tortuga-cli` shows on the project with the setting to fix it. |
-| R-VSC-3 | **Open in Tortuga.** `tortuga [PATH]` opens the project that holds PATH (a project folder or a file in one), adding it to the workspace, and a request file in a tab; the extension's code lens, explorer menu and command start it. |
-| R-VSC-4 | **Settings.** `tortuga.cliPath` and `tortuga.appPath` (defaults on `PATH`), `tortuga.environment` (`--env`, picked from the projects' and the workspace file's environments in the status bar) and `tortuga.workspaceFile` (`--workspace`). |
 
 ## 7. Ideas
 
@@ -351,6 +330,7 @@ on it**; where a better default would do, the idea is the default, not a setting
 | D66 | What does "Keep variable values" keep (R-FLOW-9)? | **The project's runtime variables**: the run starts from them, carries its changes across iterations, and writes each step's changes back as it finishes; off by default, so R-FLOW-3's clean runs stay the default (2026-10-24). Values carried over sit below the data row, so a data file still decides its columns. | Write to the project's variables in `tortuga.toml` (Postman's collection variables), which would change files in git on every run; write back only at the end of the run (a cancelled run would lose them); on by default, as in Postman. |
 | D67 | How does Tortuga get into VS Code (IDEA-97)? | **A thin TypeScript extension over `tortuga-cli`** in `editors/vscode`: the Testing view, code lenses, an environment picker, and "Open in Tortuga" starting the desktop app with a path. It never reads project files itself: `tortuga-cli list` gives the tree, `run --report json` the results (P7). Not in `make verify` (it needs Node.js, and its integration test VS Code and a display): `make vscode-test`. Not published to the Marketplace until it is verified on every OS (2026-10-24). | The full UI in a webview (IDEA-97 (b), changes D6); parsing the TOML files in TypeScript; a language server. |
 | D68 | Where does the breakdown of a send's time show (R-HTTP-25)? | **A popover from the time in the response line** (2026-10-26): it is where the eye is when a response is slow, and it takes no room the rest of the time ("simpler first", §7). A **Connection** tab earns its place only once the response has more to show about its connection (server address, TLS certificate, redirect hops). | A Timing tab next to Body and Headers; a Connection tab with the timing and connection details at once. |
+| D69 | How is the settings dialog laid out (R-SET-17)? | **Pages listed on the left, groups of rows on the right, switches and segmented buttons** (2026-10-26), as in VS Code's and macOS's settings: eight tabs in a row, a height that changed per tab and paragraphs of hints made the dialog feel crowded. Long explanations moved to hover, one short line stays. | Fewer tabs on top (five) with the same rows; keeping checkboxes and radio buttons. |
 
 New questions go here as the next free `Dn` (see the end of this file) with options, until they are decided.
 
@@ -363,4 +343,4 @@ New questions go here as the next free `Dn` (see the end of this file) with opti
 - When a requirement is fully met and verified, move its row to REQUIREMENTS.md and record
   how it was verified in FEATURES.md.
 
-Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-26` · `R-CK-7` · `R-COL-43` · `R-WS-11` · `R-VAR-10` · `R-SRV-11` · `R-GIT-15` · `R-HIST-6` · `R-LOC-3` · `R-NF-5` · `IDEA-106` · `D69` · `R-TEST-20` · `R-FLOW-10` · `R-CLI-5` · `R-SET-17` · `R-MOCK-9` · `R-I18N-4` · `R-VSC-5`.
+Next free IDs (removed rows keep their numbers): `R-P-5` · `R-HTTP-26` · `R-CK-7` · `R-COL-43` · `R-WS-11` · `R-VAR-10` · `R-SRV-11` · `R-GIT-15` · `R-HIST-6` · `R-LOC-3` · `R-NF-5` · `IDEA-106` · `D70` · `R-TEST-20` · `R-FLOW-10` · `R-CLI-5` · `R-SET-18` · `R-MOCK-9` · `R-I18N-4` · `R-VSC-5`.
