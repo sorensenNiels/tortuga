@@ -263,6 +263,7 @@ mod tests {
             headers: vec![KeyValue::new("Location", "/users/7")],
             body: "{\"id\": 7, \"name\": \"Ann ü😀\"}".as_bytes().to_vec(),
             elapsed: Duration::from_millis(3),
+            timing: None,
         };
         let run = script::run(
             &code,

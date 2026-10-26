@@ -134,6 +134,7 @@ fn example_from_a_response_leaves_out_credentials() {
         ],
         body: b"{}".to_vec(),
         elapsed: Duration::ZERO,
+        timing: None,
     };
     let example = Example::from_response("created", &response);
     assert_eq!(example.status, 201);

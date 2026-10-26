@@ -564,6 +564,7 @@ fn examples(responses: Option<&Value>) -> Vec<Example> {
             headers: headers(saved.get("header")),
             body: text(saved.get("body")).into_bytes(),
             elapsed: Duration::ZERO,
+            timing: None,
         };
         out.push(Example::from_response(name, &response));
     }

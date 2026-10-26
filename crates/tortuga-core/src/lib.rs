@@ -47,7 +47,7 @@ pub use error::{Error, Result};
 pub use format::{Environment, EnvironmentColor, Manifest, Server};
 pub use http::{Client, ClientSettings, FileReader, ProxyMode, check_proxy_url};
 pub use model::{
-    Auth, BodyView, FormPart, HttpMethod, KeyValue, ParamsBody, Request, RequestBody, Response,
-    Scripts,
+    Auth, BodyView, Connection, FormPart, HttpMethod, KeyValue, ParamsBody, Phase, Request,
+    RequestBody, Response, Scripts, Timing,
 };
 pub use settings::AppSettings;

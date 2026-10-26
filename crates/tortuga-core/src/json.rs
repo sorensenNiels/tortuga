@@ -309,6 +309,7 @@ mod tests {
             headers: vec![KeyValue::new("content-type", "application/json")],
             body: BODY.as_bytes().to_vec(),
             elapsed: std::time::Duration::ZERO,
+            timing: None,
         };
         let text = pretty(BODY).expect("json");
         let points: Vec<Point> = line_points(&text)

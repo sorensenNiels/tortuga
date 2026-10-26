@@ -285,6 +285,7 @@ mod tests {
                 .as_bytes()
                 .to_vec(),
             elapsed: std::time::Duration::from_millis(5),
+            timing: None,
         };
         let vars = std::collections::BTreeMap::from([("id".to_owned(), "7".to_owned())]);
         let out = run_script(&code, Phase::Test, &vars, &request, Some(&response));

@@ -452,6 +452,7 @@ mod tests {
             headers: Vec::new(),
             body: Vec::new(),
             elapsed: std::time::Duration::from_millis(3),
+            timing: None,
         };
         ui.sent.entry(Some(key)).or_default().outcome =
             Some(Outcome::Response(Arc::new(ResponseView::new(response))));
@@ -480,6 +481,7 @@ mod tests {
             )],
             body: format!(r#"{{"total": {total}}}"#).into_bytes(),
             elapsed: std::time::Duration::from_millis(5),
+            timing: None,
         };
         let entry = |seq: u64, path: &Path, result: Result<&tortuga_core::Response, String>| {
             Entry::new(

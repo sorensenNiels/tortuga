@@ -209,8 +209,11 @@ fn encode(s: &str) -> String {
     utf8_percent_encode(s, QUERY_COMPONENT).to_string()
 }
 
+/// A `+` is a space, as browsers and servers read a query; a literal plus is `%2B`.
 fn decode(s: &str) -> String {
-    percent_decode_str(s).decode_utf8_lossy().into_owned()
+    percent_decode_str(&s.replace('+', " "))
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -276,6 +279,25 @@ mod tests {
         let url = join_url("http://a.test", &params);
         assert_eq!(url, "http://a.test?q=a%26b%3Dc%20d%2Be%23f&v={{token}}");
         assert_eq!(split_url(&url).1, params);
+    }
+
+    /// R-HTTP-2: a URL pasted from a browser sends what the browser sent.
+    #[test]
+    fn plus_in_a_pasted_query_is_a_space() {
+        let (_, params) =
+            split_url("http://a.test/?q=hello+world&tz=%2B01:00&n=J%C3%B8rgen+%F0%9F%98%80");
+        assert_eq!(
+            params,
+            [
+                KeyValue::new("q", "hello world"),
+                KeyValue::new("tz", "+01:00"),
+                KeyValue::new("n", "Jørgen 😀"),
+            ]
+        );
+        assert_eq!(
+            join_url("http://a.test/", &params),
+            "http://a.test/?q=hello%20world&tz=%2B01:00&n=J%C3%B8rgen%20%F0%9F%98%80"
+        );
     }
 
     #[test]

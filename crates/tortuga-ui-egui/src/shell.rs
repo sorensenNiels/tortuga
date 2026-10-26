@@ -1416,6 +1416,7 @@ mod tests {
             )],
             body: r#"{"name": "ü😀"}"#.as_bytes().to_vec(),
             elapsed: std::time::Duration::from_millis(3),
+            timing: None,
         };
         let pre_log = (
             ScriptKind::PreRequest,
@@ -1494,6 +1495,7 @@ mod tests {
             )],
             body: r#"{"name": "ü😀"}"#.as_bytes().to_vec(),
             elapsed: std::time::Duration::from_millis(3),
+            timing: None,
         };
         ui.sent.insert(
             selection.clone(),
@@ -1908,6 +1910,7 @@ mod tests {
                 headers: Vec::new(),
                 body: b"first".to_vec(),
                 elapsed: std::time::Duration::from_millis(3),
+                timing: None,
             };
             let entry = Entry::new(
                 tortuga_core::history::new_id(1_000, 1),

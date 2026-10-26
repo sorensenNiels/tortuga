@@ -248,6 +248,7 @@ mod tests {
             headers: vec![KeyValue::new("Content-Type", content_type)],
             body: body.as_bytes().to_vec(),
             elapsed: Duration::ZERO,
+            timing: None,
         }
     }
 

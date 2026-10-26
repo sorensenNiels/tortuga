@@ -16,6 +16,7 @@ mod filter;
 mod json_menu;
 mod picture;
 mod rows;
+mod timing;
 mod trend;
 
 pub use cookies::CookiesTab;
@@ -641,8 +642,7 @@ fn details(
                 format!("{} {}", response.status, response.status_text),
                 status_color,
             );
-            ui.label(RichText::new(format::elapsed(response.elapsed)).color(p.muted))
-                .on_hover_text(t!("mock-time"));
+            timing::time_chip(ui, response);
             ui.label(RichText::new("·").color(p.muted));
             ui.label(RichText::new(format::size(response.body.len())).color(p.muted))
                 .on_hover_text(t!("response-size"));
@@ -1006,6 +1006,7 @@ mod tests {
             headers: vec![KeyValue::new("content-type", "application/json")],
             body: br#"{"id":7}"#.to_vec(),
             elapsed: Duration::from_millis(12),
+            timing: None,
         }
     }
 
@@ -1440,6 +1441,7 @@ mod tests {
             )],
             body: format!(r#"{{"total": {total}, "id": 1}}"#).into_bytes(),
             elapsed: std::time::Duration::from_millis(3),
+            timing: None,
         };
         let changed = tortuga_core::changes::compare(&json("1"), &json("2"));
         let same = tortuga_core::changes::compare(&json("1"), &json("1"));

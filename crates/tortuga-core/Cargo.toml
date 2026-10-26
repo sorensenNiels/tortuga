@@ -38,7 +38,9 @@ hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
 bytes.workspace = true
-tokio = { workspace = true, features = ["net", "time", "sync"] }
+# Where a send's time went (R-HTTP-25): a timed connector layer and a task-local.
+tower.workspace = true
+tokio = { workspace = true, features = ["net", "time", "sync", "rt"] }
 
 # `time` needs the browser clock on wasm32.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

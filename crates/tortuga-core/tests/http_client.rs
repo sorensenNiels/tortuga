@@ -757,3 +757,65 @@ async fn sends_multipart_with_files() {
         .expect_err("no reader");
     assert!(err.to_string().contains("can't be read here"), "{err}");
 }
+
+/// R-HTTP-25: a send says where its time went; the phases add up to the total, and the
+/// second send on the same client reuses the connection.
+#[tokio::test]
+async fn a_send_breaks_down_its_time() {
+    use tortuga_core::{Connection, Phase};
+
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("ü😀".repeat(1000))
+                .set_delay(Duration::from_millis(50)),
+        )
+        .mount(&server)
+        .await;
+    // By name, so the lookup is timed too.
+    let url = server.uri().replace("127.0.0.1", "localhost");
+    let client = Client::default();
+
+    let first = client
+        .execute(&Request::new(HttpMethod::Get, &url))
+        .await
+        .expect("request succeeds");
+    let timing = first.timing.expect("a sent response has its timing");
+    assert_eq!(timing.connection, Connection::New);
+    assert_eq!(timing.version, Some("HTTP/1.1"));
+    let phases: Vec<Phase> = timing.phases().iter().map(|(p, _)| *p).collect();
+    assert_eq!(
+        phases,
+        [Phase::Dns, Phase::Connect, Phase::Waiting, Phase::Download]
+    );
+    assert!(timing.waiting >= Duration::from_millis(50), "{timing:?}");
+    let sum: Duration = timing.phases().iter().map(|(_, d)| *d).sum();
+    assert!(
+        first.elapsed.saturating_sub(sum) < Duration::from_millis(2),
+        "{sum:?} of {:?}",
+        first.elapsed
+    );
+
+    let second = client
+        .execute(&Request::new(HttpMethod::Get, &url))
+        .await
+        .expect("request succeeds");
+    let timing = second.timing.expect("a sent response has its timing");
+    assert_eq!(timing.connection, Connection::Reused);
+    assert_eq!(timing.dns, None);
+    assert_eq!(timing.connect, None);
+}
+
+/// R-HTTP-25: an IP address needs no lookup, so there is no lookup phase.
+#[tokio::test]
+async fn an_ip_address_has_no_lookup() {
+    let server = server_replying(204).await;
+    let res = Client::default()
+        .execute(&Request::new(HttpMethod::Get, server.uri()))
+        .await
+        .expect("request succeeds");
+    let timing = res.timing.expect("a sent response has its timing");
+    assert_eq!(timing.dns, None);
+    assert!(timing.connect.is_some());
+}

@@ -273,6 +273,7 @@ mod tests {
             headers: headers.iter().map(|(k, v)| KeyValue::new(*k, *v)).collect(),
             body: body.as_bytes().to_vec(),
             elapsed: Duration::from_millis(5),
+            timing: None,
         }
     }
 

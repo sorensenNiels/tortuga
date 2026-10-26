@@ -350,6 +350,7 @@ fn examples(list_value: Option<&Value>) -> Vec<Example> {
                 .collect(),
             body: text(response.pointer("/body/data")).into_bytes(),
             elapsed: std::time::Duration::ZERO,
+            timing: None,
         };
         out.push(Example::from_response(name, &response));
     }

@@ -426,21 +426,8 @@ fn request_bar(
         }
         let group = frame.show(ui, |ui| {
             ui.set_width(group_width);
-            // The group draws the border; the controls inside are flat.
-            let v = ui.visuals_mut();
-            for w in [
-                &mut v.widgets.inactive,
-                &mut v.widgets.hovered,
-                &mut v.widgets.active,
-                &mut v.widgets.open,
-            ] {
-                w.bg_stroke = Stroke::NONE;
-            }
-            v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-            v.widgets.inactive.bg_fill = Color32::TRANSPARENT;
-            v.text_edit_bg_color = Some(Color32::TRANSPARENT);
-            // The group shows focus instead of the field.
-            v.selection.stroke = Stroke::NONE;
+            let text = theme::palette(ui).text;
+            flatten_controls(ui.visuals_mut(), text);
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.horizontal(|ui| {
                 if let Some(old) = method_picker(ui, request) {
@@ -631,6 +618,24 @@ fn server_picker(ui: &mut Ui, request: &mut Request, cx: EditorContext<'_>, base
     }
 }
 
+/// The URL group draws the border, so the controls inside it are flat. The group shows
+/// focus instead of the field, so the field gets no outline; the selection stroke's
+/// colour is still what selected text is drawn in, so it keeps `text`.
+fn flatten_controls(v: &mut egui::Visuals, text: Color32) {
+    for w in [
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.bg_stroke = Stroke::NONE;
+    }
+    v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    v.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+    v.text_edit_bg_color = Some(Color32::TRANSPARENT);
+    v.selection.stroke = Stroke::new(0.0, text);
+}
+
 fn url_field(
     ui: &mut Ui,
     id: egui::Id,
@@ -749,6 +754,17 @@ pub fn parse_timeout(text: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;
+
+    /// Selected text in the URL bar is drawn in the selection stroke's colour, so it must
+    /// stay visible while the field itself has no outline.
+    #[test]
+    fn selected_url_text_stays_visible() {
+        let mut v = egui::Visuals::light();
+        let text = Color32::from_rgb(0x11, 0x18, 0x27);
+        flatten_controls(&mut v, text);
+        assert_eq!(v.selection.stroke.color, text);
+        assert!(v.selection.stroke.is_empty(), "no outline around the field");
+    }
 
     use super::*;
 

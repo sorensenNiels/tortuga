@@ -370,6 +370,7 @@ mod tests {
             ],
             body: Vec::new(),
             elapsed: std::time::Duration::ZERO,
+            timing: None,
         };
         let found = ResponseCookies::of(&response);
         let [session, theme, gone] = found.cookies.as_slice() else {

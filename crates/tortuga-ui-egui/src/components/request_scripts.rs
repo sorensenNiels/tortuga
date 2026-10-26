@@ -359,6 +359,7 @@ mod tests {
             headers: vec![KeyValue::new("content-type", "application/json")],
             body: br#"{"id": 7}"#.to_vec(),
             elapsed: std::time::Duration::from_millis(5),
+            timing: None,
         };
         let all: Vec<&str> = TEST_SNIPPETS
             .iter()

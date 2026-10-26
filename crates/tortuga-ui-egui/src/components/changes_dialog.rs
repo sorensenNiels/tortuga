@@ -146,6 +146,7 @@ mod tests {
             )],
             body: body.as_bytes().to_vec(),
             elapsed: std::time::Duration::from_millis(5),
+            timing: None,
         }
     }
 

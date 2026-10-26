@@ -466,6 +466,63 @@ pub struct Response {
     pub headers: Vec<KeyValue>,
     pub body: Vec<u8>,
     pub elapsed: Duration,
+    /// Where `elapsed` went (R-HTTP-25). `None` for a response that wasn't just sent
+    /// (one from history, the mock's own answers, tests).
+    pub timing: Option<Timing>,
+}
+
+/// Where a response's time went (R-HTTP-25). The phases add up to the response's
+/// `elapsed`; with redirects followed, each phase is the sum over every hop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timing {
+    /// Looking up the host name. `None` when it wasn't measured (the web build).
+    pub dns: Option<Duration>,
+    /// Opening the connection, with the TLS handshake and a proxy's tunnel. `None` when
+    /// it wasn't measured (the web build).
+    pub connect: Option<Duration>,
+    /// From sending the request until the response's headers arrived: sending the body
+    /// and the server's work.
+    pub waiting: Duration,
+    /// From the headers until the last byte of the body.
+    pub download: Duration,
+    pub connection: Connection,
+    /// The HTTP version the response came with, e.g. `HTTP/2`; `None` in the web build,
+    /// where the browser doesn't say.
+    pub version: Option<&'static str>,
+}
+
+/// Whether a send opened a new connection (R-HTTP-25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Connection {
+    New,
+    /// An open connection from an earlier send was used: no lookup, no connecting.
+    Reused,
+    /// The platform doesn't say (the web build).
+    Unknown,
+}
+
+impl Timing {
+    /// The phases to show, in order, with their names; phases that weren't measured are
+    /// left out, and so are lookup and connecting on a reused connection.
+    pub fn phases(&self) -> Vec<(Phase, Duration)> {
+        let mut phases = Vec::new();
+        if self.connection != Connection::Reused {
+            phases.extend(self.dns.map(|d| (Phase::Dns, d)));
+            phases.extend(self.connect.map(|d| (Phase::Connect, d)));
+        }
+        phases.push((Phase::Waiting, self.waiting));
+        phases.push((Phase::Download, self.download));
+        phases
+    }
+}
+
+/// A phase of a send (R-HTTP-25).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Dns,
+    Connect,
+    Waiting,
+    Download,
 }
 
 /// How a response body should be presented (R-HTTP-6).
@@ -594,6 +651,7 @@ mod tests {
                 .collect(),
             body: body.to_vec(),
             elapsed: Duration::ZERO,
+            timing: None,
         }
     }
 

@@ -179,6 +179,7 @@ fn captures_from_json_headers_and_status() {
         headers: vec![KeyValue::new("Location", "/users/9")],
         body: br#"{"items": [{"id": 1}, {"id": 2}], "name": "x", "meta": {"n": 2}}"#.to_vec(),
         elapsed: std::time::Duration::ZERO,
+        timing: None,
     };
     assert_eq!(capture("status", &res).as_deref(), Ok("201"));
     assert_eq!(capture("header:location", &res).as_deref(), Ok("/users/9"));
@@ -205,6 +206,7 @@ fn captures_from_xml_with_xpath() {
             .as_bytes()
             .to_vec(),
         elapsed: std::time::Duration::ZERO,
+        timing: None,
     };
     assert_eq!(capture("xpath://user/@id", &res).as_deref(), Ok("7"));
     assert_eq!(

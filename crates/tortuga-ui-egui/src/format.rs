@@ -31,6 +31,16 @@ pub fn elapsed(d: Duration) -> String {
     }
 }
 
+/// A phase of a send (R-HTTP-25): under 10 ms with a decimal, so a fast lookup on a
+/// local network doesn't read "0 ms".
+pub fn phase(d: Duration) -> String {
+    if d < Duration::from_millis(10) {
+        format!("{} ms", i18n::decimal(d.as_secs_f64() * 1000.0, 1))
+    } else {
+        elapsed(d)
+    }
+}
+
 /// Capitalises the first letter (Rust error messages are lower-case by convention).
 pub fn sentence(text: &str) -> String {
     let mut chars = text.chars();
@@ -208,9 +218,14 @@ mod tests {
     fn durations() {
         assert_eq!(elapsed(Duration::from_millis(42)), "42 ms");
         assert_eq!(elapsed(Duration::from_millis(1234)), "1.23 s");
+        // R-HTTP-25
+        assert_eq!(phase(Duration::from_micros(400)), "0.4 ms");
+        assert_eq!(phase(Duration::ZERO), "0.0 ms");
+        assert_eq!(phase(Duration::from_millis(48)), "48 ms");
         // R-I18N-3
         crate::i18n::set(tortuga_core::settings::Language::Danish);
         assert_eq!(elapsed(Duration::from_millis(1234)), "1,23 s");
+        assert_eq!(phase(Duration::from_micros(2500)), "2,5 ms");
         crate::i18n::set(tortuga_core::settings::Language::English);
     }
 

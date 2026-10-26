@@ -157,6 +157,7 @@ impl StoredResponse {
             headers: self.headers.clone(),
             body,
             elapsed: std::time::Duration::from_millis(self.elapsed_ms),
+            timing: None,
         }
     }
 }
@@ -323,6 +324,7 @@ mod tests {
             headers: vec![KeyValue::new("content-type", "application/json")],
             body,
             elapsed: Duration::from_millis(42),
+            timing: None,
         }
     }
 

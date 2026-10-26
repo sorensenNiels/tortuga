@@ -139,6 +139,7 @@ impl Conditions {
             headers: request.headers.clone(),
             body: request.body.clone(),
             elapsed: Duration::ZERO,
+            timing: None,
         };
         self.body.iter().all(|(expr, expected)| {
             crate::runner::capture(expr, &as_response).is_ok_and(|found| found == *expected)

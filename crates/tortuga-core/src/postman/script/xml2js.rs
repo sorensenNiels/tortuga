@@ -157,6 +157,7 @@ mod tests {
             headers: Vec::new(),
             body: xml.as_bytes().to_vec(),
             elapsed: Duration::from_millis(3),
+            timing: None,
         };
         let request = Request::new(HttpMethod::Post, "https://svc.test/apixml");
         crate::script::run(script, Phase::Test, vars, &request, Some(&response))

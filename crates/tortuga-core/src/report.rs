@@ -194,6 +194,7 @@ mod tests {
                 headers: Vec::new(),
                 body: Vec::new(),
                 elapsed: Duration::from_millis(12),
+                timing: None,
             })),
             tests: tests
                 .iter()

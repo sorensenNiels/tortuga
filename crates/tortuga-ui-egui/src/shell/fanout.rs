@@ -189,6 +189,7 @@ mod tests {
             headers: vec![KeyValue::new("Content-Type", "application/json")],
             body: body.as_bytes().to_vec(),
             elapsed: std::time::Duration::from_millis(4),
+            timing: None,
         }
     }
 

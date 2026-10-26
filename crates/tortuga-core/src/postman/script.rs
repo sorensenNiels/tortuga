@@ -578,6 +578,7 @@ mod tests {
             headers: vec![KeyValue::new("Content-Type", "application/json")],
             body: br#"{"id": 7, "name": "Ann", "tags": ["a"], "gone": null}"#.to_vec(),
             elapsed: Duration::from_millis(42),
+            timing: None,
         };
         let request = Request::new(HttpMethod::Get, "https://api.test/users");
         crate::script::run(
@@ -854,6 +855,7 @@ pm.environment.set("userId", pm.response.json().id);
             ],
             body: Vec::new(),
             elapsed: Duration::from_millis(5),
+            timing: None,
         };
         let mut request = Request::new(HttpMethod::Post, "https://api.test/login");
         request.name = "Log in".into();

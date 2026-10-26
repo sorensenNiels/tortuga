@@ -10,8 +10,13 @@ use serde::{Deserialize, Serialize};
 use web_time::Instant;
 
 use crate::cookies::CookieJar;
-use crate::model::{FormPart, HttpMethod, KeyValue, Request, RequestBody, Response};
+use crate::model::{
+    Connection, FormPart, HttpMethod, KeyValue, Request, RequestBody, Response, Timing,
+};
 use crate::{Error, Result, query};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod timing;
 
 /// The `User-Agent` sent unless a request sets its own (R-HTTP-23).
 pub const USER_AGENT: &str = concat!("Tortuga/", env!("CARGO_PKG_VERSION"));
@@ -394,26 +399,44 @@ impl Client {
         };
 
         let started = Instant::now();
-        let response = builder
-            .send()
-            .await
-            .map_err(|e| map_send_error(&e, timeout))?;
-        let status = response.status();
-        let headers = response
-            .headers()
-            .iter()
-            .map(|(name, value)| {
-                KeyValue::new(name.as_str(), String::from_utf8_lossy(value.as_bytes()))
-            })
-            .collect();
-        // Takes over the received buffer instead of copying it (bodies can be 50 MB, R-NF-2).
-        let body = Vec::from(
-            response
-                .bytes()
+        let receive = async {
+            let response = builder
+                .send()
                 .await
-                .map_err(|e| map_send_error(&e, timeout))?,
-        );
+                .map_err(|e| map_send_error(&e, timeout))?;
+            let headers_at = started.elapsed();
+            let status = response.status();
+            #[cfg(not(target_arch = "wasm32"))]
+            let version = Some(version_name(response.version()));
+            #[cfg(target_arch = "wasm32")]
+            let version = None;
+            let headers = response
+                .headers()
+                .iter()
+                .map(|(name, value)| {
+                    KeyValue::new(name.as_str(), String::from_utf8_lossy(value.as_bytes()))
+                })
+                .collect();
+            // Takes over the received buffer instead of copying it (bodies can be 50 MB, R-NF-2).
+            let body = Vec::from(
+                response
+                    .bytes()
+                    .await
+                    .map_err(|e| map_send_error(&e, timeout))?,
+            );
+            Ok::<_, Error>((status, version, headers, body, headers_at))
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let (received, measured) = timing::measure(receive).await;
+        #[cfg(target_arch = "wasm32")]
+        let received = receive.await;
+        let (status, version, headers, body, headers_at) = received?;
         let elapsed = started.elapsed();
+        #[cfg(not(target_arch = "wasm32"))]
+        let setup = measured.setup();
+        // The browser doesn't say how it connected.
+        #[cfg(target_arch = "wasm32")]
+        let setup = Setup::default();
 
         Ok(Response {
             status: status.as_u16(),
@@ -421,6 +444,7 @@ impl Client {
             headers,
             body,
             elapsed,
+            timing: Some(timing(setup, version, headers_at, elapsed)),
         })
     }
 }
@@ -517,7 +541,10 @@ fn builder(
         .redirect(redirect)
         .tls_danger_accept_invalid_certs(!settings.verify_tls || key.insecure_host)
         // Besides the system's certificates, not instead of them.
-        .tls_certs_merge(roots.iter().cloned());
+        .tls_certs_merge(roots.iter().cloned())
+        // Where a send's time went (R-HTTP-25).
+        .dns_resolver(std::sync::Arc::new(timing::TimedResolver))
+        .connector_layer(timing::TimedConnect);
     with_proxy(builder, settings)
 }
 
@@ -590,6 +617,57 @@ fn map_send_error(err: &reqwest::Error, timeout: Duration) -> Error {
         Error::Timeout(timeout)
     } else {
         Error::transport(err)
+    }
+}
+
+/// How a send got its connection (R-HTTP-25): lookup and connecting, without the lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Setup {
+    dns: Option<Duration>,
+    connect: Option<Duration>,
+    connection: Connection,
+}
+
+impl Default for Setup {
+    /// Nothing measured: the platform doesn't say.
+    fn default() -> Self {
+        Self {
+            dns: None,
+            connect: None,
+            connection: Connection::Unknown,
+        }
+    }
+}
+
+/// Where a send's time went (R-HTTP-25): waiting is what the headers took beyond the
+/// connection's setup, download the rest.
+fn timing(
+    setup: Setup,
+    version: Option<&'static str>,
+    headers_at: Duration,
+    elapsed: Duration,
+) -> Timing {
+    let setup_took = setup.dns.unwrap_or_default() + setup.connect.unwrap_or_default();
+    Timing {
+        dns: setup.dns,
+        connect: setup.connect,
+        waiting: headers_at.saturating_sub(setup_took),
+        download: elapsed.saturating_sub(headers_at),
+        connection: setup.connection,
+        version,
+    }
+}
+
+/// How the response's HTTP version is shown (R-HTTP-25).
+#[cfg(not(target_arch = "wasm32"))]
+fn version_name(version: reqwest::Version) -> &'static str {
+    match version {
+        reqwest::Version::HTTP_09 => "HTTP/0.9",
+        reqwest::Version::HTTP_10 => "HTTP/1.0",
+        reqwest::Version::HTTP_11 => "HTTP/1.1",
+        reqwest::Version::HTTP_2 => "HTTP/2",
+        reqwest::Version::HTTP_3 => "HTTP/3",
+        _ => "HTTP",
     }
 }
 
