@@ -74,7 +74,6 @@ once this is checked:
 | OS credential store | R-LOC-2 | Check Keychain, Credential Manager and Secret Service (only the file fallback is verified). |
 | No telemetry | R-P-4 | Confirm with a network monitor. |
 | CLI archives | R-CLI-4 | Check the archives from a Release workflow run on each OS (only the Linux one was checked, built locally). |
-| R-SET-17 | **A calmer settings dialog** (D69). One size whatever the page, so it doesn't jump; the pages listed on the left under General (Appearance, Editing, Script editor), Connections (Requests, Network) and App (Features with the importers, History, About), opening on Appearance. Each page is a few titled groups of rows: the setting's name with at most one short line about it, the long explanation on hover, and the control beside it. On/off settings are switches, one-of-a-few choices segmented buttons. |
 
 Next: **Phase 4 — Reach**, picked by demand.
 
