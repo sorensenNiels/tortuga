@@ -1,4 +1,4 @@
-format = 2
+format = 3
 name = "Tortuga self-test"
 
 [variables]
@@ -27,3 +27,7 @@ remote = "https://github.com/sorensenNiels/tortuga.git"
 [[projects]]
 path = "flow"
 remote = "https://github.com/sorensenNiels/tortuga.git"
+
+[[environments]]
+id = "built"
+name = "Built"

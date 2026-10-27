@@ -10,6 +10,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, OnceLock};
 
 use tortuga_core::CookieJar;
+use tortuga_core::collection::MANIFEST_FILE;
 use tortuga_core::git::GitStatus;
 use tortuga_core::secrets::SecretValues;
 use tortuga_core::settings::{Level, ResolvedSettings};
@@ -391,24 +392,11 @@ impl AppState {
         if let Some(file) = self.workspace().file.clone() {
             match self.read_workspace_file(&file) {
                 Ok(read) => {
+                    let projects = self.place_projects(read.projects);
                     let ws = self.workspace_mut();
                     ws.variables = read.variables;
                     ws.defaults = read.defaults;
                     ws.environments = read.environments;
-                    let projects = read
-                        .projects
-                        .into_iter()
-                        .map(|mut p| {
-                            if p.remote.is_none() {
-                                p.remote = ws
-                                    .projects
-                                    .iter()
-                                    .find(|old| old.path == p.path)
-                                    .and_then(|old| old.remote.clone());
-                            }
-                            p
-                        })
-                        .collect();
                     ws.projects = projects;
                 }
                 Err(e) => self.notify(t!("workspace-file-read-failed", error = e)),
@@ -424,6 +412,44 @@ impl AppState {
             }
         }
         self.save_local();
+    }
+
+    /// Where the projects a workspace file lists are on this machine (R-WS-11): where
+    /// they were located before, else, for one listed by remote, in a clone of its
+    /// repository that any workspace here has a project of.
+    fn place_projects(&self, projects: Vec<ProjectRef>) -> Vec<ProjectRef> {
+        let ws = self.workspace();
+        let known: Vec<ProjectRef> = ws
+            .projects
+            .iter()
+            .chain(self.local.workspaces.iter().flat_map(|w| &w.projects))
+            .cloned()
+            .collect();
+        projects
+            .into_iter()
+            .map(|mut p| {
+                let before = ws.projects.iter().find(|old| match &p.shared_path {
+                    Some(shared) => old.shared_path.as_ref() == Some(shared) || old.path == p.path,
+                    None => old.same_remote_project(&p),
+                });
+                if let Some(before) = before {
+                    before.path.clone_into(&mut p.path);
+                    if p.remote.is_none() {
+                        p.remote.clone_from(&before.remote);
+                    }
+                    if p.folder.is_none() {
+                        p.folder.clone_from(&before.folder);
+                    }
+                }
+                if p.shared_path.is_none()
+                    && !self.storage().exists(&p.path.join(MANIFEST_FILE))
+                    && let Some(path) = workspace::locate(self.storage(), &p, &known)
+                {
+                    p.path = path;
+                }
+                p
+            })
+            .collect()
     }
 
     /// Closes the projects of the active workspace (they stay in it).
@@ -842,7 +868,7 @@ impl AppState {
             }
             match result {
                 Ok(Some(status)) => {
-                    self.remember_remote(&root, status.remote.as_deref());
+                    self.remember_repository(&root, &status);
                     self.git.insert(root.clone(), status);
                 }
                 Ok(None) => drop(self.git.remove(&root)),
@@ -864,12 +890,14 @@ impl AppState {
         changed.into_iter().collect()
     }
 
-    /// Keeps the project's git remote in the workspace, so a missing project can show
-    /// where to clone it from, and a workspace file can tell teammates (R-WS-5).
-    fn remember_remote(&mut self, root: &Path, remote: Option<&str>) {
-        let Some(remote) = remote else {
+    /// Keeps the project's git remote and its folder in the repository in the
+    /// workspace, so a missing project can show where to clone it from, and a
+    /// workspace file can list it by remote for teammates (R-WS-5, R-WS-11).
+    fn remember_repository(&mut self, root: &Path, status: &GitStatus) {
+        let Some(remote) = status.remote.as_deref() else {
             return;
         };
+        let folder = workspace::folder_in(&status.repository, root);
         let Some(project) = self
             .workspace_mut()
             .projects
@@ -878,10 +906,20 @@ impl AppState {
         else {
             return;
         };
-        if project.remote.as_deref() != Some(remote) {
-            project.remote = Some(remote.to_owned());
-            self.workspace_changed();
+        // Another way of writing the same remote (SSH or HTTPS) stays, so teammates
+        // don't rewrite each other's file.
+        let same = project
+            .remote
+            .as_deref()
+            .is_some_and(|known| workspace::same_repository(known, remote));
+        if same && project.folder == folder {
+            return;
         }
+        if !same {
+            project.remote = Some(remote.to_owned());
+        }
+        project.folder = folder;
+        self.workspace_changed();
     }
 
     /// The cookie jar requests of the collection at `root` use; the scratch jar for `None` (R-CK-1).
@@ -1143,16 +1181,69 @@ pub(crate) mod tests {
         teammate.locate_missing(&users, &moved).expect("locate");
 
         assert_eq!(teammate.missing.len(), 0);
-        assert_eq!(roots(&teammate), [orders, moved]);
-        let text = std::fs::read_to_string(&file).expect("file");
-        assert!(
-            text.contains("path = \"../elsewhere/users\""),
-            "file follows: {text}"
-        );
+        assert_eq!(roots(&teammate), [orders.clone(), moved.clone()]);
+        let after = std::fs::read_to_string(&file).expect("file");
+        assert_eq!(after, text, "locating is this machine's business (R-WS-11)");
 
-        // Opening the same file again switches to that workspace instead of adding one.
+        // Opening the same file again switches to that workspace instead of adding one,
+        // and the located project is still where it was found, in the file's order.
+        teammate.switch_workspace(0);
         teammate.open_workspace_file(&file).expect("again");
         assert_eq!(teammate.local.workspaces.len(), 2);
+        assert_eq!(roots(&teammate), [moved, orders]);
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
+    /// R-WS-11: a project in another repository is shared by its remote, and found in a
+    /// clone of it wherever this machine has one, without changing the file.
+    #[test]
+    fn projects_in_other_repositories_are_found_by_remote() {
+        let dir = temp("by-remote");
+        let (users, orders) = (dir.join("users"), dir.join("platform/orders"));
+        project(&users, "Users", &[]);
+        project(&orders, "Orders", &[]);
+        let status = |repository: &Path, remote: &str| GitStatus {
+            repository: repository.to_owned(),
+            remote: Some(remote.to_owned()),
+            ..GitStatus::default()
+        };
+        let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![users.clone(), orders.clone()],
+            ..Default::default()
+        }));
+        state.remember_repository(&users, &status(&users, "git@example.test:acme/users.git"));
+        state.remember_repository(
+            &orders,
+            &status(&dir.join("platform"), "git@example.test:acme/platform.git"),
+        );
+        let file = dir.join("platform/acme.tortuga-workspace.toml");
+        state.save_workspace_as(&file).expect("save");
+        let text = std::fs::read_to_string(&file).expect("file");
+        assert!(text.contains("path = \"orders\""), "{text}");
+        assert!(
+            text.contains("[[projects]]\nremote = \"git@example.test:acme/users.git\"\n"),
+            "{text}"
+        );
+        assert!(!text.contains("../users"), "{text}");
+
+        // A teammate cloned users somewhere else, over HTTPS, and has it open already.
+        let clone = dir.join("code/ü😀/users");
+        std::fs::create_dir_all(dir.join("code/ü😀")).expect("mkdir");
+        std::fs::rename(&users, &clone).expect("move");
+        let mut teammate = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![clone.clone()],
+            ..Default::default()
+        }));
+        teammate.remember_repository(&clone, &status(&clone, "https://example.test/acme/users"));
+        teammate.open_workspace_file(&file).expect("open file");
+        assert!(teammate.missing.is_empty(), "{:?}", teammate.missing);
+        assert_eq!(roots(&teammate), [clone.clone(), orders.clone()]);
+        teammate.remember_repository(&clone, &status(&clone, "https://example.test/acme/users"));
+        let after = std::fs::read_to_string(&file).expect("file");
+        assert_eq!(
+            after, text,
+            "the teammate's clone and URL stay on their machine"
+        );
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 

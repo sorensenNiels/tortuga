@@ -67,15 +67,16 @@ Tortuga writes nothing local into the project folder, so you don't need a `.giti
    works in every environment.
 4. Commit and push the folder like any other change.
 5. Optional: if the team works across several repositories, choose **Save as file…** in the workspace menu (title
-   bar) and commit the `.tortuga-workspace.toml` file. It lists the projects, each with its path and clone URL, and
-   the workspace variables.
+   bar) and commit the `.tortuga-workspace.toml` file. It lists the projects (by path in its own repository,
+   by clone URL in others, so teammates can clone them anywhere) and the workspace variables.
 
 ### Join as a colleague
 
 1. [Install Tortuga](#install) and clone the repository.
 2. Open the project: **+ Add → Add existing projects…** and pick the repository folder. Tortuga lists every project
    in it. Or, if the team committed a workspace file, open it with **Open workspace file…** in the workspace menu.
-   Projects you haven't cloned yet show as *missing* with **Copy clone URL** and **Locate…**.
+   Projects in other repositories are found in clones you already have open in Tortuga; the ones it can't find show
+   as *missing* with **Copy clone URL** and **Locate…**. Where you put a clone stays on your machine.
 3. Choose an environment in the title bar.
 4. Fill in your own secrets: open **Environments…** in the project's **…** menu and type your value for each 🔒
    variable. Requests that use a variable without a value are highlighted, and Tortuga won't send them until it

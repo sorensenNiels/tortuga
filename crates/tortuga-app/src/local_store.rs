@@ -363,6 +363,8 @@ mod tests {
                     projects: vec![ProjectRef {
                         path: "/src/users".into(),
                         remote: Some("git@example.test:acme/users.git".into()),
+                        folder: Some("api/ü😀".into()),
+                        shared_path: Some("../users".into()),
                     }],
                     ..Workspace::default()
                 },

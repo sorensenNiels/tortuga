@@ -4,14 +4,16 @@
 //! R-SET-2).
 //!
 //! A workspace itself is local data, kept by the app. "Save as file…" writes it as a
-//! `<name>.tortuga-workspace.toml` that can be committed, e.g. to a "platform" repo:
-//! each project by its path relative to the file, plus its git remote URL, so a new
-//! teammate sees which repositories to clone, and the workspace variables. Only shared
+//! `<name>.tortuga-workspace.toml` that can be committed, e.g. to a "platform" repo.
+//! A project in the file's own repository, or without a git remote, is listed by its
+//! path relative to the file. A project in another repository is listed by that
+//! repository's remote URL and its folder in it (R-WS-11), so it is found wherever a
+//! teammate cloned it, and a new teammate sees what to clone. Only shared
 //! data goes into the file (R-GIT-4): what is open or active stays on each machine, and
 //! secret variables are listed by name only (R-VAR-3).
 //!
 //! ```toml
-//! format = 2
+//! format = 4
 //! name = "Acme platform"
 //! secrets = ["api_key"]
 //!
@@ -19,8 +21,12 @@
 //! tenant = "acme"
 //!
 //! [[projects]]
-//! path = "../users-api"
+//! path = "gateway"
+//! remote = "git@github.com:acme/platform.git"
+//!
+//! [[projects]]
 //! remote = "git@github.com:acme/users-api.git"
+//! folder = "api"
 //!
 //! [[environments]]
 //! id = "staging"
@@ -39,19 +45,22 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::collection::MANIFEST_FILE;
 use crate::format::{Environment, EnvironmentColor, Manifest};
 use crate::model::{Auth, KeyValue};
 use crate::secrets::SecretKey;
 use crate::settings::RequestSettings;
+use crate::storage::Storage;
 use crate::{Error, Result, slug};
 
 /// File name ending of a shareable workspace file.
 pub const WORKSPACE_FILE_SUFFIX: &str = ".tortuga-workspace.toml";
 
 /// Newest format version of workspace files this build reads. Files are written as
-/// format 1 unless they hold variables or defaults (2) or environments (3): older builds
-/// would drop those when they rewrite the file, so they must refuse it instead.
-pub const WORKSPACE_FORMAT: u32 = 3;
+/// format 1 unless they hold variables or defaults (2), environments (3) or projects
+/// listed by remote (4): older builds would drop or misread those, so they must refuse
+/// the file instead.
+pub const WORKSPACE_FORMAT: u32 = 4;
 
 /// Variables every project of a workspace can use (R-WS-8). They rank below the
 /// project's own values, so a project can always override them.
@@ -224,15 +233,102 @@ pub struct ProjectRef {
     /// Remote URL of the project's git repository, without credentials.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
+    /// The project's folder in its git repository, with `/` separators (empty for the
+    /// top folder); known with `remote`. With them a project in another repository
+    /// than the workspace file is shared by remote (R-WS-11).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// The path as the workspace file lists it, for a project read from one. It is
+    /// written back as it was, so locating the project on this machine doesn't change
+    /// the shared file (R-WS-11).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_path: Option<String>,
 }
 
 impl ProjectRef {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
-            remote: None,
+            ..Self::default()
         }
     }
+
+    /// The top folder of the project's repository, when its folder in it is known.
+    pub fn repository(&self) -> Option<PathBuf> {
+        let folder = self.folder.as_deref()?;
+        let depth = folder.split('/').filter(|part| !part.is_empty()).count();
+        self.path.ancestors().nth(depth).map(Path::to_path_buf)
+    }
+
+    /// Listed by remote in a workspace file at `file` (R-WS-11): in another repository
+    /// than the file, with a remote and its folder in it known.
+    fn shared_by_remote(&self, file: &Path) -> bool {
+        self.remote.is_some()
+            && self
+                .repository()
+                .is_some_and(|repo| !normalize(file).starts_with(normalize(&repo)))
+    }
+
+    /// Lists the same project of the same repository as `other`, both shared by remote.
+    pub fn same_remote_project(&self, other: &Self) -> bool {
+        match (&self.remote, &other.remote, &self.folder, &other.folder) {
+            (Some(a), Some(b), Some(f), Some(g)) => f == g && same_repository(a, b),
+            _ => false,
+        }
+    }
+}
+
+/// The folder of the project at `project` in the repository at `repository`, with `/`
+/// separators (empty for its top folder); `None` when it isn't in it.
+pub fn folder_in(repository: &Path, project: &Path) -> Option<String> {
+    normalize(project)
+        .strip_prefix(normalize(repository))
+        .ok()
+        .map(to_slashes)
+}
+
+/// Where the project `project`, listed by remote, is on this machine (R-WS-11): its
+/// folder in the first clone of the same remote among the repositories of `known` that
+/// has the project.
+pub fn locate(
+    storage: &dyn Storage,
+    project: &ProjectRef,
+    known: &[ProjectRef],
+) -> Option<PathBuf> {
+    let remote = project.remote.as_deref()?;
+    let folder = project.folder.as_deref()?;
+    known
+        .iter()
+        .filter(|k| {
+            k.remote
+                .as_deref()
+                .is_some_and(|r| same_repository(r, remote))
+        })
+        .filter_map(ProjectRef::repository)
+        .map(|repo| normalize(&repo.join(folder)))
+        .find(|path| storage.exists(&path.join(MANIFEST_FILE)))
+}
+
+/// Two remote URLs name the same repository, however they are written: SSH or HTTPS,
+/// with or without user, port, `.git` or a trailing `/`, in any case.
+pub fn same_repository(a: &str, b: &str) -> bool {
+    repository_key(a) == repository_key(b)
+}
+
+fn repository_key(url: &str) -> String {
+    let url = url.trim().to_lowercase();
+    let (authority, path) = match url.split_once("://") {
+        Some((_, rest)) => rest.split_at(rest.find('/').unwrap_or(rest.len())),
+        // scp-like `git@host:path`, or a local path
+        None => url.split_once(':').unwrap_or(("", url.as_str())),
+    };
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = host.split(':').next().unwrap_or_default();
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    format!("{host}/{path}")
 }
 
 /// The contents of a workspace file.
@@ -268,10 +364,16 @@ struct FileText {
 
 #[derive(Serialize, Deserialize)]
 struct FileProject {
-    /// Relative to the workspace file, with `/` separators on every OS.
-    path: String,
+    /// Relative to the workspace file, with `/` separators on every OS; none for a
+    /// project listed by remote and folder (R-WS-11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote: Option<String>,
+    /// The project's folder in the repository, for a project listed by remote; none
+    /// for its top folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
 }
 
 /// A file name for a workspace called `name`, e.g. `acme-platform.tortuga-workspace.toml`.
@@ -291,7 +393,10 @@ pub fn write(workspace: &WorkspaceFile, file: &Path) -> String {
         defaults,
         environments,
     } = workspace;
-    let format = if !environments.is_empty() {
+    let by_remote = projects.iter().any(|p| p.shared_by_remote(file));
+    let format = if by_remote {
+        4
+    } else if !environments.is_empty() {
         3
     } else if variables.is_empty() && defaults.is_empty() {
         1
@@ -309,16 +414,34 @@ pub fn write(workspace: &WorkspaceFile, file: &Path) -> String {
         environments: environments.clone(),
         projects: projects
             .iter()
-            .map(|p| FileProject {
-                path: to_slashes(&relative_path(dir, &p.path)),
-                remote: p.remote.as_deref().map(without_credentials),
+            .map(|p| {
+                let remote = p.remote.as_deref().map(without_credentials);
+                if p.shared_by_remote(file) {
+                    let folder = p.folder.clone().filter(|f| !f.is_empty());
+                    return FileProject {
+                        path: None,
+                        remote,
+                        folder,
+                    };
+                }
+                let path = p
+                    .shared_path
+                    .clone()
+                    .unwrap_or_else(|| to_slashes(&relative_path(dir, &p.path)));
+                FileProject {
+                    path: Some(path),
+                    remote,
+                    folder: None,
+                }
             })
             .collect(),
     };
     toml::to_string(&text).expect("workspace files always serialize to TOML")
 }
 
-/// Reads the workspace file at `file`; project paths come back absolute.
+/// Reads the workspace file at `file`; project paths come back absolute. A project
+/// listed by remote comes back where a clone next to the file's folder would have it,
+/// until [`locate`] finds it on this machine.
 pub fn read(text: &str, file: &Path) -> Result<WorkspaceFile> {
     let invalid = |message: String| Error::InvalidFile {
         path: file.to_owned(),
@@ -332,16 +455,32 @@ pub fn read(text: &str, file: &Path) -> Result<WorkspaceFile> {
         )));
     }
     let dir = file.parent().unwrap_or(Path::new(""));
+    let projects = parsed
+        .projects
+        .into_iter()
+        .map(|p| match (p.path, p.remote) {
+            (Some(path), remote) => Ok(ProjectRef {
+                path: normalize(&dir.join(&path)),
+                remote,
+                folder: None,
+                shared_path: Some(path),
+            }),
+            (None, Some(remote)) => {
+                let folder = p.folder.unwrap_or_default();
+                let clone = dir.join("..").join(repository_name(&remote)).join(&folder);
+                Ok(ProjectRef {
+                    path: normalize(&clone),
+                    remote: Some(remote),
+                    folder: Some(folder),
+                    shared_path: None,
+                })
+            }
+            (None, None) => Err(invalid("a project has neither a path nor a remote".into())),
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(WorkspaceFile {
         name: parsed.name,
-        projects: parsed
-            .projects
-            .into_iter()
-            .map(|p| ProjectRef {
-                path: normalize(&dir.join(&p.path)),
-                remote: p.remote,
-            })
-            .collect(),
+        projects,
         variables: WorkspaceVariables {
             values: parsed.variables,
             secrets: parsed.secrets,
@@ -420,6 +559,16 @@ pub fn without_credentials(url: &str) -> String {
     }
 }
 
+/// The folder `git clone` makes for `remote`: its last part without `.git`.
+fn repository_name(remote: &str) -> &str {
+    let last = remote
+        .trim_end_matches('/')
+        .rsplit(['/', ':', '\\'])
+        .next()
+        .unwrap_or(remote);
+    last.strip_suffix(".git").unwrap_or(last)
+}
+
 fn to_slashes(path: &Path) -> String {
     path.components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -439,6 +588,7 @@ mod tests {
             ProjectRef {
                 path: "/src/users-api".into(),
                 remote: Some("https://bob:s3cret@github.com/acme/users-api.git".into()),
+                ..ProjectRef::default()
             },
             ProjectRef::new("/src/platform/api/orders"),
             ProjectRef::new("/src/platform"),
@@ -475,10 +625,165 @@ mod tests {
         assert_eq!(write(&workspace, file), text, "deterministic");
     }
 
+    /// R-WS-11: a project in another repository is listed by remote and folder, so the
+    /// file doesn't depend on where anyone cloned it; projects in the file's own
+    /// repository, or without a folder known, keep their path.
+    #[test]
+    fn projects_in_other_repositories_are_listed_by_remote() {
+        let file = Path::new("/src/platform/acme.tortuga-workspace.toml");
+        let workspace = WorkspaceFile {
+            name: "Acme".into(),
+            projects: vec![
+                ProjectRef {
+                    path: "/src/platform/gateway".into(),
+                    remote: Some("git@github.com:acme/platform.git".into()),
+                    folder: Some("gateway".into()),
+                    shared_path: None,
+                },
+                ProjectRef {
+                    path: "/home/ann/code/users-api/api".into(),
+                    remote: Some("https://bob:s3cret@github.com/acme/users-api.git".into()),
+                    folder: Some("api".into()),
+                    shared_path: None,
+                },
+                ProjectRef {
+                    path: "/elsewhere/billing".into(),
+                    remote: Some("git@github.com:acme/billing.git".into()),
+                    folder: Some(String::new()),
+                    shared_path: None,
+                },
+                ProjectRef::new("/src/scratch-ü😀"),
+            ],
+            ..WorkspaceFile::default()
+        };
+        let text = write(&workspace, file);
+        assert_eq!(
+            text,
+            "format = 4\nname = \"Acme\"\n\n\
+             [[projects]]\npath = \"gateway\"\nremote = \"git@github.com:acme/platform.git\"\n\n\
+             [[projects]]\nremote = \"https://github.com/acme/users-api.git\"\nfolder = \"api\"\n\n\
+             [[projects]]\nremote = \"git@github.com:acme/billing.git\"\n\n\
+             [[projects]]\npath = \"../scratch-ü😀\"\n"
+        );
+        let back = read(&text, file).expect("read");
+        let paths: Vec<&Path> = back.projects.iter().map(|p| p.path.as_path()).collect();
+        assert_eq!(
+            paths,
+            [
+                Path::new("/src/platform/gateway"),
+                Path::new("/src/users-api/api"),
+                Path::new("/src/billing"),
+                Path::new("/src/scratch-ü😀"),
+            ],
+            "until located, a clone next to the file's folder is assumed"
+        );
+        assert_eq!(back.projects[1].folder.as_deref(), Some("api"));
+        assert_eq!(back.projects[2].folder.as_deref(), Some(""));
+        assert_eq!(back.projects[0].shared_path.as_deref(), Some("gateway"));
+        assert_eq!(write(&back, file), text, "read and written back unchanged");
+        assert!(read("format = 4\nname = \"X\"\n[[projects]]\n", file).is_err());
+    }
+
+    /// R-WS-11: a project located somewhere else keeps the path the file lists.
+    #[test]
+    fn a_located_project_keeps_the_shared_path() {
+        let file = Path::new("/src/platform/acme.tortuga-workspace.toml");
+        let text = "format = 1\nname = \"Acme\"\n\n[[projects]]\npath = \"../users\"\n";
+        let mut back = read(text, file).expect("read");
+        back.projects[0].path = "/somewhere/else/users".into();
+        assert_eq!(write(&back, file), text);
+    }
+
+    #[test]
+    fn remotes_of_one_repository_match_however_written() {
+        let same = [
+            "git@github.com:acme/users-api.git",
+            "https://github.com/acme/users-api",
+            "https://bob@GitHub.com/acme/users-api.git/",
+            "ssh://git@github.com:22/acme/users-api.git",
+        ];
+        for url in same {
+            assert!(same_repository(same[0], url), "{url}");
+        }
+        assert!(!same_repository(same[0], "git@github.com:acme/orders.git"));
+        assert!(!same_repository(
+            same[0],
+            "git@gitlab.com:acme/users-api.git"
+        ));
+        assert!(same_repository("/srv/git/ü😀.git", "/srv/git/ü😀"));
+        assert_eq!(
+            repository_name("git@github.com:acme/users-api.git"),
+            "users-api"
+        );
+        assert_eq!(repository_name("https://example.test/ü😀/"), "ü😀");
+        assert_eq!(repository_name("plain"), "plain");
+    }
+
+    #[test]
+    fn folders_in_a_repository() {
+        assert_eq!(
+            folder_in(Path::new("/r"), Path::new("/r/a/b")).as_deref(),
+            Some("a/b")
+        );
+        assert_eq!(
+            folder_in(Path::new("/r"), Path::new("/r")).as_deref(),
+            Some("")
+        );
+        assert_eq!(folder_in(Path::new("/r"), Path::new("/other")), None);
+        let project = ProjectRef {
+            path: "/r/a/b".into(),
+            folder: Some("a/b".into()),
+            ..ProjectRef::default()
+        };
+        assert_eq!(project.repository(), Some(PathBuf::from("/r")));
+        assert_eq!(ProjectRef::new("/r").repository(), None);
+    }
+
+    /// R-WS-11: a project listed by remote is found in a clone this machine knows.
+    #[test]
+    fn projects_are_located_in_known_clones() {
+        let dir = std::env::temp_dir().join(format!("tortuga-ws-locate-{}", std::process::id()));
+        let clone = dir.join("code/users-api");
+        std::fs::create_dir_all(clone.join("api")).expect("mkdir");
+        std::fs::write(clone.join("api").join(MANIFEST_FILE), "").expect("manifest");
+        let wanted = ProjectRef {
+            path: "/guess/users-api/api".into(),
+            remote: Some("https://github.com/acme/users-api.git".into()),
+            folder: Some("api".into()),
+            shared_path: None,
+        };
+        let gone = ProjectRef {
+            path: dir.join("old/users-api"),
+            remote: Some("git@github.com:acme/users-api.git".into()),
+            folder: Some(String::new()),
+            shared_path: None,
+        };
+        let known = ProjectRef {
+            path: clone.join("docs"),
+            remote: Some("git@github.com:acme/users-api.git".into()),
+            folder: Some("docs".into()),
+            shared_path: None,
+        };
+        let other = ProjectRef {
+            path: dir.join("orders"),
+            remote: Some("git@github.com:acme/orders.git".into()),
+            folder: Some(String::new()),
+            shared_path: None,
+        };
+        let storage = crate::storage::FsStorage;
+        assert_eq!(
+            locate(&storage, &wanted, &[other.clone(), gone.clone(), known]),
+            Some(clone.join("api")),
+            "a clone without the project is skipped"
+        );
+        assert_eq!(locate(&storage, &wanted, &[other, gone]), None);
+        std::fs::remove_dir_all(dir).expect("clean up");
+    }
+
     #[test]
     fn newer_or_broken_files_are_errors() {
         let file = Path::new("/w/x.tortuga-workspace.toml");
-        assert!(read("format = 4\nname = \"X\"\n", file).is_err());
+        assert!(read("format = 5\nname = \"X\"\n", file).is_err());
         assert!(read("name = ", file).is_err());
         assert_eq!(
             read("format = 1\nname = \"X\"\n", file)
@@ -515,7 +820,7 @@ mod tests {
         );
         let back = read(&text, file).expect("read");
         assert_eq!(back.variables, variables);
-        assert_eq!(back.projects, projects);
+        assert_eq!(back.projects[0].path, projects[0].path);
     }
 
     /// R-SET-1, R-SET-2: settings, auth and headers go into the file (format 2) and
