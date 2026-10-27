@@ -1,8 +1,9 @@
 name: Release
 
 # Builds the installers (R-NF-4) and an archive of the command-line runner (R-CLI-4) on each OS.
-# - Push a tag `vX.Y.Z` (matching the version in Cargo.toml): a draft GitHub release is created
-#   with every installer and CLI archive attached. Check it, then publish it by hand.
+# - Push a tag `vX.Y.Z` (matching the version in Cargo.toml): a GitHub release is published
+#   with every installer and CLI archive attached, and marked latest, so the app's update check
+#   (R-SET-15) sees it at once.
 # - Run it by hand (Actions → Release → Run workflow): the installers are only kept as
 #   artifacts of the run, to try them without releasing.
 # See docs/RELEASING.md.
@@ -124,7 +125,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: draft GitHub release
+    name: GitHub release
     needs: package
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
@@ -140,12 +141,12 @@ jobs:
         run: mkdir packages && find downloads -type f -exec mv -t packages {} + && ls -l packages
       - name: Checksums
         run: cd packages && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
-      - name: Create the draft release
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" packages/* \
             --repo "$GITHUB_REPOSITORY" \
-            --draft \
+            --latest \
             --title "Tortuga ${GITHUB_REF_NAME#v}" \
             --generate-notes

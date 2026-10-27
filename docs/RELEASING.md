@@ -44,9 +44,10 @@ make package      # installers for this OS in target/packages/
    By hand, the same is: set the version, commit and push, then `git tag vX.Y.Z` and `git push origin vX.Y.Z`.
 
 4. The **Release** workflow builds every installer and a `tortuga-cli` archive per OS (R-CLI-4), checks that the tag
-   matches the version, and creates a **draft** GitHub release with them and `SHA256SUMS.txt` attached.
-5. Download the installers and run the checks below on each OS.
-6. Edit the release notes and publish the draft.
+   matches the version, and **publishes** a GitHub release with them and `SHA256SUMS.txt` attached, marked latest.
+   The app's update check (R-SET-15) only sees published releases, so it offers the new version right away.
+5. Download the installers and run the checks below on each OS. Edit the release notes on GitHub if needed. If an
+   installer is broken, mark the release as a draft again (or delete it) so the update check stops offering it.
 
 To try the installers without releasing, run the workflow by hand: **Actions → Release → Run workflow**. The
 installers are then attached to the run as artifacts.
