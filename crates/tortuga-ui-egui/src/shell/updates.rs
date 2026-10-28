@@ -1,8 +1,9 @@
 //! Whether a new version is out (R-SET-15, D63): checked in the background at start-up
-//! unless turned off, and from Settings → About; shown as a quiet link in the top bar.
+//! unless turned off, and from Settings → About; shown as a quiet link in the top bar,
+//! on Linux with the `curl` command that downloads a package (R-SET-18).
 
 use egui::Ui;
-use tortuga_core::update::{self, Found};
+use tortuga_core::update::{self, Download, Found};
 
 use super::{Inbox, TortugaUi};
 use crate::components::UpdateStatus;
@@ -77,16 +78,51 @@ impl TortugaUi {
         }
     }
 
-    /// The top bar's link to a newer version's release page, if one is out.
-    pub(super) fn update_link(&self, ui: &mut Ui) {
-        if let UpdateStatus::Available(release) = &self.updates.status {
-            ui.hyperlink_to(
-                t!("update-available", version = release.version.as_str()),
-                &release.page,
-            )
-            .on_hover_text(t!("update-available-hint"));
+    /// The top bar's link to a newer version's release page, if one is out, and on Linux
+    /// a menu that copies the command to download one of its packages (R-SET-18).
+    pub(super) fn update_link(&mut self, ui: &mut Ui) {
+        let UpdateStatus::Available(release) = &self.updates.status else {
+            return;
+        };
+        ui.hyperlink_to(
+            t!("update-available", version = release.version.as_str()),
+            &release.page,
+        )
+        .on_hover_text(t!("update-available-hint"));
+        let packages = if cfg!(target_os = "linux") {
+            release.linux_packages()
+        } else {
+            Vec::new()
+        };
+        if let Some(command) = download_command_menu(ui, &packages) {
+            ui.ctx().copy_text(command);
+            self.state.inform(t!("update-command-copied"));
         }
     }
+}
+
+/// "Copy download command", listing `packages` by file name; returns the command picked.
+/// Nothing when there are none.
+fn download_command_menu(ui: &mut Ui, packages: &[&Download]) -> Option<String> {
+    if packages.is_empty() {
+        return None;
+    }
+    ui.menu_button(t!("update-copy-command"), |ui| {
+        let mut picked = None;
+        for package in packages {
+            let command = package.curl_command();
+            if ui
+                .button(&package.name)
+                .on_hover_text(command.as_str())
+                .clicked()
+            {
+                picked = Some(command);
+            }
+        }
+        picked
+    })
+    .inner
+    .flatten()
 }
 
 #[cfg(test)]
@@ -191,6 +227,7 @@ mod tests {
             Ok(Found::Newer(Release {
                 version: "9.0.0".into(),
                 page: "https://github.com/sorensenNiels/tortuga/releases/tag/v9.0.0".into(),
+                downloads: vec![deb()],
             })),
         ))
         .expect("inbox open");
@@ -199,5 +236,60 @@ mod tests {
             .build_ui(|egui_ui| ui.ui(egui_ui));
         h.run_steps(2);
         h.get_by_label("Tortuga 9.0.0 is available");
+        // R-SET-18: the download command is offered on Linux only.
+        let menu = h.query_by_label("Copy download command").is_some();
+        assert_eq!(menu, cfg!(target_os = "linux"));
+        if menu {
+            h.get_by_label("Copy download command").click();
+            h.run();
+            h.get_by_label("tortuga_9.0.0_amd64 ü😀.deb").click();
+            h.run_steps(2);
+            h.get_by_label("Download command copied. Paste it in a terminal");
+        }
+    }
+
+    fn deb() -> Download {
+        Download {
+            name: "tortuga_9.0.0_amd64 ü😀.deb".into(),
+            url: "https://github.com/sorensenNiels/tortuga/releases/download/v9.0.0/t.deb".into(),
+        }
+    }
+
+    /// R-SET-18: the menu lists each package by name and gives the command of the one
+    /// picked; without packages there is no menu.
+    #[test]
+    fn the_download_command_of_a_package_can_be_picked() {
+        let deb = deb();
+        let appimage = Download {
+            name: "tortuga_9.0.0_x86_64.AppImage".into(),
+            url: "https://github.com/sorensenNiels/tortuga/releases/download/v9.0.0/t.AppImage"
+                .into(),
+        };
+        let mut picked = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                if let Some(command) = download_command_menu(ui, &[&deb, &appimage]) {
+                    picked = Some(command);
+                }
+            });
+            h.run();
+            h.get_by_label("Copy download command").click();
+            h.run();
+            h.get_by_label("tortuga_9.0.0_amd64 ü😀.deb");
+            h.get_by_label("tortuga_9.0.0_x86_64.AppImage").click();
+            h.run();
+        }
+        assert_eq!(
+            picked.as_deref(),
+            Some(
+                "curl -fLO 'https://github.com/sorensenNiels/tortuga/releases/download/v9.0.0/t.AppImage'"
+            )
+        );
+
+        let mut h = crate::test_host::harness(|ui| {
+            assert_eq!(download_command_menu(ui, &[]), None);
+        });
+        h.run();
+        assert!(h.query_by_label("Copy download command").is_none());
     }
 }

@@ -166,6 +166,8 @@ protected-send-message = “{$env}” er et beskyttet miljø: denne anmodning ka
 
 update-available = Tortuga {$version} er klar
 update-available-hint = Åbner udgivelsessiden med nyhederne og installationsfilerne
+update-copy-command = Kopiér download-kommando
+update-command-copied = Download-kommandoen er kopieret. Indsæt den i en terminal
 
 ## components/shortcuts_dialog
 
@@ -371,6 +373,18 @@ workflow-data-unreadable = Kunne ikke læse datafilen {$file}: {$error}
 sidebar-projects = Projekter
 sidebar-add = + Tilføj
 sidebar-add-hint = Føj et projekt til dette arbejdsområde
+sidebar-filter = Filtrér projekter og anmodninger
+sidebar-filter-hint = Viser de projekter, mapper, anmodninger og workflows, hvis navn passer, og hvor de ligger. Esc rydder.
+sidebar-filter-clear = Ryd filteret
+sidebar-filter-bodies-off = Søg også i anmodningernes body: finder anmodninger, hvis body indeholder alle ordene (JSON, XML, tekst, formularfelter)
+sidebar-filter-bodies-on = Søger også i anmodningernes body. Klik for kun at søge i navne
+sidebar-filter-none = Intet passer til filteret.
+sidebar-collapse-all = Fold alle sammen
+sidebar-collapse-all-hint = Fold alle projekter i dette arbejdsområde sammen
+sidebar-expand-all = Fold alle ud
+sidebar-expand-all-hint = Fold alle projekter i dette arbejdsområde ud; mapper bliver som de er
+menu-collapse-all-hint = Fold alle mapper herunder sammen, så kun det øverste niveau vises
+menu-expand-all-hint = Fold alle mapper herunder ud
 sidebar-empty = Tilføj et projekt for at komme i gang. Projekter er almindelige filer, du kan committe til git ved siden af din kode.
 scratch-request-hint = En anmodning, der ikke gemmes nogen steder, til hurtige enkeltstående kald
 sidebar-mock-port = mock :{$port}
@@ -1006,9 +1020,9 @@ color-orange = Orange
 color-yellow = Gul
 color-grey = Grå
 env-server-name-hint = servernavn
-env-remove-server-url = Fjern denne servers URL
-env-shared-servers-hint = Hver URL går til alle projekters server med det navn.
-env-shared-servers-hint-missing = Hver URL går til alle projekters server med det navn. Servere i projekterne: {$servers}.
+env-shared-servers-hint = Alle miljøer og alle projekter har disse servere (projekterne får dem, når du gemmer); hvert miljø giver sin egen URL.
+env-workspace-server-hint = Fra arbejdsområdet. Skriv en URL for at give projektet sin egen; at vælge den i en anmodning tilføjer den også.
+env-shared-servers-hint-missing = Alle miljøer og alle projekter har disse servere (projekterne får dem, når du gemmer); hvert miljø giver sin egen URL. Servere i projekterne: {$servers}.
 
 ## examples
 
@@ -1086,8 +1100,11 @@ request-params-offer =
        *[other] de {$count} query-parametre
     } ind i den som
 request-keep-in-url = Behold i URL
+request-server = Serveren hvis basis-URL i det aktive miljø kommer før stien
 request-no-server = Ingen server
 request-server-missing = {$id} (mangler)
+request-workspace-servers = Fra arbejdsområdet
+request-workspace-server-hint = Tilføjer en server med dette navn til projektet; dens URL'er kommer fra arbejdsområdets miljøer.
 request-url-hint = Indtast anmodningens URL
 request-timeout = Timeout (ms)
 request-from-level = {$value} (fra {$level})
@@ -1210,6 +1227,13 @@ menu-reload = Genindlæs fra disk
 menu-file-manager = Åbn i filhåndtering
 menu-terminal = Åbn i terminal
 menu-more = Mere
+menu-arrange = Arrangér
+menu-sort = Sortér A–Å
+menu-sort-hint = Mapper først, derefter anmodninger, efter navn, i alle mapper herunder. Gemmes som Flyt op/ned.
+menu-mock = Mock-server
+menu-runtime = Kørselsdata
+menu-import = Importér
+menu-files = Filer
 menu-folder-defaults = Mappens standarder…
 menu-folder-defaults-hint = Headers, godkendelse og variabler, som alle anmodninger i denne mappe arver
 menu-folder-description-hint = Hvad denne mappe indeholder, i Markdown

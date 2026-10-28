@@ -7,7 +7,7 @@ use egui::{Grid, TextEdit, Ui};
 use tortuga_core::EnvironmentColor;
 use tortuga_core::format::names_match;
 
-use super::draft::{Draft, EnvDraft, VarDraft};
+use super::draft::{Draft, EnvDraft, ServerEdit, VarDraft};
 use crate::components::variable_row::{self, SecretHelp, new_row_input};
 use crate::theme;
 
@@ -161,11 +161,17 @@ pub(super) struct Inherited {
     secrets: BTreeSet<String>,
     /// (server name, base URL).
     servers: Vec<(String, String)>,
+    /// Servers any of the workspace's environments gives a URL to (R-WS-12).
+    workspace_servers: Vec<String>,
 }
 
 impl Inherited {
-    pub(super) fn of(env: &EnvDraft) -> Self {
-        let mut out = Self::default();
+    /// What `env` gives projects; `workspace_servers` from [`super::draft::server_names`].
+    pub(super) fn of(env: &EnvDraft, workspace_servers: Vec<String>) -> Self {
+        let mut out = Self {
+            workspace_servers,
+            ..Self::default()
+        };
         for v in env.variables.iter().filter(|v| !v.name.trim().is_empty()) {
             if v.secret {
                 out.secrets.insert(v.name.trim().to_owned());
@@ -236,13 +242,16 @@ pub(super) fn project_values(
                         ui,
                         values,
                         TextEdit::singleline(url)
-                            .id_salt(("url", row, col))
+                            // By name: typing into a workspace's server keeps focus
+                            // when it becomes the project's (R-WS-12).
+                            .id_salt(("url", s.name.trim().to_lowercase(), col))
                             .font(egui::TextStyle::Monospace)
                             .hint_text(hint),
                     );
                 }
                 ui.end_row();
             }
+            workspace_server_rows(ui, d, col, inherited, [names, values]);
             add_server_row(ui, d, names, new_server);
         });
     if let Some(row) = remove_server {
@@ -353,6 +362,49 @@ fn name_label(ui: &mut Ui, width: f32, name: &str, secret: bool, remove_help: &s
     .inner
 }
 
+/// The workspace's servers the project lacks (R-WS-12), greyed with the URL it would use;
+/// typing a URL adds the server to the project.
+fn workspace_server_rows(
+    ui: &mut Ui,
+    d: &mut Draft,
+    col: usize,
+    inherited: &Inherited,
+    [names, values]: [f32; 2],
+) {
+    let missing: Vec<&String> = inherited
+        .workspace_servers
+        .iter()
+        .filter(|n| !d.servers.iter().any(|s| names_match(&s.name, n)))
+        .collect();
+    for name in missing {
+        ui.horizontal(|ui| {
+            ui.set_width(names);
+            ui.add(
+                egui::Label::new(egui::RichText::new(name).monospace().weak())
+                    .truncate()
+                    .selectable(false),
+            )
+            .on_hover_text(t!("env-workspace-server-hint"));
+        });
+        let mut url = String::new();
+        theme::sized_edit(
+            ui,
+            values,
+            TextEdit::singleline(&mut url)
+                .id_salt(("url", name.trim().to_lowercase(), col))
+                .font(egui::TextStyle::Monospace)
+                .hint_text(inherited.server(name).unwrap_or("https://…")),
+        );
+        if !url.is_empty() {
+            d.add_server(name.trim().to_owned());
+            if let Some(slot) = d.servers.last_mut().and_then(|s| s.urls.get_mut(col)) {
+                *slot = url;
+            }
+        }
+        ui.end_row();
+    }
+}
+
 fn add_server_row(ui: &mut Ui, d: &mut Draft, width: f32, new_server: &mut String) {
     if let Some(name) = new_row_input(ui, "new-server", width, new_server, &t!("add-server")) {
         d.add_server(name);
@@ -378,33 +430,38 @@ const SHARED_SECRET_HELP: SecretHelp = SecretHelp {
     shared: || t!("secret-help-workspace-shared"),
 };
 
-/// The workspace's base URLs by server name: every project's server of that name uses it.
+/// The workspace's servers, the same in every environment, with this environment's base
+/// URLs (R-WS-12). Returns a change to the names, for every environment.
 pub(super) fn shared_servers(
     ui: &mut Ui,
     d: &mut EnvDraft,
     known: &[String],
     new_server: &mut String,
-) {
-    let mut remove = None;
+) -> Option<ServerEdit> {
+    let mut edit = None;
     Grid::new("ws-env-servers").num_columns(2).show(ui, |ui| {
         theme::section_label(ui, &t!("servers"));
         theme::section_label(ui, &t!("base-url"));
         ui.end_row();
         for (row, (name, url)) in d.servers.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                theme::sized_edit(
+                let renamed = theme::sized_edit(
                     ui,
                     NAME_WIDTH - 30.0,
                     TextEdit::singleline(name)
                         .id_salt(("ws-server", row))
                         .hint_text(t!("env-server-name-hint")),
-                );
+                )
+                .changed();
+                if renamed {
+                    edit = Some(ServerEdit::Rename(row, name.clone()));
+                }
                 if ui
                     .add(theme::icon_button(ui, "🗙"))
-                    .on_hover_text(t!("env-remove-server-url"))
+                    .on_hover_text(t!("env-remove-server-everywhere"))
                     .clicked()
                 {
-                    remove = Some(row);
+                    edit = Some(ServerEdit::Remove(row));
                 }
             });
             theme::sized_edit(
@@ -424,13 +481,10 @@ pub(super) fn shared_servers(
             new_server,
             &t!("add-server"),
         ) {
-            d.servers.push((name, String::new()));
+            edit = Some(ServerEdit::Add(name));
         }
         ui.end_row();
     });
-    if let Some(row) = remove {
-        d.servers.remove(row);
-    }
     let missing: Vec<&str> = known
         .iter()
         .filter(|k| !d.servers.iter().any(|(n, _)| names_match(n, k)))
@@ -445,6 +499,7 @@ pub(super) fn shared_servers(
         )
     };
     theme::hint(ui, hint);
+    edit
 }
 
 /// The workspace's variables for one environment (🔒 values stay on this machine).

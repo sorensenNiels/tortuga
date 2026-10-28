@@ -1,7 +1,7 @@
 //! The new-version check (R-SET-15), against a local mock of GitHub's API (never the internet).
 
 use tortuga_core::Client;
-use tortuga_core::update::{Found, Release, check};
+use tortuga_core::update::{Download, Found, Release, check};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -25,6 +25,11 @@ fn release(tag: &str) -> ResponseTemplate {
         "html_url": format!("https://github.com/sorensenNiels/tortuga/releases/tag/{tag}"),
         "name": "Tortuga ü😀",
         "draft": false,
+        "assets": [{
+            "name": "tortuga_0.7.0_amd64.deb",
+            "browser_download_url": format!("https://github.com/sorensenNiels/tortuga/releases/download/{tag}/tortuga_0.7.0_amd64.deb"),
+            "size": 1,
+        }],
     }))
 }
 
@@ -40,6 +45,11 @@ async fn a_newer_release_is_found() {
         Found::Newer(Release {
             version: "0.7.0".into(),
             page: "https://github.com/sorensenNiels/tortuga/releases/tag/v0.7.0".into(),
+            // R-SET-18
+            downloads: vec![Download {
+                name: "tortuga_0.7.0_amd64.deb".into(),
+                url: "https://github.com/sorensenNiels/tortuga/releases/download/v0.7.0/tortuga_0.7.0_amd64.deb".into(),
+            }],
         })
     );
 }

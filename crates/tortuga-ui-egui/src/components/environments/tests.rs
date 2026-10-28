@@ -251,7 +251,7 @@ fn empty_project_values_show_what_they_inherit() {
         ],
         ..EnvDraft::default()
     };
-    let inherited = Inherited::of(&shared);
+    let inherited = Inherited::of(&shared, Vec::new());
     assert_eq!(inherited.server("Users API"), Some("https://shared.dev"));
     assert_eq!(inherited.server("Orders"), None);
     let var = |name: &str| draft::VarRow {
@@ -348,5 +348,100 @@ fn read_only_projects_are_not_written() {
     dialog.projects[0].read_only = true;
     let saved = dialog.to_saved(&state).expect("valid");
     assert_eq!(saved.projects, []);
+    std::fs::remove_dir_all(dir).expect("clean up");
+}
+
+/// R-WS-12: a server only the workspace has shows among a project's servers; typing a
+/// URL for it gives the project a server of that name, saved with the URL.
+#[test]
+fn a_workspace_server_shows_in_each_project_and_can_be_given_a_url() {
+    let dir = temp("env-dialog-ws-server");
+    let (_, state) = open(&dir, &[("C", &["Dev"])]);
+    let mut dialog = EnvironmentsDialog::for_workspace(&state);
+    dialog.list[0]
+        .servers
+        .push(("Payments ü😀".into(), "https://pay.dev".into()));
+    let result = std::cell::RefCell::new(None);
+    {
+        let mut h = harness(&mut dialog, &state, &result);
+        h.run();
+        let row = h.get_by_label("Payments ü😀").rect();
+        let url_field = |h: &egui_kittest::Harness<'_>, act: &dyn Fn(&egui_kittest::Node<'_>)| {
+            let field = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .find(|n| {
+                    n.rect().left() > row.right() && n.rect().y_range().contains(row.center().y)
+                })
+                .expect("its URL field");
+            act(&field);
+        };
+        url_field(&h, &|n| n.focus());
+        h.run();
+        url_field(&h, &|n| n.type_text("h"));
+        h.run();
+        // Now the project's own server: the field keeps focus for the rest.
+        url_field(&h, &|n| n.type_text("ttp://pay.c"));
+        h.run();
+        assert!(on_screen(&h, "http://pay.c"), "all of it, focus kept");
+        h.get_by_label("Save").click();
+        h.run();
+    }
+    let saved = result.borrow_mut().take().expect("saved");
+    let c = &saved.projects[0].1;
+    let server = c
+        .manifest
+        .servers
+        .iter()
+        .find(|s| s.name == "Payments ü😀")
+        .expect("added to the project");
+    assert_eq!(c.environments[0].servers[&server.id], "http://pay.c");
+    std::fs::remove_dir_all(dir).expect("clean up");
+}
+
+/// R-WS-12: a server added in one environment is listed in every other, and saving
+/// gives it to every project, also without a URL anywhere yet.
+#[test]
+fn a_server_added_in_one_environment_is_in_all_and_in_every_project() {
+    let dir = temp("env-dialog-shared-servers");
+    let (_, state) = open(&dir, &[("A", &["Dev", "Staging"]), ("B ü😀", &[])]);
+    let mut dialog = EnvironmentsDialog::for_workspace(&state);
+    {
+        let result = std::cell::RefCell::new(None);
+        let mut h = harness(&mut dialog, &state, &result);
+        h.run();
+        // After the environment's name: no shared servers yet.
+        h.get_all_by_role(egui::accesskit::Role::TextInput)
+            .nth(1)
+            .expect("the add-server field")
+            .focus();
+        h.run();
+        h.get_all_by_role(egui::accesskit::Role::TextInput)
+            .nth(1)
+            .expect("the add-server field")
+            .type_text("Payments ü😀");
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+    }
+    assert_eq!(
+        dialog.list[1].servers,
+        [("Payments ü😀".to_owned(), String::new())],
+        "Staging lists it too"
+    );
+    dialog.list[1].servers[0].1 = "https://pay.stg".into();
+
+    let saved = dialog.to_saved(&state).expect("valid");
+    assert!(saved.list[0].servers.is_empty(), "no URL in Dev");
+    assert_eq!(saved.list[1].servers["Payments ü😀"], "https://pay.stg");
+    for (_, project) in &saved.projects {
+        assert!(
+            project
+                .manifest
+                .servers
+                .iter()
+                .any(|s| s.is_named("payments ü😀")),
+            "every project has it"
+        );
+    }
     std::fs::remove_dir_all(dir).expect("clean up");
 }

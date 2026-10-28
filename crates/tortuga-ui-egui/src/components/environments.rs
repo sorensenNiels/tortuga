@@ -11,10 +11,11 @@ mod views;
 use std::path::PathBuf;
 
 use egui::{CentralPanel, CollapsingHeader, Context, Frame, Panel, ScrollArea, TextEdit, Ui};
+use tortuga_core::format::names_match;
 use tortuga_core::workspace::WorkspaceEnvironment;
 
 pub use draft::{Draft, EnvDraft, SavedConfig};
-use draft::{move_item, to_environments};
+use draft::{align_servers, move_item, to_environments};
 use views::{EnvDrag, Inherited};
 
 use super::{DialogResult, resizable_dialog};
@@ -88,11 +89,12 @@ impl EnvironmentsDialog {
     /// Every project's values.
     pub fn for_workspace(state: &AppState) -> Self {
         let ws = state.workspace();
-        let list: Vec<EnvDraft> = ws
+        let mut list: Vec<EnvDraft> = ws
             .environments
             .iter()
             .map(|e| EnvDraft::new(e, state.workspace_env_secrets.get(&e.id)))
             .collect();
+        align_servers(&mut list);
         let names: Vec<String> = list.iter().map(|e| e.name.clone()).collect();
         // Folded when there are several, so each is one line (R-WS-10).
         let expanded = state.collections.len() == 1;
@@ -150,7 +152,7 @@ impl EnvironmentsDialog {
             "env-title",
             name = focused.map_or(state.workspace().name.as_str(), |c| c.name())
         );
-        let servers = server_names(state);
+        let servers = project_server_names(state);
         resizable_dialog(
             ctx,
             "environments",
@@ -282,6 +284,7 @@ impl EnvironmentsDialog {
             name,
             ..EnvDraft::default()
         });
+        align_servers(&mut self.list);
         self.shown = Shown::Environment(self.list.len() - 1);
     }
 
@@ -318,6 +321,7 @@ impl EnvironmentsDialog {
     /// Environment `i`: its name, colour and protection, what all projects share, and
     /// each shown project's own values.
     fn environment_view(&mut self, ui: &mut Ui, i: usize, servers: &[String]) {
+        let workspace_servers = draft::server_names(&self.list);
         let Some(env) = self.list.get_mut(i) else {
             theme::hint(
                 ui,
@@ -349,15 +353,18 @@ impl EnvironmentsDialog {
         });
         ui.checkbox(&mut env.protected, t!("env-protected"))
             .on_hover_text(t!("env-protected-hint"));
-        let inherited = Inherited::of(env);
+        let inherited = Inherited::of(env, workspace_servers);
         ui.add_space(12.0);
         if self.focus.is_none() {
             ui.label(theme::semibold(t!("env-all-projects")));
             theme::hint(ui, t!("env-all-projects-hint"));
             ui.add_space(4.0);
-            views::shared_servers(ui, env, servers, &mut self.new_server);
+            let edit = views::shared_servers(ui, env, servers, &mut self.new_server);
             ui.add_space(10.0);
             views::shared_variables(ui, env, &mut self.new_variable);
+            if let Some(edit) = edit {
+                edit.apply(&mut self.list);
+            }
         }
         for p in self.shown_projects() {
             ui.add_space(16.0);
@@ -399,12 +406,19 @@ impl EnvironmentsDialog {
     /// What Save writes, or why it can't.
     fn to_saved(&self, state: &AppState) -> Result<SavedEnvironments, String> {
         let (list, secrets) = to_environments(&self.list)?;
+        let shared_servers = draft::server_names(&self.list);
         let mut projects = Vec::new();
         for p in self.projects.iter().filter(|p| !p.read_only) {
             let Some(c) = state.collection(&p.root) else {
                 continue;
             };
             let mut draft = p.draft.clone();
+            // Every project has the workspace's servers (R-WS-12).
+            for name in &shared_servers {
+                if !draft.servers.iter().any(|s| names_match(&s.name, name)) {
+                    draft.add_server(name.clone());
+                }
+            }
             // Each project's file says what the workspace says about it, so a project
             // run on its own (tortuga-cli) knows its name and protection too.
             for (col, env) in draft.environments.iter_mut().zip(&list) {
@@ -454,7 +468,7 @@ fn project_section(ui: &mut Ui, project: &mut ProjectDraft, col: usize, inherite
 }
 
 /// The servers of the open projects, by name, each once whatever its case.
-fn server_names(state: &AppState) -> Vec<String> {
+fn project_server_names(state: &AppState) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for s in state.collections.iter().flat_map(|c| &c.manifest.servers) {
         if !names.iter().any(|n| s.is_named(n)) {

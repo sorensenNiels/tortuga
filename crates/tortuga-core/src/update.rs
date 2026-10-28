@@ -21,6 +21,36 @@ pub struct Release {
     pub version: String,
     /// Its page on GitHub, with the release notes and installers.
     pub page: String,
+    /// Its files (installers, archives) that can be downloaded over `https`.
+    pub downloads: Vec<Download>,
+}
+
+/// A file of a release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Download {
+    /// Its file name, such as `tortuga_0.7.0_amd64.deb`.
+    pub name: String,
+    pub url: String,
+}
+
+impl Download {
+    /// The `curl` command that downloads it into the current folder, following GitHub's
+    /// redirect and failing on an error page (R-SET-18).
+    pub fn curl_command(&self) -> String {
+        format!("curl -fLO '{}'", self.url)
+    }
+}
+
+impl Release {
+    /// Its Linux packages, `.deb` and `.AppImage`, in that order (R-SET-18).
+    pub fn linux_packages(&self) -> Vec<&Download> {
+        let ending = |suffix: &'static str| {
+            self.downloads
+                .iter()
+                .filter(move |d| d.name.to_ascii_lowercase().ends_with(suffix))
+        };
+        ending(".deb").chain(ending(".appimage")).collect()
+    }
 }
 
 /// What a check found.
@@ -36,6 +66,29 @@ pub enum Found {
 struct GitHubRelease {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    assets: Vec<GitHubAsset>,
+}
+
+#[derive(Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+impl GitHubAsset {
+    /// As a download, when its URL is `https` and safe to put in single quotes in a shell
+    /// command: the answer comes from the network.
+    fn download(self) -> Option<Download> {
+        let safe = self.browser_download_url.starts_with("https://")
+            && !self
+                .browser_download_url
+                .contains(|c: char| c == '\'' || c.is_whitespace() || c.is_control());
+        safe.then_some(Download {
+            name: self.name,
+            url: self.browser_download_url,
+        })
+    }
 }
 
 /// The request for the latest release at `url`. It carries nothing about the user:
@@ -72,6 +125,11 @@ pub async fn check(client: &Client, url: &str, current: &str) -> Result<Found> {
                 Found::Newer(Release {
                     version,
                     page: release.html_url,
+                    downloads: release
+                        .assets
+                        .into_iter()
+                        .filter_map(GitHubAsset::download)
+                        .collect(),
                 })
             } else {
                 Found::UpToDate
@@ -133,6 +191,68 @@ mod tests {
             assert!(!is_newer(odd, "0.6.0"), "{odd:?}");
         }
         assert!(!is_newer("9.9.9", "not a version"));
+    }
+
+    fn download(name: &str) -> Download {
+        Download {
+            name: name.into(),
+            url: format!("https://github.com/o/r/releases/download/v1.0.0/{name}"),
+        }
+    }
+
+    /// R-SET-18: the Linux packages are the `.deb` and the `.AppImage`, whatever the case
+    /// of their ending, and nothing else.
+    #[test]
+    fn linux_packages_are_the_deb_and_the_appimage() {
+        let release = Release {
+            version: "1.0.0".into(),
+            page: String::new(),
+            downloads: vec![
+                download("tortuga_1.0.0_x86_64.APPIMAGE"),
+                download("tortuga_1.0.0_x64_en-US.msi"),
+                download("tortuga-cli-1.0.0-linux.tar.gz"),
+                download("tortuga_1.0.0_amd64.deb"),
+                download("ü😀"),
+            ],
+        };
+        let names: Vec<&str> = release
+            .linux_packages()
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["tortuga_1.0.0_amd64.deb", "tortuga_1.0.0_x86_64.APPIMAGE"]
+        );
+    }
+
+    /// R-SET-18: the command downloads the file into the current folder.
+    #[test]
+    fn the_curl_command_downloads_the_file() {
+        assert_eq!(
+            download("t.deb").curl_command(),
+            "curl -fLO 'https://github.com/o/r/releases/download/v1.0.0/t.deb'"
+        );
+    }
+
+    /// R-SET-18: a download whose URL is not `https`, or could break out of the command's
+    /// quotes, is left out.
+    #[test]
+    fn unsafe_download_urls_are_left_out() {
+        let asset = |url: &str| GitHubAsset {
+            name: "t.deb".into(),
+            browser_download_url: url.into(),
+        };
+        assert!(asset("https://github.com/t.deb").download().is_some());
+        for bad in [
+            "http://github.com/t.deb",
+            "https://x.test/'; rm -rf ~; '",
+            "https://x.test/a b.deb",
+            "https://x.test/a\nb.deb",
+            "",
+        ] {
+            assert_eq!(asset(bad).download(), None, "{bad:?}");
+        }
     }
 
     /// R-SET-15: the request names the app and nothing else about the user.

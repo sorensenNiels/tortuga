@@ -5,6 +5,7 @@
 //! `environments/`. Every mutating method writes to storage; callers then
 //! re-open the collection to see the result (simple and always in sync with disk).
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -595,6 +596,49 @@ impl Collection {
         Ok(())
     }
 
+    /// Sorts the items in `folder` (`""`: the project) and in every folder below it: folders
+    /// first, then requests, each by name in natural order (R-COL-44). The order is saved like
+    /// "Move up/down"; a level already in that order with distinct positions is left untouched.
+    pub fn sort(&self, storage: &dyn Storage, folder: &Path) -> Result<()> {
+        self.ensure_writable()?;
+        if !folder.as_os_str().is_empty() && !matches!(self.find(folder), Some(Item::Folder(_))) {
+            return Err(Error::NotFound(folder.to_owned()));
+        }
+        self.sort_items(storage, self.children(folder))
+    }
+
+    fn sort_items(&self, storage: &dyn Storage, items: &[Item]) -> Result<()> {
+        let current: Vec<&Item> = items
+            .iter()
+            .filter(|i| !matches!(i, Item::Broken(_)))
+            .collect();
+        let mut sorted = current.clone();
+        sorted.sort_by(|a, b| {
+            let folder_first = |i: &Item| !matches!(i, Item::Folder(_));
+            folder_first(a)
+                .cmp(&folder_first(b))
+                .then_with(|| natural_cmp(&a.name(), &b.name()))
+                .then_with(|| a.path().cmp(b.path()))
+        });
+        let seqs: Vec<Option<i64>> = current.iter().map(|i| i.seq()).collect();
+        let distinct = seqs.iter().all(Option::is_some) && seqs.windows(2).all(|w| w[0] < w[1]);
+        let same_order = current
+            .iter()
+            .zip(&sorted)
+            .all(|(a, b)| a.path() == b.path());
+        if !(distinct && same_order) {
+            for (n, item) in (1..).zip(&sorted) {
+                self.write_seq(storage, item.path(), item, n * SEQ_STEP)?;
+            }
+        }
+        for item in items {
+            if let Item::Folder(f) = item {
+                self.sort_items(storage, &f.items)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Writes the manifest and environment files (R-VAR-2, R-SRV-1/2). Files
     /// whose content did not change are left untouched; environments no
     /// longer in `environments` are deleted.
@@ -668,6 +712,22 @@ impl Collection {
     /// A stable id for a new server called `name`, unique among `existing`.
     pub fn new_server_id(name: &str, existing: &[format::Server]) -> String {
         slug::unique(&slug::slugify(name), |c| existing.iter().any(|s| s.id == c))
+    }
+
+    /// The id of the project's server called `name`, added to `tortuga.toml` if it has
+    /// none of that name: a workspace's server picked in the project (R-WS-12).
+    pub fn add_server(&self, storage: &dyn Storage, name: &str) -> Result<String> {
+        if let Some(s) = self.manifest.servers.iter().find(|s| s.is_named(name)) {
+            return Ok(s.id.clone());
+        }
+        let mut manifest = self.manifest.clone();
+        let id = Self::new_server_id(name, &manifest.servers);
+        manifest.servers.push(format::Server {
+            id: id.clone(),
+            name: name.trim().to_owned(),
+        });
+        self.save_config(storage, &manifest, &self.environments)?;
+        Ok(id)
     }
 
     pub fn environment(&self, id: &str) -> Option<&Environment> {
@@ -798,6 +858,42 @@ fn copy_dir(storage: &dyn Storage, from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Compares names ignoring case, with runs of digits by their value, so "v2" comes before "v10".
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let (x, y) = (digits(&mut a), digits(&mut b));
+                let order = x.len().cmp(&y.len()).then_with(|| x.cmp(&y));
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let order = x.to_lowercase().cmp(y.to_lowercase());
+                if order != Ordering::Equal {
+                    return order;
+                }
+                a.next();
+                b.next();
+            }
+        }
+    }
+}
+
+/// The run of ASCII digits at the start of `chars`, without leading zeros.
+fn digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut run = String::new();
+    while let Some(c) = chars.next_if(char::is_ascii_digit) {
+        run.push(c);
+    }
+    run.trim_start_matches('0').to_owned()
+}
+
 fn parent_of(path: &Path) -> PathBuf {
     path.parent().map(Path::to_owned).unwrap_or_default()
 }
@@ -854,4 +950,26 @@ pub fn server_names(manifest: &Manifest) -> BTreeMap<String, String> {
         .iter()
         .map(|s| (s.id.clone(), s.name.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R-COL-44: names sort ignoring case, with numbers by value.
+    #[test]
+    fn natural_order_ignores_case_and_reads_numbers() {
+        let mut names = vec![
+            "v10", "V2", "b", "A", "", "v2b", "v02", "ü😀", "Ü", "z", "item 9", "item 10",
+        ];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            names,
+            [
+                "", "A", "b", "item 9", "item 10", "V2", "v02", "v2b", "v10", "z", "Ü", "ü😀"
+            ]
+        );
+        let long = "9".repeat(100);
+        assert_eq!(natural_cmp(&long, "10"), Ordering::Greater, "no overflow");
+    }
 }

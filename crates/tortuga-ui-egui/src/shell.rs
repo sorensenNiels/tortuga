@@ -37,7 +37,7 @@ use egui::{CentralPanel, Frame, Margin, Panel, RichText, Ui};
 use futures_util::future::AbortHandle;
 use tortuga_core::script::Breakpoints;
 use tortuga_core::vars::Origin;
-use tortuga_core::{Request, vars};
+use tortuga_core::{Request, vars, workspace};
 
 use crate::components::script_keys;
 use crate::components::{
@@ -682,6 +682,7 @@ impl TortugaUi {
         let view = self.editor_view(arrangement);
         let cx = EditorContext {
             servers: &servers,
+            workspace_servers: &self.workspace_servers(root.as_deref()),
             server_base: server_base.as_deref(),
             vars: &var_help,
             sending,
@@ -760,6 +761,17 @@ impl TortugaUi {
                     .iter()
                     .map(|s| (s.id.clone(), s.name.clone()))
                     .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The workspace's servers the project at `root` lacks, to pick from (R-WS-12). None
+    /// for the scratch request or a read-only project, which can't get them.
+    fn workspace_servers(&self, root: Option<&Path>) -> Vec<String> {
+        root.and_then(|r| self.state.collection(r))
+            .filter(|c| !c.read_only)
+            .map(|c| {
+                workspace::servers_missing_from(&self.state.workspace().environments, &c.manifest)
             })
             .unwrap_or_default()
     }
@@ -1516,6 +1528,45 @@ mod tests {
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
+    /// R-WS-12: a server only the workspace has is offered to the project's requests;
+    /// picking it adds it to the project and the request uses its URL from the workspace.
+    #[test]
+    fn a_workspace_server_picked_for_a_request_is_added_to_the_project() {
+        use crate::components::EditorAction;
+
+        let (mut ui, root, key) = setup("ws-server");
+        ui.state.workspace_mut().environments =
+            vec![tortuga_core::workspace::WorkspaceEnvironment {
+                id: "staging".into(),
+                name: "Staging".into(),
+                servers: [("Payments ü😀".to_owned(), "https://pay.stg".to_owned())].into(),
+                ..Default::default()
+            }];
+        assert_eq!(ui.workspace_servers(Some(&root)), ["Payments ü😀"]);
+        assert!(
+            ui.workspace_servers(None).is_empty(),
+            "not for the scratch request"
+        );
+
+        ui.apply_editor_action(
+            &egui::Context::default(),
+            EditorAction::UseWorkspaceServer("Payments ü😀".into()),
+            &Some(key.clone()),
+        );
+        let c = ui.state.collection(&root).expect("open");
+        let server = c.manifest.servers.first().expect("added");
+        assert_eq!(server.name, "Payments ü😀");
+        assert_eq!(ui.current.server.as_ref(), Some(&server.id));
+        assert!(
+            ui.is_dirty(&key, &ui.current),
+            "the request is not saved for the user"
+        );
+        assert!(ui.workspace_servers(Some(&root)).is_empty(), "listed once");
+        let env = ui.state.effective_environment(&root).expect("env");
+        assert_eq!(env.servers[&server.id], "https://pay.stg");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
     /// R-TEST-13: tests from the response go after the script with one blank line.
     #[test]
     fn tests_from_the_response_are_appended() {
@@ -1625,6 +1676,93 @@ mod tests {
         harness.run();
         harness.get_by_label_contains("My workspace");
         harness.get_by_label_contains("tortuga-not-cloned-yet");
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-46: typing in the sidebar's filter box shows only the matching requests, also
+    /// those out of view before, and clearing it brings the rest back.
+    #[test]
+    fn the_sidebar_filter_finds_requests_by_name() {
+        use egui_kittest::kittest::Queryable;
+
+        let root = std::env::temp_dir().join(format!("tortuga-filter-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Collection::create(&FsStorage, &root, "Big").expect("create");
+        for i in 0..300 {
+            let mut request = Request::new(tortuga_core::HttpMethod::Get, "https://a.test/");
+            request.name = format!("Request {i:03}");
+            std::fs::write(
+                root.join(format!("request-{i:03}.toml")),
+                tortuga_core::format::write_request(&request, Some(i)),
+            )
+            .expect("write");
+        }
+        let mut ui = TortugaUi::new(Box::new(TestHost {
+            open: vec![root.clone()],
+            ..TestHost::default()
+        }));
+        let mut harness = crate::test_host::harness(move |egui_ui| ui.ui(egui_ui));
+        harness.run();
+        // The sidebar's filter box is the leftmost text field.
+        let filter = harness
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+            .expect("filter box");
+        filter.focus();
+        filter.type_text("request 299");
+        harness.run();
+        harness.get_by_label_contains("Request 299");
+        assert!(harness.query_by_label_contains("Request 000").is_none());
+        harness.key_press(Key::Escape);
+        harness.run();
+        harness.get_by_label_contains("Request 000");
+        assert!(harness.query_by_label_contains("Request 299").is_none());
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-47: with "{}" on, the filter finds a request by its saved body, and a body
+    /// changed on disk is searched again, not the one from before.
+    #[test]
+    fn the_sidebar_filter_searches_request_bodies() {
+        use egui_kittest::kittest::Queryable;
+
+        let (ui, root, key) = setup("filter-bodies");
+        let write_body = |body: &str| {
+            let mut request = Request::new(tortuga_core::HttpMethod::Post, "https://a.test/");
+            request.name = "Get user".into();
+            request.body = tortuga_core::RequestBody::Json(body.into());
+            std::fs::write(
+                root.join(&key.path),
+                tortuga_core::format::write_request(&request, Some(1)),
+            )
+            .expect("write");
+        };
+        write_body(r#"{"customerId": "Ärla-42"}"#);
+        let ui = std::rc::Rc::new(std::cell::RefCell::new(ui));
+        ui.borrow_mut().state.reload(&root);
+        let shared = std::rc::Rc::clone(&ui);
+        let mut harness = crate::test_host::harness(move |egui_ui| shared.borrow_mut().ui(egui_ui));
+        harness.run();
+        let filter = harness
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+            .expect("filter box");
+        filter.focus();
+        filter.type_text("customerid ärla");
+        harness.run();
+        harness.get_by_label_contains("Nothing matches");
+        harness.get_by_label("{}").click();
+        harness.run();
+        assert_eq!(
+            harness.query_all_by_label_contains("Get user").count(),
+            2,
+            "tab and row"
+        );
+
+        write_body(r#"{"orderId": 7}"#);
+        ui.borrow_mut().state.reload(&root);
+        harness.run();
+        harness.get_by_label_contains("Nothing matches");
         std::fs::remove_dir_all(root).expect("clean up");
     }
 

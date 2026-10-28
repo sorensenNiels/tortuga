@@ -420,6 +420,67 @@ impl EnvDraft {
     }
 }
 
+/// A change to the workspace's server names, made in one environment's view and applied
+/// to every environment, which all list the same servers (R-WS-12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerEdit {
+    Add(String),
+    Rename(usize, String),
+    Remove(usize),
+}
+
+impl ServerEdit {
+    pub fn apply(self, list: &mut [EnvDraft]) {
+        for env in list {
+            match &self {
+                Self::Add(name) => env.servers.push((name.clone(), String::new())),
+                Self::Rename(row, name) => {
+                    if let Some((old, _)) = env.servers.get_mut(*row) {
+                        old.clone_from(name);
+                    }
+                }
+                Self::Remove(row) => {
+                    if *row < env.servers.len() {
+                        env.servers.remove(*row);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The workspace's server names in `list`, each once whatever its case (R-WS-12).
+pub fn server_names(list: &[EnvDraft]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (name, _) in list.iter().flat_map(|e| &e.servers) {
+        let name = name.trim();
+        if !name.is_empty() && !names.iter().any(|n| names_match(n, name)) {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+/// Gives every environment in `list` the same servers in the same order, with its own
+/// URL for each, or an empty one (R-WS-12).
+pub fn align_servers(list: &mut [EnvDraft]) {
+    let names = server_names(list);
+    for env in list {
+        env.servers = names
+            .iter()
+            .map(|name| {
+                let url = env
+                    .servers
+                    .iter()
+                    .find(|(n, _)| names_match(n, name))
+                    .map(|(_, url)| url.clone())
+                    .unwrap_or_default();
+                (name.clone(), url)
+            })
+            .collect();
+    }
+}
+
 /// The environments to save, and this machine's secret values for them; or why they
 /// can't be saved.
 pub fn to_environments(
@@ -711,5 +772,64 @@ mod tests {
             .expect("valid");
         let names: Vec<&str> = saved.environments.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["Development"]);
+    }
+
+    fn env(servers: &[(&str, &str)]) -> EnvDraft {
+        EnvDraft {
+            servers: servers
+                .iter()
+                .map(|(n, u)| ((*n).to_owned(), (*u).to_owned()))
+                .collect(),
+            ..EnvDraft::default()
+        }
+    }
+
+    /// R-WS-12: every environment lists the same servers, once whatever their case,
+    /// each keeping its own URL.
+    #[test]
+    fn every_environment_gets_the_same_servers() {
+        let mut list = vec![
+            env(&[("Users", "https://u.dev"), ("  ", "https://ignored")]),
+            env(&[
+                ("payments ü😀", "https://p.stg"),
+                ("USERS", "https://u.stg"),
+            ]),
+            env(&[]),
+        ];
+        align_servers(&mut list);
+        let expected = |users: &str, payments: &str| {
+            vec![
+                ("Users".to_owned(), users.to_owned()),
+                ("payments ü😀".to_owned(), payments.to_owned()),
+            ]
+        };
+        assert_eq!(list[0].servers, expected("https://u.dev", ""));
+        assert_eq!(list[1].servers, expected("https://u.stg", "https://p.stg"));
+        assert_eq!(list[2].servers, expected("", ""));
+    }
+
+    /// R-WS-12: a server added, renamed or removed in one environment is so in all.
+    #[test]
+    fn server_edits_apply_to_every_environment() {
+        let mut list = vec![env(&[("Users", "https://u.dev")]), env(&[("Users", "")])];
+        ServerEdit::Add("Payments ü😀".into()).apply(&mut list);
+        ServerEdit::Rename(0, "People".into()).apply(&mut list);
+        assert_eq!(
+            list[1].servers,
+            [
+                ("People".to_owned(), String::new()),
+                ("Payments ü😀".to_owned(), String::new())
+            ]
+        );
+        assert_eq!(
+            list[0].servers[0],
+            ("People".into(), "https://u.dev".into())
+        );
+        ServerEdit::Remove(0).apply(&mut list);
+        ServerEdit::Remove(5).apply(&mut list);
+        for e in &list {
+            assert_eq!(e.servers, [("Payments ü😀".to_owned(), String::new())]);
+        }
+        assert_eq!(server_names(&list), ["Payments ü😀"]);
     }
 }

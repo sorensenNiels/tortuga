@@ -56,6 +56,9 @@ impl TortugaUi {
                 self.state
                     .run(&key.root, |c, s| c.move_by(s, &key.path, direction));
             }
+            SidebarAction::Sort(key) => {
+                self.state.run(&key.root, |c, s| c.sort(s, &key.path));
+            }
             SidebarAction::MoveTo(key) => self.modal = Some(Modal::MoveTo(MoveDialog::new(key))),
             SidebarAction::CopyTo(key) => {
                 self.modal = Some(Modal::CopyTo(CopyToProjectDialog::new(&self.state, key)));

@@ -160,6 +160,8 @@ protected-send-message = “{$env}” is a protected environment: this request m
 
 update-available = Tortuga {$version} is available
 update-available-hint = Opens its release page, with what's new and the installers
+update-copy-command = Copy download command
+update-command-copied = Download command copied. Paste it in a terminal
 
 ## components/shortcuts_dialog
 
@@ -365,6 +367,18 @@ workflow-data-unreadable = Could not read the data file {$file}: {$error}
 sidebar-projects = Projects
 sidebar-add = + Add
 sidebar-add-hint = Add a project to this workspace
+sidebar-filter = Filter projects and requests
+sidebar-filter-hint = Shows the projects, folders, requests and workflows whose name matches, and where they are. Esc clears.
+sidebar-filter-clear = Clear the filter
+sidebar-filter-bodies-off = Also search request bodies: finds requests whose body holds every word (JSON, XML, text, form fields)
+sidebar-filter-bodies-on = Searching request bodies too. Click to search names only
+sidebar-filter-none = Nothing matches the filter.
+sidebar-collapse-all = Collapse all
+sidebar-collapse-all-hint = Fold every project in this workspace
+sidebar-expand-all = Expand all
+sidebar-expand-all-hint = Unfold every project in this workspace; folders stay as they are
+menu-collapse-all-hint = Fold every folder below, so only the top level shows
+menu-expand-all-hint = Unfold every folder below
 sidebar-empty = Add a project to start. Projects are plain files you can commit to git, next to your code.
 scratch-request-hint = A request that is not saved anywhere, for quick one-off calls
 sidebar-mock-port = mock :{$port}
@@ -1000,9 +1014,9 @@ color-orange = Orange
 color-yellow = Yellow
 color-grey = Grey
 env-server-name-hint = server name
-env-remove-server-url = Remove this server's URL
-env-shared-servers-hint = Each URL goes to every project's server of that name.
-env-shared-servers-hint-missing = Each URL goes to every project's server of that name. Servers in the projects: {$servers}.
+env-shared-servers-hint = Every environment and every project has these servers (projects get them when you save); each environment gives its own URL.
+env-workspace-server-hint = From the workspace. Type a URL to give this project its own; picking it in a request adds it too.
+env-shared-servers-hint-missing = Every environment and every project has these servers (projects get them when you save); each environment gives its own URL. Servers in the projects: {$servers}.
 
 ## examples
 
@@ -1080,8 +1094,11 @@ request-params-offer =
        *[other] the {$count} query parameters
     } into it as
 request-keep-in-url = Keep in URL
+request-server = The server whose base URL in the active environment goes before the path
 request-no-server = No server
 request-server-missing = {$id} (missing)
+request-workspace-servers = From the workspace
+request-workspace-server-hint = Adds a server of this name to the project; its URLs come from the workspace's environments.
 request-url-hint = Enter request URL
 request-timeout = Timeout (ms)
 request-from-level = {$value} (from {$level})
@@ -1204,6 +1221,13 @@ menu-reload = Reload from disk
 menu-file-manager = Open in file manager
 menu-terminal = Open in terminal
 menu-more = More
+menu-arrange = Arrange
+menu-sort = Sort A–Z
+menu-sort-hint = Folders first, then requests, by name, in every folder below. Saved like Move up/down.
+menu-mock = Mock server
+menu-runtime = Runtime data
+menu-import = Import
+menu-files = Files
 menu-folder-defaults = Folder defaults…
 menu-folder-defaults-hint = Headers, auth and variables every request in this folder inherits
 menu-folder-description-hint = What this folder holds, in Markdown

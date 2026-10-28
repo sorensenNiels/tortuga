@@ -139,6 +139,8 @@ impl EditorState {
 pub struct EditorContext<'a> {
     /// Servers of the request's collection: (id, name).
     pub servers: &'a [(String, String)],
+    /// Servers the workspace gives URLs to that the collection lacks, by name (R-WS-12).
+    pub workspace_servers: &'a [String],
     /// Base URL of the selected server in the active environment.
     pub server_base: Option<&'a str>,
     /// The variables the request may use: undefined ones (R-VAR-5) and what hovering
@@ -215,6 +217,8 @@ pub enum EditorAction {
     RerunTests,
     /// "Choose…" for the file of multipart part `n` (R-HTTP-15).
     ChooseFile(usize),
+    /// Use the workspace's server of this name, adding it to the project (R-WS-12).
+    UseWorkspaceServer(String),
 }
 
 /// Method + server + URL bar and the request detail tabs (R-HTTP-1..4, R-HTTP-7, R-SRV-3).
@@ -438,11 +442,16 @@ fn request_bar(
                     };
                 }
                 ui.separator();
-                if !cx.servers.is_empty() || request.server.is_some() {
-                    server_picker(ui, request, cx, base_hint);
+                if !cx.servers.is_empty()
+                    || !cx.workspace_servers.is_empty()
+                    || request.server.is_some()
+                {
+                    if let Some(name) = server_picker(ui, request, cx, base_hint) {
+                        action = Some(EditorAction::UseWorkspaceServer(name));
+                    }
                     ui.separator();
                 }
-                action = url_field(ui, url_id, request, st, cx);
+                action = url_field(ui, url_id, request, st, cx).or(action.take());
             });
         });
 
@@ -584,7 +593,14 @@ fn params_offer(ui: &mut Ui, request: &mut Request, st: &mut EditorState) {
     }
 }
 
-fn server_picker(ui: &mut Ui, request: &mut Request, cx: EditorContext<'_>, base_hint: &str) {
+/// The request's server; returns the name of a workspace's server the user picked that the
+/// project still lacks (R-WS-12).
+fn server_picker(
+    ui: &mut Ui,
+    request: &mut Request,
+    cx: EditorContext<'_>,
+    base_hint: &str,
+) -> Option<String> {
     let missing_server = request
         .server
         .as_ref()
@@ -597,6 +613,7 @@ fn server_picker(ui: &mut Ui, request: &mut Request, cx: EditorContext<'_>, base
             |(_, name)| name.clone(),
         ),
     };
+    let mut from_workspace = None;
     let combo = ComboBox::from_id_salt("server")
         .selected_text(selected)
         .show_ui(ui, |ui| {
@@ -611,11 +628,28 @@ fn server_picker(ui: &mut Ui, request: &mut Request, cx: EditorContext<'_>, base
                     t!("request-server-missing", id = id),
                 );
             }
+            if !cx.workspace_servers.is_empty() {
+                ui.separator();
+                theme::section_label(ui, &t!("request-workspace-servers"));
+                for name in cx.workspace_servers {
+                    if ui
+                        .selectable_label(false, name)
+                        .on_hover_text(t!("request-workspace-server-hint"))
+                        .clicked()
+                    {
+                        from_workspace = Some(name.clone());
+                    }
+                }
+            }
         })
         .response;
-    if !base_hint.is_empty() {
+    // Always a hover text: it is the picker's accessible name too.
+    if base_hint.is_empty() {
+        combo.on_hover_text(t!("request-server"));
+    } else {
         combo.on_hover_text(base_hint);
     }
+    from_workspace
 }
 
 /// The URL group draws the border, so the controls inside it are flat. The group shows
@@ -772,6 +806,67 @@ mod tests {
         ResolvedSettings::resolve(&[], &tortuga_core::ClientSettings::default())
     }
 
+    /// R-WS-12: the server picker lists the workspace's servers the project lacks, and
+    /// picking one asks for it to be added.
+    #[test]
+    fn workspace_servers_can_be_picked() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/");
+        let mut st = EditorState::new(&request);
+        st.focus_url = false;
+        let workspace_servers = ["Payments ü😀".to_owned()];
+        let mut asked = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                let action = request_editor(
+                    ui,
+                    &mut request,
+                    &mut st,
+                    EditorContext {
+                        servers: &[],
+                        workspace_servers: &workspace_servers,
+                        server_base: None,
+                        vars: &VarHelp::default(),
+                        sending: false,
+                        settings: test_settings(),
+                        unverified_host: None,
+                        collection_auth: None,
+                        inherited_headers: &[],
+                        auth_origin: &Origin::Project,
+                        cookie_count: 0,
+                        in_collection: true,
+                        preview: None,
+                        can_pick_files: false,
+                        breakpoints: &Breakpoints::default(),
+                        last_run: None,
+                        rerun: Rerun::Unavailable,
+                        view: EditorView::Full,
+                        features: &FeatureSettings::default(),
+                    },
+                );
+                if action.is_some() {
+                    asked = action;
+                }
+            });
+            h.run();
+            h.get_by_label(
+                "The server whose base URL in the active environment goes before the path",
+            )
+            .click();
+            h.run();
+            h.get_by_label("FROM THE WORKSPACE");
+            h.get_by_label("Payments ü😀").click();
+            h.run();
+        }
+        assert_eq!(
+            asked,
+            Some(EditorAction::UseWorkspaceServer("Payments ü😀".into()))
+        );
+        assert_eq!(
+            request.server, None,
+            "the shell sets it once the project has it"
+        );
+    }
+
     #[test]
     fn path_variables_get_a_value_row() {
         let mut request = Request::new(HttpMethod::Get, "https://a.test/users/:id");
@@ -785,6 +880,7 @@ mod tests {
                     &mut st,
                     EditorContext {
                         servers: &[],
+                        workspace_servers: &[],
                         server_base: None,
                         vars: &VarHelp::default(),
                         sending: false,
@@ -837,6 +933,7 @@ mod tests {
                     &mut st,
                     EditorContext {
                         servers: &[],
+                        workspace_servers: &[],
                         server_base: None,
                         vars: &VarHelp::default(),
                         sending: false,
@@ -880,6 +977,7 @@ mod tests {
                 st,
                 EditorContext {
                     servers: &[],
+                    workspace_servers: &[],
                     server_base: None,
                     vars: &VarHelp::default(),
                     sending: false,
@@ -981,6 +1079,7 @@ mod tests {
                 &mut st,
                 EditorContext {
                     servers: &[],
+                    workspace_servers: &[],
                     server_base: None,
                     vars: &VarHelp::default(),
                     sending: false,
@@ -1039,6 +1138,7 @@ mod tests {
                     &mut st,
                     EditorContext {
                         servers: &[],
+                        workspace_servers: &[],
                         server_base: None,
                         vars: &VarHelp::default(),
                         sending: false,
@@ -1097,6 +1197,7 @@ mod tests {
                     &mut st,
                     EditorContext {
                         servers: &[],
+                        workspace_servers: &[],
                         server_base: None,
                         vars: &VarHelp::default(),
                         sending: false,

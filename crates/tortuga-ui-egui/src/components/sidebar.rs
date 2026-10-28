@@ -1,4 +1,6 @@
 mod drag;
+mod filter;
+mod fold;
 mod menus;
 mod problems;
 
@@ -7,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use egui::text::{CCursor, CCursorRange};
 use egui::{Atom, AtomExt as _, Button, Key, RichText, ScrollArea, Sides, TextEdit, Ui};
+use tortuga_core::collection::Broken;
 use tortuga_core::collection::Direction;
 use tortuga_core::git::{FileStatus, GitStatus};
 use tortuga_core::import::ImportKind;
@@ -17,6 +20,8 @@ use crate::components::ENVIRONMENT_KINDS;
 use crate::state::{AppState, ItemKey, WorkflowKey};
 use crate::theme;
 use drag::{drag_and_drop, drag_label, drop_on_project};
+use filter::{Filter, KeptFilter};
+use fold::{fold_all_button, project_rows, repository_key};
 use menus::{MenuChoice, add_menu, apply, collection_menu, context_menu, item_menu, menu_button};
 use problems::{broken_row, missing_row};
 
@@ -45,6 +50,8 @@ pub enum SidebarAction {
     },
     Duplicate(ItemKey),
     MoveBy(ItemKey, Direction),
+    /// Sort the items of a folder (`""`: the project) and every folder below it (R-COL-44).
+    Sort(ItemKey),
     MoveTo(ItemKey),
     /// Copy into a folder of another project (R-COL-38).
     CopyTo(ItemKey),
@@ -114,6 +121,12 @@ pub struct SidebarState {
     /// `collapsed` changed since [`Self::take_folded`] last looked (R-COL-36).
     changed: bool,
     rename: Option<Rename>,
+    /// The filter box's text (R-COL-46).
+    filter: String,
+    /// The filter also looks in request bodies (R-COL-47).
+    in_bodies: bool,
+    /// The filter worked out last frame (R-COL-47).
+    kept_filter: Option<KeptFilter>,
 }
 
 impl SidebarState {
@@ -254,6 +267,20 @@ struct Tree<'a> {
     /// Projects show their tab-group colour when there are several (R-COL-14).
     color_dots: bool,
     actions: Vec<SidebarAction>,
+    /// The rows that match the filter box; `None`: show all (R-COL-46).
+    filter: Option<Filter>,
+}
+
+impl Tree<'_> {
+    /// Whether a row's content is hidden; while filtering, everything that matches shows.
+    fn folded(&self, key: &ItemKey) -> bool {
+        self.filter.is_none() && self.st.collapsed.contains(key)
+    }
+
+    /// Whether a row is filtered out (R-COL-46).
+    fn hides(&self, key: &ItemKey) -> bool {
+        self.filter.as_ref().is_some_and(|f| !f.item(key))
+    }
 }
 
 /// What the rows of the tree are marked with.
@@ -300,12 +327,16 @@ pub fn sidebar(
         },
         color_dots: state.collections.len() > 1,
         actions: Vec::new(),
+        filter: None,
     };
 
     scratch_row(ui, scratch_selected, &mut tree);
+    filter_box(ui, tree.st);
+    tree.filter = tree.st.take_filter(state);
     ui.add_space(14.0);
     // The Projects | History tabs already say it, where there is a history (R-COL-26).
     let heading = !state.host.keeps_history();
+    let rows = project_rows(state);
     egui::Sides::new().show(
         ui,
         |ui| {
@@ -322,58 +353,118 @@ pub fn sidebar(
                 response.on_hover_text(t!("sidebar-add-hint"));
                 tree.actions.extend(inner.and_then(|i| i.inner));
             }
+            if rows.len() > 1 {
+                fold_all_button(ui, tree.st, &rows);
+            }
         },
     );
 
     ScrollArea::vertical()
         .id_salt("sidebar")
         .auto_shrink(false)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for (repository, members) in state.project_groups() {
-                let shared = repository.as_ref().filter(|_| members.len() > 1);
-                let depth = usize::from(shared.is_some());
-                let collapsed = match shared {
-                    Some(repo) => {
-                        let git = state.git.get(&members[0].root);
-                        ui.push_id(repo, |ui| {
-                            repository_row(ui, repo, git, &members, &mut tree)
-                        })
-                        .inner
-                    }
-                    None => false,
-                };
-                if collapsed {
-                    continue;
-                }
-                for c in members {
-                    ui.push_id(&c.root, |ui| {
-                        tree.git = state.git.get(&c.root);
-                        tree.show_branch = shared.is_none();
-                        tree.mock_port = state.mocks.port(&c.root);
-                        collection(
-                            ui,
-                            c,
-                            state.cookie_jar(Some(&c.root)).len(),
-                            depth,
-                            &mut tree,
-                        );
-                    });
-                }
-            }
-            for (project, reason) in &state.missing {
-                ui.push_id(&project.path, |ui| {
-                    missing_row(ui, project, reason, &mut tree);
-                });
-            }
-            drag_label(ui);
-            if state.collections.is_empty() && state.missing.is_empty() {
-                ui.add_space(4.0);
-                theme::hint(ui, t!("sidebar-empty"));
-            }
-        });
+        .show(ui, |ui| project_tree(ui, state, &mut tree));
 
+    let filter = tree.filter.take();
+    tree.st.keep_filter(filter, state.revision());
     tree.actions
+}
+
+/// The workspace's projects, grouped by shared repository, then the missing ones.
+fn project_tree<'a>(ui: &mut Ui, state: &'a AppState, tree: &mut Tree<'a>) {
+    ui.spacing_mut().item_spacing.y = 2.0;
+    for (repository, mut members) in state.project_groups() {
+        if let Some(filter) = &tree.filter {
+            members.retain(|c| filter.project(&c.root));
+            if members.is_empty() {
+                continue;
+            }
+        }
+        let shared = repository.as_ref().filter(|_| members.len() > 1);
+        let depth = usize::from(shared.is_some());
+        let collapsed = match shared {
+            Some(repo) => {
+                let git = state.git.get(&members[0].root);
+                ui.push_id(repo, |ui| repository_row(ui, repo, git, &members, tree))
+                    .inner
+            }
+            None => false,
+        };
+        if collapsed {
+            continue;
+        }
+        for c in members {
+            ui.push_id(&c.root, |ui| {
+                tree.git = state.git.get(&c.root);
+                tree.show_branch = shared.is_none();
+                tree.mock_port = state.mocks.port(&c.root);
+                collection(ui, c, state.cookie_jar(Some(&c.root)).len(), depth, tree);
+            });
+        }
+    }
+    // Missing projects have no requests to find (R-COL-46).
+    let missing = if tree.filter.is_some() {
+        &[][..]
+    } else {
+        &state.missing[..]
+    };
+    for (project, reason) in missing {
+        ui.push_id(&project.path, |ui| {
+            missing_row(ui, project, reason, tree);
+        });
+    }
+    drag_label(ui);
+    if state.collections.is_empty() && state.missing.is_empty() {
+        ui.add_space(4.0);
+        theme::hint(ui, t!("sidebar-empty"));
+    } else if tree.filter.as_ref().is_some_and(Filter::is_empty) {
+        ui.add_space(4.0);
+        theme::hint(ui, t!("sidebar-filter-none"));
+    }
+}
+
+/// The filter box under the scratch request: narrows the tree to what matches (R-COL-46), with
+/// a switch to also look in request bodies (R-COL-47).
+fn filter_box(ui: &mut Ui, st: &mut SidebarState) {
+    ui.add_space(6.0);
+    let has_text = !st.filter.is_empty();
+    let (escaped, cleared) = Sides::new().shrink_left().show(
+        ui,
+        |ui| {
+            let edit = ui
+                .add(
+                    TextEdit::singleline(&mut st.filter)
+                        .id_salt("sidebar-filter")
+                        .hint_text(t!("sidebar-filter"))
+                        .desired_width(ui.available_width()),
+                )
+                .on_hover_text(t!("sidebar-filter-hint"));
+            (edit.has_focus() || edit.lost_focus()) && ui.input(|i| i.key_pressed(Key::Escape))
+        },
+        |ui| {
+            // R-COL-47: also look in request bodies.
+            let bodies = ui
+                .add(Button::selectable(
+                    st.in_bodies,
+                    RichText::new("{}").monospace().size(11.0),
+                ))
+                .on_hover_text(if st.in_bodies {
+                    t!("sidebar-filter-bodies-on")
+                } else {
+                    t!("sidebar-filter-bodies-off")
+                });
+            if bodies.clicked() {
+                st.in_bodies = !st.in_bodies;
+            }
+            has_text
+                && ui
+                    .add(theme::icon_button(ui, "🗙"))
+                    .on_hover_text(t!("sidebar-filter-clear"))
+                    .clicked()
+        },
+    );
+    if escaped || cleared {
+        st.filter.clear();
+    }
 }
 
 /// The scratch request, above the projects.
@@ -413,7 +504,7 @@ fn project_marks(ui: &Ui, tree: &Tree<'_>) -> Vec<Atom<'static>> {
 fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tree: &mut Tree<'_>) {
     let root = c.root.clone();
     let key = ItemKey::new(&root, "");
-    let collapsed = tree.st.collapsed.contains(&key);
+    let collapsed = tree.folded(&key);
     let read_only = c.read_only;
 
     let offers = tree.offers;
@@ -466,7 +557,13 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
             tree.st.toggle(&key);
         }
         let choice = from_button.or_else(|| context_menu(&row, menu));
-        apply(tree, choice, &key, c.name());
+        let workflows = ItemKey::new(&root, tortuga_core::workflow::WORKFLOWS_DIR);
+        let groups = if tree.offers.features.workflows && !c.workflows.is_empty() {
+            std::slice::from_ref(&workflows)
+        } else {
+            &[]
+        };
+        apply(tree, choice, &key, c.name(), &c.items, groups);
     }
 
     if !collapsed {
@@ -479,17 +576,7 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
             read_only,
             tree,
         );
-        for b in &c.broken_environments {
-            let label = Atom::from(format!("⚠ {}", b.path.display()));
-            let (row, ()) = tree_row(ui, depth + 1, false, [label, Atom::grow()], |_| {});
-            if row.clicked() {
-                tree.actions.push(SidebarAction::ShowError(format!(
-                    "{}: {}",
-                    b.path.display(),
-                    b.error
-                )));
-            }
-        }
+        broken_files(ui, &c.broken_environments, depth + 1, tree);
         if tree.offers.features.workflows {
             workflows(ui, c, depth + 1, tree);
         }
@@ -498,13 +585,18 @@ fn collection(ui: &mut Ui, c: &Collection, cookie_count: usize, depth: usize, tr
 
 /// The project's workflows, as a group under its requests (R-FLOW-2).
 fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
-    if c.workflows.is_empty() && c.broken_workflows.is_empty() {
+    if c.workflows.is_empty() && c.broken_workflows.is_empty()
+        || tree
+            .filter
+            .as_ref()
+            .is_some_and(|f| !f.has_workflows(&c.root))
+    {
         return;
     }
     let p = theme::palette(ui);
     // `workflows/` is never a folder of requests, so this key is free for the group.
     let group = ItemKey::new(&c.root, tortuga_core::workflow::WORKFLOWS_DIR);
-    let collapsed = tree.st.collapsed.contains(&group);
+    let collapsed = tree.folded(&group);
     let atoms = [
         Atom::from(twisty(collapsed)),
         Atom::from(theme::semibold(t!("sidebar-workflows"))),
@@ -527,6 +619,9 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
             root: c.root.clone(),
             id: w.id.clone(),
         };
+        if tree.filter.as_ref().is_some_and(|f| !f.workflow(&key)) {
+            continue;
+        }
         let selected = tree.selected_workflow == Some(&key);
         let dirty = tree.dirty_workflows.contains(&key);
         let mut atoms = vec![
@@ -582,9 +677,17 @@ fn workflows(ui: &mut Ui, c: &Collection, depth: usize, tree: &mut Tree<'_>) {
             tree.actions.push(action);
         }
     }
-    for b in &c.broken_workflows {
+    broken_files(ui, &c.broken_workflows, depth + 1, tree);
+}
+
+/// Files that could not be read (R-GIT-8); a click shows why. Hidden while filtering (R-COL-46).
+fn broken_files(ui: &mut Ui, list: &[Broken], depth: usize, tree: &mut Tree<'_>) {
+    if tree.filter.is_some() {
+        return;
+    }
+    for b in list {
         let label = Atom::from(format!("⚠ {}", b.path.display()));
-        let (row, ()) = tree_row(ui, depth + 1, false, [label, Atom::grow()], |_| {});
+        let (row, ()) = tree_row(ui, depth, false, [label, Atom::grow()], |_| {});
         if row.clicked() {
             tree.actions.push(SidebarAction::ShowError(format!(
                 "{}: {}",
@@ -604,8 +707,8 @@ fn repository_row(
     members: &[&Collection],
     tree: &mut Tree<'_>,
 ) -> bool {
-    let key = ItemKey::new(repo, ".repository");
-    let collapsed = tree.st.collapsed.contains(&key);
+    let key = repository_key(repo);
+    let collapsed = tree.folded(&key);
     let p = theme::palette(ui);
     let name = repo.file_name().map_or_else(
         || repo.display().to_string(),
@@ -645,6 +748,9 @@ fn items(
     tree: &mut Tree<'_>,
 ) {
     for (i, item) in list.iter().enumerate() {
+        if tree.hides(&ItemKey::new(root, item.path())) {
+            continue;
+        }
         let next = list.get(i + 1).map(Item::path);
         ui.push_id(item.path(), |ui| {
             tree_item(ui, root, item, depth, read_only, next, tree);
@@ -653,6 +759,7 @@ fn items(
     // Requests deleted in git are still shown where they were (R-GIT-12, D10).
     let deleted = tree
         .git
+        .filter(|_| tree.filter.is_none())
         .map(|g| g.deleted_requests(folder))
         .unwrap_or_default();
     for path in deleted
@@ -745,7 +852,7 @@ fn tree_item(
     }
 
     let is_folder = matches!(item, Item::Folder(_));
-    let collapsed = tree.st.collapsed.contains(&key);
+    let collapsed = tree.folded(&key);
     let name = item.name();
 
     if is_renaming(tree, &key) {
@@ -757,19 +864,7 @@ fn tree_item(
         }
     } else if !skip_hidden_row(ui) {
         let p = theme::palette(ui);
-        let mut atoms = vec![match item {
-            Item::Request(r) => {
-                let m = r.request.method;
-                let tag = format!("{:<5}", theme::method_short(m));
-                Atom::from(
-                    RichText::new(tag)
-                        .monospace()
-                        .size(10.5)
-                        .color(theme::method_color(ui, m)),
-                )
-            }
-            _ => Atom::from(twisty(collapsed)),
-        }];
+        let mut atoms = vec![lead(ui, item, collapsed)];
         // A long name gives way, not the method or the twisty.
         atoms.push(Atom::from(name.clone()).atom_shrink(true));
         atoms.push(Atom::grow());
@@ -800,7 +895,11 @@ fn tree_item(
         }
         let selected = tree.selected == Some(&key);
         let features = tree.offers.features;
-        let menu = |ui: &mut Ui| item_menu(ui, &key, is_folder, features);
+        let folder_items = match item {
+            Item::Folder(f) => Some(f.items.as_slice()),
+            _ => None,
+        };
+        let menu = |ui: &mut Ui| item_menu(ui, &key, folder_items, features);
         let (mut row, from_button) = tree_row(ui, depth, selected, atoms, |ui| {
             if read_only {
                 None
@@ -833,13 +932,37 @@ fn tree_item(
         } else {
             context_menu(&row, menu)
         };
-        apply(tree, from_button.or(from_context), &key, &name);
+        apply(
+            tree,
+            from_button.or(from_context),
+            &key,
+            &name,
+            folder_items.unwrap_or_default(),
+            &[],
+        );
     }
 
     if let Item::Folder(f) = item
         && !collapsed
     {
         items(ui, root, &key.path, &f.items, depth + 1, read_only, tree);
+    }
+}
+
+/// A request's method, or a folder's twisty.
+fn lead(ui: &Ui, item: &Item, collapsed: bool) -> Atom<'static> {
+    match item {
+        Item::Request(r) => {
+            let m = r.request.method;
+            let tag = format!("{:<5}", theme::method_short(m));
+            Atom::from(
+                RichText::new(tag)
+                    .monospace()
+                    .size(10.5)
+                    .color(theme::method_color(ui, m)),
+            )
+        }
+        _ => Atom::from(twisty(collapsed)),
     }
 }
 
@@ -1018,9 +1141,9 @@ mod tests {
                         choices.push(collection_menu(ui, &c, 0, offers, None));
                     });
                     h.run();
-                    // R-COL-42: environment imports are under "More".
-                    let more = h.query_by_label_contains("More");
-                    assert_eq!(more.is_some(), on, "More");
+                    // R-COL-45: environment imports are under "Import".
+                    let more = h.query_by_label_contains("Import");
+                    assert_eq!(more.is_some(), on, "Import");
                     if let Some(more) = more {
                         more.click();
                         h.run();
@@ -1057,7 +1180,7 @@ mod tests {
             ];
             tree_row(ui, 2, false, atoms, |ui| {
                 menu_button(ui, |ui: &mut Ui| {
-                    item_menu(ui, &key, false, ShownFeatures::ALL)
+                    item_menu(ui, &key, None, ShownFeatures::ALL)
                 })
             });
             d.set(ui.cursor().min.y - top);
@@ -1088,7 +1211,7 @@ mod tests {
                 let key = ItemKey::new(Path::new("/p"), format!("{name}.toml"));
                 tree_row(ui, 0, false, [Atom::from(name), Atom::grow()], |ui| {
                     let menu = menu_button(ui, |ui: &mut Ui| {
-                        item_menu(ui, &key, false, ShownFeatures::ALL)
+                        item_menu(ui, &key, None, ShownFeatures::ALL)
                     });
                     now.push(ui.visuals().override_text_color.is_none());
                     menu
@@ -1108,5 +1231,116 @@ mod tests {
         harness.hover_at(egui::pos2(1000.0, 1000.0));
         harness.run();
         assert_eq!(*shown.borrow(), [true, false]);
+    }
+
+    pub(super) fn folder(path: &str, items: Vec<Item>) -> Item {
+        Item::Folder(tortuga_core::collection::Folder {
+            path: PathBuf::from(path),
+            name: path.to_owned(),
+            seq: None,
+            items,
+            defaults: tortuga_core::format::FolderDefaults::default(),
+            error: None,
+        })
+    }
+
+    /// `users/ü😀/deep` and `orders` with nothing in them.
+    pub(super) fn tree_items() -> Vec<Item> {
+        vec![
+            folder(
+                "users",
+                vec![folder("users/ü😀", vec![folder("users/ü😀/deep", vec![])])],
+            ),
+            folder("orders", vec![]),
+        ]
+    }
+
+    fn request_item(path: &str) -> Item {
+        Item::Request(tortuga_core::collection::RequestItem {
+            path: PathBuf::from(path),
+            seq: None,
+            request: tortuga_core::Request::new(tortuga_core::HttpMethod::Get, "https://a.test"),
+        })
+    }
+
+    /// R-COL-43, R-COL-44, R-COL-45: a folder's menu has "Arrange" with Collapse all and
+    /// Expand all when it has folders, and Sort when there is something to sort.
+    #[test]
+    fn folder_menu_arranges_only_what_it_can() {
+        let items = tree_items();
+        let requests = [request_item("a.toml"), request_item("b.toml")];
+        let key = ItemKey::new(Path::new("/p"), "users");
+        for (below, fold, sort) in [
+            (Some(items.as_slice()), true, true),
+            (Some(&items[1..]), true, true),
+            (Some(&requests[..]), false, true),
+            (Some(&requests[..1]), false, false),
+            (Some(&[][..]), false, false),
+            (None, false, false),
+        ] {
+            let mut choices = Vec::new();
+            {
+                let mut h = crate::test_host::harness(|ui| {
+                    choices.push(item_menu(ui, &key, below, ShownFeatures::ALL));
+                });
+                h.run();
+                let arrange = h.query_by_label_contains("Arrange");
+                assert_eq!(arrange.is_some(), fold || sort, "{below:?}");
+                if let Some(arrange) = arrange {
+                    arrange.click();
+                    h.run();
+                }
+                assert_eq!(h.query_by_label_contains("Collapse all").is_some(), fold);
+                let sort_entry = h.query_by_label_contains("Sort A");
+                assert_eq!(sort_entry.is_some(), sort);
+                if let Some(entry) = sort_entry {
+                    entry.click();
+                    h.run();
+                }
+            }
+            let picked = choices.iter().any(|c| matches!(c, Some(MenuChoice::Sort)));
+            assert_eq!(picked, sort);
+        }
+    }
+
+    /// R-COL-45: a project's menu keeps the frequent actions on top and the rest in submenus.
+    #[test]
+    fn project_menu_groups_rare_actions_in_submenus() {
+        let dir = tempfile::tempdir().expect("dir");
+        let storage = tortuga_core::storage::FsStorage;
+        let c = Collection::create(&storage, dir.path(), "Shop").expect("project");
+        let mut choices = Vec::new();
+        {
+            let offers = MenuOffers {
+                open_folders: true,
+                features: ShownFeatures::ALL,
+                ..MenuOffers::default()
+            };
+            let mut h = crate::test_host::harness(|ui| {
+                choices.push(collection_menu(ui, &c, 0, offers, None));
+            });
+            h.run();
+            for top in [
+                "New request",
+                "New folder",
+                "Rename",
+                "Remove from workspace",
+            ] {
+                h.get_by_label_contains(top);
+            }
+            assert!(
+                h.query_by_label_contains("Arrange").is_none(),
+                "nothing to arrange"
+            );
+            assert!(h.query_by_label_contains("Open in terminal").is_none());
+            h.get_by_label_contains("Files").click();
+            h.run();
+            h.get_by_label_contains("Open in terminal").click();
+            h.run();
+        }
+        assert!(choices.iter().any(|c| matches!(
+            c,
+            Some(MenuChoice::Action(SidebarAction::OpenInTerminal(r))) if *r == dir.path()
+        )));
     }
 }

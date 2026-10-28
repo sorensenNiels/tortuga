@@ -297,6 +297,27 @@ fn newer_format_is_read_only() {
     );
 }
 
+/// R-WS-12: a workspace's server picked in a project is added to it once, by name.
+#[test]
+fn a_workspace_server_is_added_to_the_project_once() {
+    let (_dir, col) = new_collection();
+    let id = col.add_server(&FS, " Payments ü😀 ").expect("add");
+    let col = reopen(&col);
+    assert_eq!(
+        col.manifest.servers,
+        [Server {
+            id: id.clone(),
+            name: "Payments ü😀".into(),
+        }]
+    );
+    assert_eq!(col.add_server(&FS, "PAYMENTS ü😀").expect("again"), id);
+    assert_eq!(
+        reopen(&col).manifest.servers.len(),
+        1,
+        "names match any case"
+    );
+}
+
 /// R-VAR-2, R-SRV-1/2: servers, variables and environments are saved and loaded.
 #[test]
 fn environments_and_servers_round_trip() {
@@ -807,4 +828,77 @@ fn copy_into_another_project_edge_cases() {
         .copy_from(&FS, &reopen(&target), &folder, Path::new(""))
         .expect_err("into a read-only project");
     assert!(matches!(err, Error::ReadOnly { .. }), "{err}");
+}
+
+/// R-COL-44: sorting puts folders first, then requests, by name, at every level, and
+/// leaves a level that is already sorted untouched.
+#[test]
+fn sorting_orders_folders_first_by_name_at_every_level() {
+    let (dir, col) = new_collection();
+    for name in ["b", "Get 10", "Get 2"] {
+        reopen(&col)
+            .new_request(&FS, Path::new(""), &request(name))
+            .expect("new");
+    }
+    let users = reopen(&col)
+        .new_folder(&FS, Path::new(""), "Users")
+        .expect("folder");
+    reopen(&col)
+        .new_folder(&FS, Path::new(""), "ärger")
+        .expect("folder");
+    for name in ["Zed", "alpha"] {
+        reopen(&col)
+            .new_request(&FS, &users, &request(name))
+            .expect("new");
+    }
+    let col = reopen(&col);
+    let untouched = modified(&dir.path().join("b.toml"));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    col.sort(&FS, &users).expect("sort folder");
+    let col = reopen(&col);
+    assert_eq!(
+        names(&col.items),
+        ["b", "Get 10", "Get 2", "Users", "ärger"]
+    );
+    assert_eq!(
+        modified(&dir.path().join("b.toml")),
+        untouched,
+        "only the folder"
+    );
+    let Some(Item::Folder(f)) = col.find(&users) else {
+        panic!("Users is a folder");
+    };
+    assert_eq!(names(&f.items), ["alpha", "Zed"]);
+
+    col.sort(&FS, Path::new("")).expect("sort project");
+    let col = reopen(&col);
+    assert_eq!(
+        names(&col.items),
+        ["Users", "ärger", "b", "Get 2", "Get 10"]
+    );
+    let alpha = users.join("alpha.toml");
+    let before = modified(&dir.path().join(&alpha));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    col.sort(&FS, Path::new("")).expect("sort again");
+    assert_eq!(
+        modified(&dir.path().join(&alpha)),
+        before,
+        "already sorted: untouched"
+    );
+}
+
+/// R-COL-44: a read-only project and a missing folder are not sorted.
+#[test]
+fn sorting_refuses_read_only_projects_and_missing_folders() {
+    let (_dir, mut col) = new_collection();
+    assert!(matches!(
+        col.sort(&FS, Path::new("gone")),
+        Err(Error::NotFound(_))
+    ));
+    col.read_only = true;
+    assert!(matches!(
+        col.sort(&FS, Path::new("")),
+        Err(Error::ReadOnly { .. })
+    ));
 }

@@ -91,6 +91,9 @@ pub struct AppState {
     pub client: Client,
     /// Open projects of the active workspace, in workspace order (R-COL-5, R-WS-1).
     pub collections: Vec<Collection>,
+    /// Counts the loads, reloads and closes of `collections`, so that what is worked out from
+    /// them can be kept until they change (the sidebar filter, R-COL-47).
+    revision: u64,
     /// Projects of the active workspace that could not be opened (moved, or not
     /// cloned on this machine yet), with the reason (R-WS-5).
     pub missing: Vec<(ProjectRef, String)>,
@@ -200,6 +203,7 @@ impl AppState {
             settings,
             client,
             collections: Vec::new(),
+            revision: 0,
             missing: Vec::new(),
             local,
             secrets: BTreeMap::new(),
@@ -301,12 +305,18 @@ impl AppState {
         }
     }
 
+    /// Changes whenever `collections` is loaded, reloaded or closed.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Re-reads a collection from disk.
     pub fn reload(&mut self, root: &Path) {
         match Collection::open(self.storage(), root) {
             Ok(fresh) => {
                 if let Some(slot) = self.collections.iter_mut().find(|c| c.root == root) {
                     *slot = fresh;
+                    self.revision += 1;
                 }
                 // A `git pull` may bring an environment the workspace doesn't list yet.
                 self.adopt_environments();
@@ -359,6 +369,7 @@ impl AppState {
         }
         self.cookies.insert(root.to_owned(), jar);
         self.collections.push(collection);
+        self.revision += 1;
         self.start_watching(root);
         self.adopt_environments();
         Ok(())
@@ -371,6 +382,7 @@ impl AppState {
         self.host.unwatch(root);
         self.git.remove(root);
         self.collections.retain(|c| c.root != root);
+        self.revision += 1;
         self.secrets.remove(root);
         self.cookies.remove(root);
     }

@@ -162,6 +162,19 @@ impl RequestBody {
             Self::Multipart(_) => Some("multipart/form-data"),
         }
     }
+
+    /// Whether the body's text, or a form field's or part's name or value, contains `needle`,
+    /// ignoring case (R-COL-47).
+    pub fn contains_text(&self, needle: &str) -> bool {
+        let needle = needle.to_lowercase();
+        let has = |text: &str| text.to_lowercase().contains(&needle);
+        match self {
+            Self::None => false,
+            Self::Text(text) | Self::Json(text) | Self::Xml(text) => has(text),
+            Self::Form(rows) => rows.iter().any(|r| has(&r.name) || has(&r.value)),
+            Self::Multipart(parts) => parts.iter().any(|p| has(&p.name) || has(&p.value)),
+        }
+    }
 }
 
 /// The body type query params move into (R-HTTP-21).
@@ -614,6 +627,28 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-COL-47: body search ignores case and looks into every kind of body.
+    #[test]
+    fn body_text_is_found_ignoring_case() {
+        let json = RequestBody::Json(r#"{"customerId": "ÜBER-😀"}"#.into());
+        assert!(json.contains_text("CUSTOMERID"));
+        assert!(json.contains_text("über-😀"));
+        assert!(!json.contains_text("orderId"));
+        assert!(RequestBody::Xml("<Order/>".into()).contains_text("order"));
+        assert!(!RequestBody::None.contains_text(""));
+        let form = RequestBody::Form(vec![KeyValue::new("grant_type", "password")]);
+        assert!(form.contains_text("GRANT"));
+        assert!(form.contains_text("passw"));
+        let part = FormPart {
+            name: "avatar".into(),
+            value: "img/me.png".into(),
+            ..FormPart::default()
+        };
+        assert!(RequestBody::Multipart(vec![part]).contains_text("me.png"));
+        let long = RequestBody::Text(format!("{}needle", "x".repeat(100_000)));
+        assert!(long.contains_text("NEEDLE"));
+    }
 
     #[test]
     fn params_move_into_the_body_only_when_it_is_empty_r_http_21() {

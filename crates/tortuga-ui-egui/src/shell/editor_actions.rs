@@ -1,6 +1,8 @@
 //! What the request editor asks for: sending, defaults dialogs, files to upload, and
 //! breakpoints in its scripts (R-TEST-10).
 
+use std::path::Path;
+
 use tortuga_core::runner::{self, Extra, StepOutcome};
 use tortuga_core::script::ScriptKind;
 use tortuga_core::{Scripts, vars};
@@ -29,6 +31,11 @@ impl TortugaUi {
             }
             EditorAction::RerunTests => self.rerun_tests(key),
             EditorAction::ChooseFile(index) => self.choose_upload(root.as_deref(), index),
+            EditorAction::UseWorkspaceServer(name) => {
+                if let Some(root) = root {
+                    self.use_workspace_server(&root, &name);
+                }
+            }
             EditorAction::EditCollectionDefaults => {
                 if let Some(root) = root {
                     self.modal = Some(Modal::Defaults(
@@ -41,6 +48,14 @@ impl TortugaUi {
                     DefaultsDialog::for_workspace(&self.state).on_auth(),
                 ));
             }
+        }
+    }
+
+    /// Gives the request the project's server called `name`, adding it to the project
+    /// first: one the workspace has URLs for (R-WS-12).
+    pub(super) fn use_workspace_server(&mut self, root: &Path, name: &str) {
+        if let Some(id) = self.state.run(root, |c, s| c.add_server(s, name)) {
+            self.current.server = Some(id);
         }
     }
 

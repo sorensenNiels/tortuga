@@ -878,6 +878,7 @@ mod tests {
             UpdateStatus::Available(Release {
                 version: "1.0.0".into(),
                 page: "https://github.com/sorensenNiels/tortuga/releases/tag/v1.0.0".into(),
+                downloads: Vec::new(),
             }),
             "Tortuga 1.0.0 is available",
         );

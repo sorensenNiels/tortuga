@@ -215,6 +215,23 @@ pub fn effective_environment(
     Some(env)
 }
 
+/// The names of servers the workspace's `environments` give a base URL to that `manifest`
+/// has none of, each once whatever its case (R-WS-12): every project lists them.
+pub fn servers_missing_from(
+    environments: &[WorkspaceEnvironment],
+    manifest: &Manifest,
+) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in environments.iter().flat_map(|e| e.servers.keys()) {
+        let known = names.iter().any(|n| crate::format::names_match(n, name))
+            || manifest.servers.iter().any(|s| s.is_named(name));
+        if !known {
+            names.push(name.clone());
+        }
+    }
+    names
+}
+
 /// The id of a project's environment that only the workspace defines (R-WS-9). Never a
 /// file stem, which are slugs.
 pub const WORKSPACE_ENVIRONMENT_ID: &str = "@workspace";
@@ -956,6 +973,32 @@ mod tests {
         assert!(text.contains("[[environments]]"), "{text}");
         assert!(text.contains("secrets = [\"token\"]"), "{text}");
         assert_eq!(read(&text, file).expect("read"), workspace);
+    }
+
+    /// R-WS-12: servers only the workspace has are listed for a project once, whatever
+    /// their case; ones the project has under any case are not.
+    #[test]
+    fn servers_only_the_workspace_has_are_missing_from_the_project() {
+        let manifest = Manifest {
+            servers: vec![crate::format::Server {
+                id: "u".into(),
+                name: "USERS".into(),
+            }],
+            ..Manifest::new("P")
+        };
+        let mut dev = staging();
+        dev.servers = [
+            ("Payments ü😀".to_owned(), "https://pay.dev.test".to_owned()),
+            (" users ".to_owned(), "https://users.dev.test".to_owned()),
+        ]
+        .into();
+        let mut prod = staging();
+        prod.servers = [("payments ü😀".to_owned(), "https://pay.test".to_owned())].into();
+        assert_eq!(
+            servers_missing_from(&[staging(), dev, prod], &manifest),
+            ["Payments ü😀"]
+        );
+        assert_eq!(servers_missing_from(&[], &manifest), Vec::<String>::new());
     }
 
     /// R-WS-9, D62: a project gets the workspace's environment, its servers by name and
