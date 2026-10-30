@@ -445,6 +445,7 @@ impl TortugaUi {
         let dirty = self.dirty_keys();
         let conflicts: HashSet<ItemKey> = self.conflicts.keys().cloned().collect();
         let dirty_workflows = self.dirty_workflows();
+        let scratch_edited = *self.scratch_request() != Request::default();
         let actions = Panel::left("sidebar")
             .resizable(true)
             .default_size(270.0)
@@ -480,6 +481,7 @@ impl TortugaUi {
                             dirty: &dirty,
                             conflicts: &conflicts,
                             dirty_workflows: &dirty_workflows,
+                            scratch_edited,
                         },
                     ),
                     SidebarView::History => {

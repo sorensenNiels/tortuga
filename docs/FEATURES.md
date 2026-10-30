@@ -376,6 +376,7 @@ Checked in the running app on Linux (WSL2/WSLg) and Windows on 2026-10-26.
 | R-WS-12 | Built and tested (`every_environment_gets_the_same_servers`, `server_edits_apply_to_every_environment`, `a_server_added_in_one_environment_is_in_all_and_in_every_project`, `servers_only_the_workspace_has_are_missing_from_the_project`, `a_workspace_server_is_added_to_the_project_once`, `workspace_servers_can_be_picked`, `a_workspace_server_picked_for_a_request_is_added_to_the_project`, `a_workspace_server_shows_in_each_project_and_can_be_given_a_url`). Not yet checked in the running app. |
 | R-SET-18 | Built and tested (`update` tests in `tortuga-core`, `the_download_command_of_a_package_can_be_picked`, `results_show_quietly`). Not yet checked in the running app against a real release. |
 | R-CLI-4 | The **Release** workflow builds `tortuga-cli` on each OS, checks `--version` and attaches `tortuga-cli-<version>-<os>.tar.gz` (`.zip` on Windows) with the README and licences. **Verified:** the archive step run locally on Linux (binary needs only libc). The workflow succeeded for v0.9.0 to v0.11.0 (GitHub Actions). **Not yet checked:** the Windows and macOS archives it attaches. |
+| R-COL-48 | 🗙 on the sidebar's scratch row (`SidebarAction::ClearScratch`, `TortugaUi::clear_scratch`). Automated UI test on Linux clicks it with the scratch request shown and not shown (non-ASCII URL, 10 000-character body, its response filter); the 🗙 goes away once there is nothing to clear. **Not yet checked** in the running app. |
 
 ## Known limitations
 

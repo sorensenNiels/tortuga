@@ -32,6 +32,8 @@ pub enum SidebarAction {
     Select(Option<ItemKey>),
     /// Open in a tab that stays (double click, R-COL-13).
     Keep(Option<ItemKey>),
+    /// Empty the scratch request (R-COL-48).
+    ClearScratch,
     NewRequest {
         root: PathBuf,
         parent: PathBuf,
@@ -292,6 +294,8 @@ pub struct Marks<'a> {
     pub conflicts: &'a HashSet<ItemKey>,
     /// Workflows with unsaved edits (R-FLOW-5).
     pub dirty_workflows: &'a HashSet<WorkflowKey>,
+    /// The scratch request is not empty, so it can be cleared (R-COL-48).
+    pub scratch_edited: bool,
 }
 
 /// The projects of the workspace and their requests (R-COL-1, R-COL-2, R-COL-3, R-WS-4).
@@ -330,7 +334,7 @@ pub fn sidebar(
         filter: None,
     };
 
-    scratch_row(ui, scratch_selected, &mut tree);
+    scratch_row(ui, scratch_selected, marks.scratch_edited, &mut tree);
     filter_box(ui, tree.st);
     tree.filter = tree.st.take_filter(state);
     ui.add_space(14.0);
@@ -467,20 +471,32 @@ fn filter_box(ui: &mut Ui, st: &mut SidebarState) {
     }
 }
 
-/// The scratch request, above the projects.
-fn scratch_row(ui: &mut Ui, scratch_selected: bool, tree: &mut Tree<'_>) {
-    let full = egui::vec2(ui.available_width(), ROW_HEIGHT);
-    let scratch = ui
-        .add(
-            Button::selectable(
-                scratch_selected,
-                (Atom::from("✏"), Atom::from(t!("scratch-request"))),
+/// The scratch request, above the projects, with 🗙 to empty it when it is not (R-COL-48).
+fn scratch_row(ui: &mut Ui, scratch_selected: bool, edited: bool, tree: &mut Tree<'_>) {
+    let (scratch, clear) = Sides::new().shrink_left().show(
+        ui,
+        |ui| {
+            ui.add(
+                Button::selectable(
+                    scratch_selected,
+                    (Atom::from("✏"), Atom::from(t!("scratch-request"))),
+                )
+                .min_size(egui::vec2(ui.available_width(), ROW_HEIGHT))
+                .frame_when_inactive(scratch_selected),
             )
-            .min_size(full)
-            .frame_when_inactive(scratch_selected),
-        )
-        .on_hover_text(t!("scratch-request-hint"));
-    if scratch.double_clicked() {
+            .on_hover_text(t!("scratch-request-hint"))
+        },
+        |ui| {
+            edited
+                && ui
+                    .add(theme::icon_button(ui, "🗙"))
+                    .on_hover_text(t!("scratch-clear-hint"))
+                    .clicked()
+        },
+    );
+    if clear {
+        tree.actions.push(SidebarAction::ClearScratch);
+    } else if scratch.double_clicked() {
         tree.actions.push(SidebarAction::Keep(None));
     } else if scratch.clicked() {
         tree.actions.push(SidebarAction::Select(None));

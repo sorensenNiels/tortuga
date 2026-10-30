@@ -18,6 +18,7 @@ impl TortugaUi {
         match action {
             SidebarAction::Select(key) => self.select(key),
             SidebarAction::Keep(key) => self.open_tab(key, true),
+            SidebarAction::ClearScratch => self.clear_scratch(),
             SidebarAction::NewRequest { root, parent } => {
                 let request = Request {
                     name: t!("new-request-name"),
@@ -334,6 +335,54 @@ mod tests {
     use crate::TortugaUi;
     use crate::state::ItemKey;
     use crate::test_host::TestHost;
+
+    /// R-COL-48: the 🗙 on the scratch row empties the scratch request and its response,
+    /// shown or not, and is only there when there is something to clear.
+    #[test]
+    fn the_scratch_rows_cross_clears_the_scratch_request() {
+        use egui_kittest::kittest::Queryable;
+
+        for shown in [true, false] {
+            let (mut ui, root, key) = super::super::tests::setup(&format!("scratch-x-{shown}"));
+            ui.select(None);
+            ui.current.url = "https://example.test/ü😀".into();
+            ui.current.body = tortuga_core::RequestBody::Json("x".repeat(10_000));
+            ui.sent.insert(
+                None,
+                super::super::Sent {
+                    filter: "$.id".into(),
+                    ..Default::default()
+                },
+            );
+            if !shown {
+                ui.select(Some(key.clone()));
+            }
+            {
+                let mut h = egui_kittest::Harness::builder().build_ui(|egui_ui| ui.ui(egui_ui));
+                h.run();
+                // The sidebar's is the leftmost; tabs have their own 🗙.
+                let before = h.query_all_by_label("🗙").count();
+                h.query_all_by_label("🗙")
+                    .min_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x))
+                    .expect("a 🗙 on the scratch row")
+                    .click();
+                h.run();
+                assert_eq!(
+                    h.query_all_by_label("🗙").count(),
+                    before - 1,
+                    "nothing left to clear"
+                );
+            }
+            assert_eq!(*ui.scratch_request(), Request::default());
+            // The shown request gets an empty entry again on the next frame.
+            assert!(ui.sent.get(&None).is_none_or(|s| s.filter.is_empty()));
+            if !shown {
+                assert_eq!(ui.selection, Some(key), "the shown request stays");
+                assert_ne!(ui.current, Request::default());
+            }
+            std::fs::remove_dir_all(root).expect("clean up");
+        }
+    }
 
     /// R-VSC-3: starting the app with a request file adds its project and opens it.
     #[test]

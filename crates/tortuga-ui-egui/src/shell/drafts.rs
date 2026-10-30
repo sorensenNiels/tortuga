@@ -8,6 +8,25 @@ use crate::host::{DraftConflict, SavedDraft, SavedDrafts};
 use crate::state::ItemKey;
 
 impl TortugaUi {
+    /// The scratch request as it is now: the shown request while it is selected.
+    pub(super) fn scratch_request(&self) -> &Request {
+        if self.selection.is_none() {
+            &self.current
+        } else {
+            &self.scratch
+        }
+    }
+
+    /// Empties the scratch request and drops its last response (R-COL-48). Its history
+    /// stays (R-HIST-3 removes that).
+    pub(super) fn clear_scratch(&mut self) {
+        self.scratch = Request::default();
+        self.sent.remove(&None);
+        if self.selection.is_none() {
+            self.load(Request::default());
+        }
+    }
+
     /// Unsaved edits as they should be kept now.
     pub(super) fn drafts_snapshot(&self) -> SavedDrafts {
         let mut edited = self.drafts.clone();
@@ -41,11 +60,7 @@ impl TortugaUi {
             .collect();
         // A stable order, so an unchanged set is never written again.
         drafts.sort_by(|a, b| (&a.root, &a.path).cmp(&(&b.root, &b.path)));
-        let scratch = if self.selection.is_none() {
-            &self.current
-        } else {
-            &self.scratch
-        };
+        let scratch = self.scratch_request();
         SavedDrafts {
             scratch: (*scratch != Request::default()).then(|| scratch.clone()),
             drafts,

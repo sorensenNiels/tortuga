@@ -666,6 +666,7 @@ history-filter-hint = Search by name, URL, status, project or environment
 history-clear-one = Clear {$name}
 history-clear-all = Clear all history
 history-clear-hint = Remove history kept on this computer
+scratch-clear-hint = Empty the scratch request and its response. Sent versions stay in History.
 history-empty = Requests you send appear here. History stays on this computer.
 history-no-match = Nothing in the history matches.
 history-older = Older entries: use the filter to find them.

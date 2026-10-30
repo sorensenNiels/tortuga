@@ -672,6 +672,7 @@ history-filter-hint = Søg efter navn, URL, status, projekt eller miljø
 history-clear-one = Ryd {$name}
 history-clear-all = Ryd al historik
 history-clear-hint = Fjern historik gemt på denne computer
+scratch-clear-hint = Tøm kladdeanmodningen og dens svar. Sendte udgaver bliver i Historik.
 history-empty = Anmodninger, du sender, vises her. Historikken bliver på denne computer.
 history-no-match = Intet i historikken passer.
 history-older = Ældre poster: brug filteret for at finde dem.
