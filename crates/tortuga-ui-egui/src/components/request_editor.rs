@@ -30,6 +30,14 @@ enum Tab {
     Docs,
 }
 
+/// Which tab of the editor is open, kept per request while switching between them
+/// (R-COL-49).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenTab {
+    tab: Tab,
+    script_tab: ScriptTab,
+}
+
 /// The line offering to move the query params into the body (R-HTTP-21).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParamsOffer {
@@ -92,6 +100,21 @@ impl EditorState {
         };
         request.capture.insert(name.clone(), from.to_owned());
         self.captures.push(KeyValue::new(name, from));
+    }
+
+    /// The open tab, to give back with [`EditorState::set_open_tab`] (R-COL-49).
+    pub fn open_tab(&self) -> OpenTab {
+        OpenTab {
+            tab: self.tab,
+            script_tab: self.script_tab,
+        }
+    }
+
+    /// Opens the tab `open` names. A tab this request does not show falls back to
+    /// Params when drawn (R-COL-49).
+    pub fn set_open_tab(&mut self, open: OpenTab) {
+        self.tab = open.tab;
+        self.script_tab = open.script_tab;
     }
 
     /// Opens the Examples tab on example `index` (R-MOCK-1).

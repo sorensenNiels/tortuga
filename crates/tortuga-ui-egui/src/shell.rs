@@ -43,9 +43,9 @@ use crate::components::script_keys;
 use crate::components::{
     AddProjectsDialog, ChangesDialog, ClearHistory, ConfirmDialog, CookiesDialog, CopyCurlDialog,
     CopyToProjectDialog, CreateProjectDialog, DefaultsDialog, EditorContext, EditorState,
-    EnvironmentsDialog, Marks, MoveDialog, NameDialog, Outcome, Palette, Rerun, ResponseState,
-    ResponseView, SaveToCollectionDialog, SettingsDialog, SidebarState, TabStripState, TestsView,
-    TextBody, request_editor, sidebar,
+    EnvironmentsDialog, Marks, MoveDialog, NameDialog, OpenTab, Outcome, Palette, Rerun,
+    ResponseState, ResponseView, SaveToCollectionDialog, SettingsDialog, SidebarState,
+    TabStripState, TestsView, TextBody, request_editor, sidebar,
 };
 use crate::format::sentence;
 use crate::host::{Host, SavedDrafts};
@@ -255,7 +255,7 @@ impl<T> Inbox<T> {
 }
 
 /// What the app keeps for one request while it runs: what its last send left to show,
-/// and how it is being debugged. One struct, so a rename or delete can't move or drop
+/// how it is being debugged, and the editor tab it was left on. One struct, so a rename or delete can't move or drop
 /// one part and forget another.
 #[derive(Debug, Default)]
 struct Sent {
@@ -268,6 +268,8 @@ struct Sent {
     breakpoints: Breakpoints,
     /// How its last response differs from the one before (R-HIST-5).
     comparison: Option<Arc<tortuga_core::changes::Comparison>>,
+    /// The editor tab it was left on, opened again on coming back (R-COL-49).
+    open_tab: Option<OpenTab>,
 }
 
 /// Moves every value whose key `moved` gives a new place to that place.
@@ -804,9 +806,24 @@ impl TortugaUi {
         dirty
     }
 
-    /// Replaces the edited request from outside the editor.
+    /// Replaces the edited request from outside the editor; the open tab stays
+    /// (R-COL-49).
     fn load(&mut self, request: Request) {
+        let open = self.editor.open_tab();
         self.editor = EditorState::new(&request);
+        self.editor.set_open_tab(open);
+        self.current = request;
+        self.response.reset();
+    }
+
+    /// Shows the newly selected request on the tab it was left on, or the first tab
+    /// (R-COL-49).
+    fn load_selected(&mut self, request: Request) {
+        let open = self.sent.get(&self.selection).and_then(|s| s.open_tab);
+        self.editor = EditorState::new(&request);
+        if let Some(open) = open {
+            self.editor.set_open_tab(open);
+        }
         self.current = request;
         self.response.reset();
     }
@@ -838,6 +855,10 @@ impl TortugaUi {
         if self.selection == new {
             return;
         }
+        self.sent
+            .entry(self.selection.clone())
+            .or_default()
+            .open_tab = Some(self.editor.open_tab());
         let cur = std::mem::take(&mut self.current);
         match &self.selection {
             None => self.scratch = cur,
@@ -854,7 +875,7 @@ impl TortugaUi {
                 .unwrap_or_default(),
         };
         self.selection = new;
-        self.load(next);
+        self.load_selected(next);
     }
 
     /// Keys follow files and folders that were renamed or moved.
@@ -911,7 +932,7 @@ impl TortugaUi {
             };
             self.state.remember_selection(next.as_ref());
             self.selection = next;
-            self.load(request);
+            self.load_selected(request);
         }
     }
 
@@ -989,7 +1010,7 @@ mod tests {
     use tortuga_core::{Collection, Item};
 
     use super::*;
-    use crate::components::TabAction;
+    use crate::components::{ScriptTab, TabAction};
     use crate::test_host::TestHost;
 
     pub(super) type Shared<T> = std::rc::Rc<std::cell::RefCell<T>>;
@@ -1368,6 +1389,44 @@ mod tests {
             [(Some(first), false)],
             "deleted in git: tab closed"
         );
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-COL-49: each request opens on the editor tab it was left on, also after a
+    /// rename and after the file changed on disk; a request not shown yet opens on
+    /// the first tab.
+    #[test]
+    fn requests_open_on_the_tab_they_were_left_on() {
+        let (mut ui, root, first) = setup("open-tab-ü😀");
+        let first_tab = ui.editor.open_tab();
+        let second = add_request(&mut ui, &root, "List users ü😀");
+        ui.select(Some(second.clone()));
+        assert_eq!(ui.editor.open_tab(), first_tab, "a new request: first tab");
+        ui.editor.open_scripts(ScriptTab::Captures);
+        let left_on = ui.editor.open_tab();
+        assert_ne!(left_on, first_tab);
+
+        ui.select(Some(first.clone()));
+        assert_eq!(ui.editor.open_tab(), first_tab);
+        ui.select(None);
+        assert_eq!(ui.editor.open_tab(), first_tab, "the scratch request");
+        ui.select(Some(second.clone()));
+        assert_eq!(ui.editor.open_tab(), left_on);
+
+        ui.rename(&second, "All users".into());
+        let renamed = ui.selection.clone();
+        assert_ne!(renamed, Some(second));
+        ui.select(Some(first));
+        ui.select(renamed);
+        assert_eq!(ui.editor.open_tab(), left_on, "follows the rename");
+
+        let key = ui.selection.clone().expect("a request");
+        let path = root.join(&key.path);
+        let text = std::fs::read_to_string(&path).expect("read");
+        std::fs::write(&path, text.replace("GET", "POST")).expect("write");
+        ui.on_disk_change(&root);
+        assert_eq!(ui.current.method, tortuga_core::HttpMethod::Post);
+        assert_eq!(ui.editor.open_tab(), left_on, "a reload keeps the tab");
         std::fs::remove_dir_all(root).expect("clean up");
     }
 

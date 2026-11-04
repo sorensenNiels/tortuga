@@ -54,6 +54,7 @@ impl TortugaUi {
             filter,
             tests,
             breakpoints: _,
+            open_tab: _,
             comparison,
         } = self.sent.entry(key.clone()).or_default();
         let outcome = outcome.as_ref();

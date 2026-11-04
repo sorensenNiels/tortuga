@@ -302,15 +302,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Event::Text(text) => {
-                    let value = text
-                        .xml10_content()
-                        .map_err(|e| self.error(start, &e.to_string()))?;
+                    let value = text.xml10_content();
                     self.text_node(start, &value, source)?;
                 }
                 Event::CData(data) => {
-                    let value = data
-                        .xml10_content()
-                        .map_err(|e| self.error(start, &e.to_string()))?;
+                    let value = data.xml10_content();
                     self.text_node(start, &value, source)?;
                 }
                 Event::GeneralRef(entity) => {
@@ -349,11 +345,11 @@ impl<'a> Parser<'a> {
         if self.root_done {
             return Err(self.error(at, "there is more than one root element"));
         }
-        let name = String::from_utf8_lossy(tag.name().as_ref()).into_owned();
+        let name = tag.name().as_ref().to_owned();
         let mut attributes = Vec::new();
         for attribute in tag.attributes() {
             let attribute = attribute.map_err(|e| self.error(at, &e.to_string()))?;
-            let key = String::from_utf8_lossy(attribute.key.as_ref()).into_owned();
+            let key = attribute.key.as_ref().to_owned();
             let value = attribute
                 .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .map_err(|e| self.error(at, &message(&e)))?;
@@ -407,10 +403,8 @@ impl<'a> Parser<'a> {
                 Ok(None) | Err(_) => Err(self.error(at, "invalid character reference")),
             };
         }
-        let name = entity
-            .decode()
-            .map_err(|e| self.error(at, &e.to_string()))?;
-        if let Some(value) = quick_xml::escape::resolve_predefined_entity(&name) {
+        let name: &str = entity;
+        if let Some(value) = quick_xml::escape::resolve_predefined_entity(name) {
             return Ok(value.to_owned());
         }
         if self.has_doctype {

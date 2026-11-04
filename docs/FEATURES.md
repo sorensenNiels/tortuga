@@ -377,6 +377,7 @@ Checked in the running app on Linux (WSL2/WSLg) and Windows on 2026-10-26.
 | R-SET-18 | Built and tested (`update` tests in `tortuga-core`, `the_download_command_of_a_package_can_be_picked`, `results_show_quietly`). Not yet checked in the running app against a real release. |
 | R-CLI-4 | The **Release** workflow builds `tortuga-cli` on each OS, checks `--version` and attaches `tortuga-cli-<version>-<os>.tar.gz` (`.zip` on Windows) with the README and licences. **Verified:** the archive step run locally on Linux (binary needs only libc). The workflow succeeded for v0.9.0 to v0.11.0 (GitHub Actions). **Not yet checked:** the Windows and macOS archives it attaches. |
 | R-COL-48 | 🗙 on the sidebar's scratch row (`SidebarAction::ClearScratch`, `TortugaUi::clear_scratch`). Automated UI test on Linux clicks it with the scratch request shown and not shown (non-ASCII URL, 10 000-character body, its response filter); the 🗙 goes away once there is nothing to clear. **Not yet checked** in the running app. |
+| R-COL-49 | `Sent::open_tab`, kept by `TortugaUi::select_and_remember` and given back by `load_selected`; `load` keeps the tab on a reload (`EditorState::open_tab`/`set_open_tab`). Automated test on Linux (`requests_open_on_the_tab_they_were_left_on`: Scripts › Captures kept, other and scratch requests on the first tab, after a rename and a change on disk; non-ASCII names). **Not yet checked** in the running app. |
 
 ## Known limitations
 

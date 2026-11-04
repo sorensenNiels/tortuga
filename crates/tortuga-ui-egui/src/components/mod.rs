@@ -55,7 +55,7 @@ pub use modals::{
 use modals::{dialog, fitting_scroll_area, resizable_dialog};
 pub use palette::{Palette, PaletteItem};
 pub use request_editor::{
-    EditorAction, EditorContext, EditorState, EditorView, Rerun, request_editor,
+    EditorAction, EditorContext, EditorState, EditorView, OpenTab, Rerun, request_editor,
 };
 pub use request_scripts::ScriptTab;
 pub use response_panel::{

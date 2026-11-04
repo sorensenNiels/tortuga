@@ -39,7 +39,7 @@ directories = "6"
 keyring = "4.2"
 # Live git collaboration (M6): file watching (debounced in tortuga-app watch.rs), git status without a git executable, opening folders.
 notify = "8.2"
-gix = { version = "0.89", default-features = false, features = ["status", "sha1", "max-performance-safe"] }
+gix = { version = "0.90", default-features = false, features = ["status", "sha1", "max-performance"] }
 open = "5"
 # The local UTC offset, to show history times (R-HIST-2).
 # Formatting times; the clock is the app's only (core reads the time with web-time).
@@ -60,7 +60,7 @@ boa_engine = { version = "0.22", default-features = false }
 # OpenAPI descriptions in YAML (R-COL-15): pure Rust, read into serde_json values.
 yaml-rust2 = { version = "0.13", default-features = false }
 # XML bodies, pretty-printing and XPath (R-HTTP-19): pure Rust, already used by the Wayland build.
-quick-xml = "0.41"
+quick-xml = "0.42"
 # Decoding image responses to show them (R-HTTP-17): pure Rust, also on wasm; the common web formats only.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 # The mock server (R-MOCK-2, D46): native only; the versions reqwest already uses.
