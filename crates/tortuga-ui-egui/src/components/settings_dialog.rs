@@ -57,6 +57,8 @@ pub struct SettingsDialog {
     pub choose_font_requested: bool,
     /// "Check now" was clicked on the About page; the shell checks (R-SET-15).
     pub check_requested: bool,
+    /// A download command picked on the About page; the shell copies it (R-SET-18).
+    pub copy_command_requested: Option<String>,
     /// The key being recorded on the Script editor page (R-SET-16).
     script_editor_tab: script_editor_tab::ScriptEditorTab,
 }
@@ -78,6 +80,7 @@ impl SettingsDialog {
             add_ca_requested: false,
             choose_font_requested: false,
             check_requested: false,
+            copy_command_requested: None,
             script_editor_tab: script_editor_tab::ScriptEditorTab::default(),
         }
     }
@@ -179,9 +182,13 @@ impl SettingsDialog {
             Page::History => {
                 history_settings(ui, &mut self.draft.history, &mut self.history_text);
             }
-            Page::About => {
-                self.check_requested |= about::about_page(ui, &mut self.draft.updates, update);
-            }
+            Page::About => match about::about_page(ui, &mut self.draft.updates, update) {
+                Some(about::AboutAction::CheckNow) => self.check_requested = true,
+                Some(about::AboutAction::CopyCommand(command)) => {
+                    self.copy_command_requested = Some(command);
+                }
+                None => {}
+            },
         }
     }
 }
@@ -890,5 +897,70 @@ mod tests {
             UpdateStatus::Unsupported,
             "Tortuga sends nothing on its own: no telemetry, no update checks. It only contacts the servers your requests go to.",
         );
+    }
+
+    fn release_with_packages() -> Release {
+        let download = |name: &str| tortuga_core::update::Download {
+            name: name.into(),
+            url: format!(
+                "https://github.com/sorensenNiels/tortuga/releases/download/v9.0.0/{name}"
+            ),
+        };
+        Release {
+            version: "9.0.0".into(),
+            page: "https://github.com/sorensenNiels/tortuga/releases/tag/v9.0.0".into(),
+            downloads: vec![
+                download("tortuga_9.0.0_amd64_ü😀.deb"),
+                download("tortuga_9.0.0_x86_64.AppImage"),
+            ],
+        }
+    }
+
+    /// R-SET-18: on Linux the About page lists the new version's packages by name beside
+    /// its link; picking one hands its `curl` command to the shell. Elsewhere there is
+    /// no menu.
+    #[test]
+    fn about_offers_the_download_command_on_linux() {
+        let status = UpdateStatus::Available(release_with_packages());
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        dialog.page = Page::About;
+        {
+            let mut h = harness(|ui| {
+                dialog.show(ui.ctx(), true, &status);
+            });
+            h.run();
+            h.get_by_label("Tortuga 9.0.0 is available");
+            if !cfg!(target_os = "linux") {
+                assert!(h.query_by_label("Copy download command").is_none());
+                return;
+            }
+            h.get_by_label("Copy download command").click();
+            h.run();
+            h.get_by_label("tortuga_9.0.0_amd64_ü😀.deb");
+            h.get_by_label("tortuga_9.0.0_x86_64.AppImage").click();
+            h.run();
+        }
+        assert_eq!(
+            dialog.copy_command_requested.as_deref(),
+            Some(
+                "curl -fLO 'https://github.com/sorensenNiels/tortuga/releases/download/v9.0.0/tortuga_9.0.0_x86_64.AppImage'"
+            )
+        );
+    }
+
+    /// R-SET-18: without packages there is no menu.
+    #[test]
+    fn no_download_command_without_packages() {
+        let mut release = release_with_packages();
+        release.downloads.clear();
+        let status = UpdateStatus::Available(release);
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        dialog.page = Page::About;
+        let mut h = harness(|ui| {
+            dialog.show(ui.ctx(), true, &status);
+        });
+        h.run();
+        h.get_by_label("Tortuga 9.0.0 is available");
+        assert!(h.query_by_label("Copy download command").is_none());
     }
 }

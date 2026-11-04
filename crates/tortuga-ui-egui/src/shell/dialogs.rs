@@ -222,6 +222,10 @@ impl TortugaUi {
         if std::mem::take(&mut d.check_requested) {
             self.check_for_updates_now(ctx);
         }
+        if let Some(command) = d.copy_command_requested.take() {
+            ctx.copy_text(command);
+            self.state.inform(t!("update-command-copied"));
+        }
         if std::mem::take(&mut d.add_ca_requested)
             && let Some(path) = self.state.host.pick_any_file(&t!("choose-ca-certificate"))
         {
@@ -567,5 +571,28 @@ mod tests {
             h.run();
         }
         assert!(matches!(ui.modal, Some(super::Modal::Settings(_))));
+    }
+
+    /// R-SET-18: a download command picked on the About page is copied, with a toast.
+    #[test]
+    fn a_download_command_picked_in_settings_is_copied() {
+        let mut ui = TortugaUi::new(Box::new(crate::test_host::TestHost::default()));
+        let mut dialog = SettingsDialog::new(&ui.state.settings);
+        dialog.copy_command_requested = Some("curl -fLO 'https://example.com/ü😀.deb'".into());
+        ui.modal = Some(super::Modal::Settings(Box::new(dialog)));
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1400.0, 860.0))
+            .build_ui(|egui_ui| ui.ui(egui_ui));
+        h.run();
+        drop(h);
+        // The toast is given in the same place as the copy.
+        assert_eq!(
+            ui.state.toast.as_ref().map(|t| t.text.as_str()),
+            Some("Download command copied. Paste it in a terminal")
+        );
+        let Some(super::Modal::Settings(d)) = &ui.modal else {
+            panic!("the dialog stays open");
+        };
+        assert_eq!(d.copy_command_requested, None);
     }
 }
