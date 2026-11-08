@@ -70,8 +70,8 @@ http-body-util = "0.1"
 bytes = "1"
 # Timing a send's connections (R-HTTP-25): only the `Layer`/`Service` traits; the version reqwest uses.
 tower = { version = "0.5", default-features = false }
-# The MCP server for AI agents (R-MCP-1, D74): the official Rust SDK, native only; stdio for `tortuga-cli mcp`.
-rmcp = { version = "3.9", default-features = false, features = ["server", "macros", "transport-io"] }
+# The MCP server for AI agents (R-MCP-1, R-MCP-5, D74): the official Rust SDK, native only; stdio for `tortuga-cli mcp`, HTTP for the app.
+rmcp = { version = "3.9", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 # Windows icon and version information in tortuga.exe (build script).
 winresource = { version = "0.1", default-features = false }
 

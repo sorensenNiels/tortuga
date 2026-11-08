@@ -71,6 +71,10 @@ pub(super) enum Command {
     ShowMock(PathBuf),
     /// Send requests to the running mocks (D45).
     MockEnvironment,
+    /// The MCP server for AI agents (R-MCP-5).
+    StartMcp,
+    StopMcp,
+    ShowMcp,
 }
 
 /// Adding, creating and importing projects (R-WS-3, R-COL-15, R-COL-16, R-COL-17,
@@ -197,6 +201,24 @@ impl TortugaUi {
             );
         }
         items
+    }
+
+    /// The MCP server's commands (R-MCP-5).
+    fn mcp_items(&self) -> Vec<PaletteItem<PaletteChoice>> {
+        let run =
+            |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
+        let items = if self.state.mcp.running().is_some() {
+            vec![
+                run(t!("cmd-mcp-server"), Command::ShowMcp),
+                run(t!("cmd-stop-mcp"), Command::StopMcp),
+            ]
+        } else {
+            vec![run(t!("cmd-start-mcp"), Command::StartMcp)]
+        };
+        items
+            .into_iter()
+            .map(|item| item.keywords("mcp ai agent claude cursor copilot"))
+            .collect()
     }
 
     /// A project's mock server commands (R-MOCK-2, R-MOCK-4).
@@ -360,6 +382,7 @@ impl TortugaUi {
                 .keywords("captured clear"),
         );
         items.extend(workspace_commands(&self.state.workspace().name));
+        items.extend(self.mcp_items());
         items.push(run(t!("cmd-settings"), Command::Settings).keywords("preferences options"));
         if self.state.host.checks_for_updates() {
             items.push(
@@ -448,6 +471,12 @@ impl TortugaUi {
             }
             Command::Environment(name) => self.state.set_workspace_environment(&name),
             Command::MockEnvironment => self.state.use_mock_environment(),
+            Command::StartMcp => {
+                self.start_mcp();
+                self.show_mcp();
+            }
+            Command::StopMcp => self.stop_mcp(),
+            Command::ShowMcp => self.show_mcp(),
             Command::StartMock(root) => self.start_mock(&root),
             Command::StopMock(root) => self.stop_mock(&root),
             Command::ShowMock(root) => self.show_mock(root),

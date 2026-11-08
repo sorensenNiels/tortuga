@@ -83,6 +83,14 @@ impl TortugaUi {
                         action = Some(WorkspaceAction::OpenFile);
                     }
                 }
+                let mcp = if self.state.mcp.running().is_some() {
+                    t!("mcp-menu-running")
+                } else {
+                    t!("mcp-menu-start")
+                };
+                if ui.button(mcp).on_hover_text(t!("mcp-menu-hint")).clicked() {
+                    action = Some(WorkspaceAction::Mcp);
+                }
                 let danger = theme::palette(ui).fail;
                 if ui
                     .add_enabled(
@@ -159,6 +167,12 @@ impl TortugaUi {
                         self.state.notify(e);
                     }
                 }
+            }
+            WorkspaceAction::Mcp => {
+                if self.state.mcp.running().is_none() {
+                    self.start_mcp();
+                }
+                self.show_mcp();
             }
             WorkspaceAction::Remove => {
                 let name = self.state.workspace().name.clone();

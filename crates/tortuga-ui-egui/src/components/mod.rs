@@ -13,6 +13,7 @@ mod fanout_dialog;
 mod history_list;
 mod import_dialog;
 mod key_value_table;
+mod mcp_dialog;
 mod mock_dialog;
 mod modals;
 mod palette;
@@ -46,6 +47,7 @@ pub use import_dialog::{
     environments_entry, file_names, importer_name, kind_label,
 };
 pub use key_value_table::key_value_table;
+pub use mcp_dialog::{McpDialogAction, McpView, mcp_dialog};
 pub use mock_dialog::{MockAction, MockDialog, MockView};
 pub use modals::{
     AddProjects, AddProjectsDialog, ConfirmDialog, CookieAction, CookiesDialog, CopyCurlDialog,

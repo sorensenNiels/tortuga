@@ -287,11 +287,11 @@ fn a_read_only_project_refuses_edits() {
 /// P6: this machine's values never reach the agent, however they are embedded.
 #[test]
 fn hidden_values_are_replaced_longest_first() {
-    let hidden = BTreeMap::from([
-        ("token".to_owned(), "abc-ü😀-123".to_owned()),
+    let hidden = [
         ("part".to_owned(), "abc-ü".to_owned()),
+        ("token".to_owned(), "abc-ü😀-123".to_owned()),
         ("short".to_owned(), "ab".to_owned()),
-    ]);
+    ];
     let value = json!({
         "body": "{\"token\":\"abc-ü😀-123\"} abc-ü",
         "list": ["Bearer abc-ü😀-123", 3, null],
@@ -344,5 +344,66 @@ fn a_big_body_is_cut_and_says_so() {
             .as_str()
             .expect("text")
             .starts_with("(binary, 3 bytes")
+    );
+}
+
+/// R-MCP-5: the app's secret values go by environment, and none is shown.
+#[test]
+fn secrets_follow_the_environment_and_are_all_hidden() {
+    let dir = tempfile::tempdir().expect("dir");
+    let project = McpProject {
+        secrets: BTreeMap::from([
+            (
+                String::new(),
+                BTreeMap::from([("token".into(), "every-env".into())]),
+            ),
+            (
+                "prod".into(),
+                BTreeMap::from([("token".into(), "prod-only".into())]),
+            ),
+        ]),
+        ..project(dir.path())
+    };
+    let get = first_request(&project);
+    let none = BTreeMap::new();
+
+    let dev = project
+        .prepare_send(&FS, &get, Some("Dev"), &none)
+        .expect("dev");
+    let prod = project
+        .prepare_send(&FS, &get, Some("Prod"), &none)
+        .expect("prod");
+
+    assert_eq!(dev.options.secrets["token"], "every-env");
+    assert_eq!(
+        prod.options.secrets["token"], "prod-only",
+        "names match ignoring case"
+    );
+    let hidden: Vec<String> = project.hidden().into_iter().map(|(_, v)| v).collect();
+    assert!(hidden.contains(&"every-env".to_owned()), "{hidden:?}");
+    assert!(hidden.contains(&"prod-only".to_owned()), "{hidden:?}");
+    assert!(
+        !format!("{project:?}").contains("prod-only"),
+        "Debug hides values"
+    );
+}
+
+/// R-MCP-5: "Copy agent config" gives each agent the URL and the token.
+#[test]
+fn agent_configs_carry_the_url_and_token() {
+    let url = "http://127.0.0.1:4040/mcp";
+    for agent in Agent::ALL {
+        let config = agent.config(url, "abc123");
+        assert!(config.contains(url), "{config}");
+        assert!(config.contains("Bearer abc123"), "{config}");
+    }
+    let cursor = json(&Agent::Cursor.config(url, "t"));
+    assert_eq!(cursor["mcpServers"]["tortuga"]["url"], url);
+    let vscode = json(&Agent::VsCode.config(url, "t"));
+    assert_eq!(vscode["servers"]["tortuga"]["type"], "http");
+    assert!(
+        Agent::ClaudeCode
+            .config(url, "t")
+            .starts_with("claude mcp add --transport http")
     );
 }

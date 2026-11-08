@@ -298,6 +298,40 @@ impl std::fmt::Debug for MockHandle {
     }
 }
 
+/// The app's MCP server, which the host started (R-MCP-5). It stops when this is dropped.
+pub struct McpHandle {
+    pub port: u16,
+    /// What agents connect to: `http://127.0.0.1:<port>/mcp`.
+    pub url: String,
+    /// The bearer token agents send, new at each start (D75).
+    pub token: String,
+    /// Whatever keeps the server running; dropped to stop it.
+    _running: Box<dyn std::any::Any>,
+}
+
+impl McpHandle {
+    pub fn new(port: u16, url: String, token: String, running: Box<dyn std::any::Any>) -> Self {
+        Self {
+            port,
+            url,
+            token,
+            _running: running,
+        }
+    }
+}
+
+impl std::fmt::Debug for McpHandle {
+    // Hand-written so the token never reaches a log.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpHandle")
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Called with what an agent did through the MCP server, from any thread (R-MCP-5).
+pub type OnMcpAction = std::sync::Arc<dyn Fn(tortuga_core::mcp::McpAction) + Send + Sync>;
+
 /// Called with each request a mock server answers, from any thread.
 pub type OnMockHit = Box<dyn Fn(tortuga_core::mock::Hit) + Send + Sync>;
 
@@ -455,6 +489,18 @@ pub trait Host {
         _on_hit: OnMockHit,
     ) -> Result<MockHandle, String> {
         Err(t!("mock-needs-desktop"))
+    }
+
+    /// Starts the MCP server for `projects` on `127.0.0.1:port` (`0`: a free port) with a
+    /// new token (R-MCP-5); the UI replaces the projects when the workspace changes.
+    fn start_mcp(
+        &self,
+        _port: u16,
+        _projects: tortuga_core::mcp::SharedProjects,
+        _client: tortuga_core::Client,
+        _on_action: OnMcpAction,
+    ) -> Result<McpHandle, String> {
+        Err(t!("mcp-needs-desktop"))
     }
 
     /// Runs `task` in the background. The UI cancels it by dropping it (it is abortable).

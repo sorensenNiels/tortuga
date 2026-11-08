@@ -158,6 +158,14 @@ pub enum Error {
     /// R-MCP-1
     #[error("the MCP server stopped: {0}")]
     McpServer(String),
+
+    /// R-MCP-5
+    #[error("could not start the MCP server on port {port}: {source}")]
+    McpListen {
+        port: u16,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl Error {

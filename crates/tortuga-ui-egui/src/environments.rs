@@ -116,6 +116,7 @@ impl AppState {
         self.mocks.selected = false;
         self.refresh_mocks();
         self.workspace_mut().environment = Some(name.to_owned());
+        self.refresh_mcp();
         self.save_local();
     }
 

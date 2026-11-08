@@ -20,10 +20,12 @@ pub fn serve(args: &Args) -> Result<(), String> {
         workspace::environment_named(&collection, &workspace, name).map_err(|e| e.to_string())?;
     }
     let project = McpProject {
+        name: collection.name().to_owned(),
         root: args.project.clone(),
         workspace,
         environment: args.env.clone(),
         values: args.vars.clone(),
+        secrets: std::collections::BTreeMap::new(),
     };
     let client = crate::client(args)?;
     let runtime = tokio::runtime::Builder::new_current_thread()

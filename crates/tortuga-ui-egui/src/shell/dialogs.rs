@@ -77,6 +77,7 @@ impl TortugaUi {
             | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
             Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
             Modal::Mock(d) => self.show_mock_dialog(ctx, d),
+            Modal::Mcp => self.show_mcp_dialog(ctx),
             Modal::Import(open) => self.show_import_dialog(ctx, open),
             Modal::EnvironmentImport(open) => self.show_environment_import(ctx, open),
             Modal::CloseProjectTabs(root, d) => self.show_close_project_tabs(ctx, root, d),

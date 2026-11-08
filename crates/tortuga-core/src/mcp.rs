@@ -2,12 +2,15 @@
 //! project through the Model Context Protocol. Each tool is a plain function on
 //! [`McpProject`] that opens the project from disk, so it always sees what is saved (and
 //! never the app's unsaved edits), and returns text for the agent. [`server`] wraps them
-//! in `rmcp`. Native only, like the mock server.
+//! in `rmcp` and is native only, like the mock server; the rest also builds for the web, so
+//! the UI can name its types.
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 use serde_json::{Value, json};
 
@@ -26,9 +29,32 @@ pub const BODY_LIMIT: usize = 100 * 1024;
 /// `1` or `ok` in a response would garble it and hide nothing worth hiding.
 const MIN_HIDDEN_LEN: usize = 4;
 
+/// The projects an MCP server serves, which the app replaces when the workspace, its
+/// environment or its secrets change (R-MCP-5).
+pub type SharedProjects = Arc<RwLock<Vec<McpProject>>>;
+
+/// The port the app's MCP server starts on when it is free (R-MCP-5).
+pub const DEFAULT_PORT: u16 = 4040;
+
+/// What an agent did through the MCP server, for the app's log (R-MCP-5): a request
+/// sent, or a file changed. Browsing is not logged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpAction {
+    pub at: std::time::SystemTime,
+    /// The project's name.
+    pub project: String,
+    /// What was done: "Sent GET users/get-user.toml", "Created users/orders".
+    pub summary: String,
+    /// The response's status, the edit's result, or why it failed.
+    pub outcome: String,
+    pub failed: bool,
+}
+
 /// The project an MCP server serves, and how its requests are sent (R-MCP-1).
 #[derive(Clone, Default)]
 pub struct McpProject {
+    /// The project's name, by which an agent picks it when a server has several (R-MCP-5).
+    pub name: String,
     /// The project's folder (the one with `tortuga.toml`).
     pub root: PathBuf,
     /// Shared environments, variables, settings, headers and auth (`--workspace`).
@@ -38,12 +64,16 @@ pub struct McpProject {
     /// This machine's values for variables, e.g. secrets from `TORTUGA_VAR_<name>` (R-CLI-2).
     /// They win over the project's in a send and are never shown to the agent (P6).
     pub values: BTreeMap<String, String>,
+    /// This machine's secret values by environment name (`""`: for every environment), as
+    /// the app keeps them (R-LOC-2). A send uses those of its environment; none is shown.
+    pub secrets: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl std::fmt::Debug for McpProject {
     // Hand-written so `values`, which may hold secrets, never reach a log.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpProject")
+            .field("name", &self.name)
             .field("root", &self.root)
             .field("environment", &self.environment)
             .field("values", &self.values.keys().collect::<Vec<_>>())
@@ -60,6 +90,36 @@ pub struct PreparedSend {
 }
 
 impl McpProject {
+    /// Every value of this machine an agent must never see, with its variable's name:
+    /// `values`, the secret values of every environment and the workspace's secrets (P6).
+    pub fn hidden(&self) -> Vec<(String, String)> {
+        let workspace = &self.workspace.variables;
+        self.values
+            .iter()
+            .chain(self.secrets.values().flatten())
+            .chain(
+                workspace
+                    .values
+                    .iter()
+                    .filter(|(name, _)| workspace.secrets.contains(*name)),
+            )
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
+    /// The secret values a send in `environment` uses.
+    fn secrets_for(&self, environment: Option<&crate::Environment>) -> BTreeMap<String, String> {
+        let mut out = self.secrets.get("").cloned().unwrap_or_default();
+        if let Some(env) = environment {
+            for (name, values) in &self.secrets {
+                if !name.is_empty() && env.is_named(name) {
+                    out.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+            }
+        }
+        out
+    }
+
     fn open(&self, storage: &dyn Storage) -> Result<Collection> {
         Collection::open(storage, &self.root)
     }
@@ -153,6 +213,7 @@ impl McpProject {
         let path = request_path(&collection, path)?;
         let workflow = Workflow::single(&collection, &path);
         let mut environment_id = None;
+        let mut secrets = self.secrets_for(None);
         if let Some(name) = environment.or(self.environment.as_deref()) {
             let env = workspace::environment_named(&collection, &self.workspace, name)?;
             let writes = workflow.writes(&collection);
@@ -165,12 +226,14 @@ impl McpProject {
                 )));
             }
             environment_id = Some(env.id.clone());
+            secrets = self.secrets_for(Some(&env));
             collection = collection.with_environment(env);
         }
         let mut overrides = self.values.clone();
         overrides.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
         let options = RunOptions {
             environment: environment_id,
+            secrets,
             overrides,
             workspace: self.workspace.variables.values.clone(),
             secret_names: self.workspace.variables.secrets.clone(),
@@ -258,14 +321,19 @@ impl McpProject {
     }
 }
 
+/// What a send gave: the text for the agent, and a line for the app's log (R-MCP-5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sent {
+    pub text: String,
+    /// "200 OK", "200 OK, 1 of 3 tests failed", or why there is no response.
+    pub outcome: String,
+    pub failed: bool,
+}
+
 /// Sends a prepared request and words the outcome for the agent (R-MCP-3): status, time,
 /// headers, body (at most [`BODY_LIMIT`]), test results, script errors and log lines.
 /// `hidden` values (this machine's) are replaced by `{{name}}` everywhere in it (P6).
-pub async fn send(
-    client: &Client,
-    prepared: &PreparedSend,
-    hidden: &BTreeMap<String, String>,
-) -> String {
+pub async fn send(client: &Client, prepared: &PreparedSend, hidden: &[(String, String)]) -> Sent {
     let result = workflow::run(
         client,
         &prepared.collection,
@@ -283,7 +351,67 @@ pub async fn send(
         || json!({ "error": "The request was not sent." }),
         outcome_json,
     );
-    pretty(&hide(value, hidden)).unwrap_or_else(|e| e.to_string())
+    let text = pretty(&hide(value, hidden)).unwrap_or_else(|e| e.to_string());
+    let (outcome, failed) = outcome.map_or_else(
+        || ("The request was not sent.".to_owned(), true),
+        |o| (log_line(o), o.failed()),
+    );
+    Sent {
+        text,
+        outcome,
+        failed,
+    }
+}
+
+/// "200 OK", with how many tests failed, or why there is no response.
+fn log_line(outcome: &StepOutcome) -> String {
+    let status = match &outcome.response {
+        Some(Ok(r)) => format!("{} {}", r.status, r.status_text),
+        Some(Err(e)) => e.clone(),
+        None => "The request was not sent.".to_owned(),
+    };
+    match outcome.failed_tests() {
+        0 => status,
+        failed => format!("{status}, {failed} of {} tests failed", outcome.tests.len()),
+    }
+}
+
+/// An AI agent the app gives a ready-made configuration for (R-MCP-5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Agent {
+    ClaudeCode,
+    Cursor,
+    VsCode,
+}
+
+impl Agent {
+    pub const ALL: [Agent; 3] = [Agent::ClaudeCode, Agent::Cursor, Agent::VsCode];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => "Claude Code",
+            Agent::Cursor => "Cursor",
+            Agent::VsCode => "VS Code",
+        }
+    }
+
+    /// What to paste so the agent reaches the app's server at `url` with `token`: a command
+    /// for Claude Code, the JSON for Cursor's `mcp.json` and VS Code's `.vscode/mcp.json`.
+    pub fn config(self, url: &str, token: &str) -> String {
+        let auth = format!("Bearer {token}");
+        let value = match self {
+            Agent::ClaudeCode => {
+                return format!(
+                    "claude mcp add --transport http tortuga {url} --header \"Authorization: {auth}\""
+                );
+            }
+            Agent::Cursor => json!({ "mcpServers": { "tortuga": {
+                "url": url, "headers": { "Authorization": auth } } } }),
+            Agent::VsCode => json!({ "servers": { "tortuga": {
+                "type": "http", "url": url, "headers": { "Authorization": auth } } } }),
+        };
+        serde_json::to_string_pretty(&value).unwrap_or_default()
+    }
 }
 
 fn outcome_json(outcome: &StepOutcome) -> Value {
@@ -369,7 +497,7 @@ fn cut(text: &str, max: usize) -> &str {
 
 /// `value` with every `hidden` value (long enough to matter) in its strings replaced by
 /// `{{name}}`, longest first so a value inside another can't leave part of it (P6).
-fn hide(value: Value, hidden: &BTreeMap<String, String>) -> Value {
+fn hide(value: Value, hidden: &[(String, String)]) -> Value {
     let mut secrets: Vec<(&str, &str)> = hidden
         .iter()
         .filter(|(_, v)| v.chars().count() >= MIN_HIDDEN_LEN)

@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Arc, RwLock};
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -45,7 +46,8 @@ fn project(dir: &Path, uri: &str) {
 async fn connect(project: McpProject) -> RunningService<RoleClient, ()> {
     let (server_side, client_side) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
-        let server = TortugaMcp::new(project, Client::default())
+        let projects = Arc::new(RwLock::new(vec![project]));
+        let server = TortugaMcp::new(projects, Client::default(), Arc::new(|_| {}))
             .serve(server_side)
             .await
             .expect("server starts");
@@ -153,4 +155,130 @@ async fn an_edit_writes_the_project_files() {
     let col = Collection::open(&FsStorage, dir.path()).expect("open");
     assert!(col.items.iter().any(|i| i.name() == "Delete user ü😀"));
     client.cancel().await.expect("stop");
+}
+
+/// R-MCP-5: with several projects an agent names one; edits and sends are logged.
+#[tokio::test]
+async fn several_projects_are_picked_by_name_and_actions_logged() {
+    let (a, b) = (
+        tempfile::tempdir().expect("a"),
+        tempfile::tempdir().expect("b"),
+    );
+    project(a.path(), "http://localhost:1");
+    project(b.path(), "http://localhost:1");
+    let projects = Arc::new(RwLock::new(vec![
+        McpProject {
+            name: "Shop".into(),
+            root: a.path().to_owned(),
+            ..McpProject::default()
+        },
+        McpProject {
+            name: "Billing ü😀".into(),
+            root: b.path().to_owned(),
+            ..McpProject::default()
+        },
+    ]));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = Arc::clone(&log);
+    let (server_side, client_side) = tokio::io::duplex(64 * 1024);
+    let shared = Arc::clone(&projects);
+    tokio::spawn(async move {
+        let on_action = Arc::new(move |a| seen.lock().expect("log").push(a));
+        let server = TortugaMcp::new(shared, Client::default(), on_action)
+            .serve(server_side)
+            .await
+            .expect("server starts");
+        // The test ends by cancelling the client, which ends this.
+        let _ = server.waiting().await;
+    });
+    let client = ().serve(client_side).await.expect("client connects");
+
+    let all: Value =
+        serde_json::from_str(text(&call(&client, "list_project", json!({})).await)).expect("json");
+    assert_eq!(all.as_array().map(Vec::len), Some(2));
+    let unnamed = call(&client, "get_request", json!({ "path": "get-user" })).await;
+    assert_eq!(unnamed.is_error, Some(true));
+    assert!(text(&unnamed).contains("Billing ü😀"), "{}", text(&unnamed));
+    let named = call(
+        &client,
+        "create_folder",
+        json!({ "project": "billing ü😀", "name": "Invoices" }),
+    )
+    .await;
+    assert_ne!(named.is_error, Some(true), "{}", text(&named));
+    assert!(b.path().join("invoices").exists());
+    assert!(!a.path().join("invoices").exists());
+    let refused = call(
+        &client,
+        "send_request",
+        json!({ "project": "Shop", "path": "nope" }),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+
+    let log = log.lock().expect("log").clone();
+    assert_eq!(log.len(), 2, "{log:?}");
+    assert_eq!(log[0].project, "Billing ü😀");
+    assert_eq!(log[0].summary, "Create folder Invoices");
+    assert!(!log[0].failed);
+    assert!(
+        log[1].failed && log[1].summary.starts_with("Sent"),
+        "{log:?}"
+    );
+    client.cancel().await.expect("stop");
+}
+
+/// R-MCP-5, D75: the app's HTTP server only answers at /mcp, with the token.
+#[tokio::test]
+async fn the_http_server_wants_its_token() {
+    let dir = tempfile::tempdir().expect("dir");
+    project(dir.path(), "http://localhost:1");
+    let projects = Arc::new(RwLock::new(vec![McpProject {
+        name: "Shop".into(),
+        root: dir.path().to_owned(),
+        ..McpProject::default()
+    }]));
+    let running =
+        tortuga_core::mcp::server::http::start(0, projects, Client::default(), Arc::new(|_| {}))
+            .await
+            .expect("starts");
+    let http = reqwest::Client::new();
+    let initialize = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {},
+        "clientInfo": { "name": "test", "version": "1" } } });
+    let post = |token: Option<&str>, url: String| {
+        let mut request = http
+            .post(url)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json")
+            .body(initialize.to_string());
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        request.send()
+    };
+
+    let without = post(None, running.url()).await.expect("answer");
+    let wrong = post(Some("nope"), running.url()).await.expect("answer");
+    let elsewhere = post(Some(running.token()), running.url().replace("/mcp", "/x"))
+        .await
+        .expect("answer");
+    let with = post(Some(running.token()), running.url())
+        .await
+        .expect("answer");
+
+    assert_eq!(without.status(), 401);
+    assert_eq!(wrong.status(), 401);
+    assert_eq!(elsewhere.status(), 404);
+    assert_eq!(with.status(), 200);
+    assert!(with.text().await.expect("body").contains("tortuga"));
+    assert!(running.url().starts_with("http://127.0.0.1:"));
+
+    let stopped_port = running.port();
+    drop(running);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        std::net::TcpStream::connect(("127.0.0.1", stopped_port)).is_err(),
+        "stopped when dropped"
+    );
 }

@@ -170,6 +170,10 @@ shortcuts-title = Keyboard shortcuts
 ## shell/mock
 
 mock-started = The mock server of “{$name}” runs on port {$port}.
+mcp-started = The MCP server runs on {$url}.
+mcp-start-failed = Could not start the MCP server: {$error}
+mcp-stopped = The MCP server stopped.
+mcp-copied = Copied the configuration for {$agent}.
 mock-start-failed = Could not start the mock server: {$error}
 mock-stopped = The mock server of “{$name}” stopped.
 
@@ -495,6 +499,9 @@ cmd-current = current
 cmd-mock-server = Mock server…
 cmd-stop-mock = Stop mock server
 cmd-start-mock = Start mock server
+cmd-mcp-server = MCP server for AI agents…
+cmd-stop-mcp = Stop MCP server
+cmd-start-mcp = Start MCP server for AI agents
 cmd-run-workflow = Run workflow: {$name}
 cmd-new-workflow = New workflow…
 cmd-environments = Environments, servers and variables…
@@ -808,6 +815,19 @@ mock-nothing-yet = Nothing yet.
 mock-time = Time
 mock-request = Request
 mock-answered-by = Answered by
+mcp-title = MCP server for AI agents
+mcp-intro = Lets AI coding agents on this computer list, read, send and edit the workspace's requests. Edits are files you review in git; secret values are never shown to the agent.
+mcp-connect = Connect an agent
+mcp-copy-for = Copy for {$agent}
+mcp-token-hint = The configuration holds a token that changes each time the server starts.
+mcp-log = What agents did
+mcp-project = Project
+mcp-action = Action
+mcp-outcome = Result
+mcp-menu-start = Start MCP server for AI agents
+mcp-menu-running = MCP server for AI agents…
+mcp-menu-hint = Lets AI coding agents such as Claude Code, Cursor or VS Code use this workspace's requests
+mcp-indicator-hint = MCP server on {$url}
 
 ## settings
 
@@ -1138,6 +1158,7 @@ body-kind-hint = A text value, or a file to upload
 
 history-not-kept-here = History is not kept here.
 mock-needs-desktop = The mock server needs the desktop app.
+mcp-needs-desktop = The MCP server needs the desktop app.
 default-workspace = My workspace
 secrets-in-file = No OS credential store is available ({$reason}). Secret values are kept in {$path}, readable only by your user account.
 secrets-file-unreadable = That file could not be read ({$error}), so secret values are only kept until the app closes.

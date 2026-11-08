@@ -125,6 +125,8 @@ pub struct AppState {
     pub workspace_env_secrets: BTreeMap<String, BTreeMap<String, String>>,
     /// The projects' running mock servers (R-MOCK-2).
     pub mocks: crate::mocks::Mocks,
+    /// The app's MCP server for AI agents (R-MCP-5).
+    pub mcp: crate::mcp_server::McpServer,
 }
 
 impl fmt::Debug for AppState {
@@ -218,6 +220,7 @@ impl AppState {
             workspace_secrets: BTreeMap::new(),
             workspace_env_secrets: BTreeMap::new(),
             mocks: crate::mocks::Mocks::default(),
+            mcp: crate::mcp_server::McpServer::default(),
         };
         state.open_workspace();
         state
@@ -322,6 +325,8 @@ impl AppState {
                 self.adopt_environments();
                 // A saved edit or a `git pull` changes the mock's next answer (R-MOCK-2).
                 self.refresh_mock(root);
+                // A renamed project is found by its new name (R-MCP-5).
+                self.refresh_mcp();
             }
             Err(e) => self.notify(t!("project-reload-failed", error = e.to_string())),
         }
@@ -372,6 +377,7 @@ impl AppState {
         self.revision += 1;
         self.start_watching(root);
         self.adopt_environments();
+        self.refresh_mcp();
         Ok(())
     }
 
@@ -385,6 +391,7 @@ impl AppState {
         self.revision += 1;
         self.secrets.remove(root);
         self.cookies.remove(root);
+        self.refresh_mcp();
     }
 
     // ------------------------------------------------------------ workspaces (M6.5)
@@ -580,6 +587,7 @@ impl AppState {
 
     /// Saves local state and the workspace file after the workspace changed.
     pub(crate) fn workspace_changed(&mut self) {
+        self.refresh_mcp();
         self.save_local();
         if let Err(e) = self.write_workspace_file() {
             self.notify(e);
@@ -620,6 +628,7 @@ impl AppState {
         }
         self.workspace_secrets = values;
         self.workspace_env_secrets = env_values;
+        self.refresh_mcp();
         if let Some(e) = problem {
             self.notify(t!("secrets-read-failed", error = e.to_string()));
         }
@@ -969,6 +978,7 @@ impl AppState {
         tortuga_core::secrets::save(self.host.secrets(), root, &old, &values)
             .map_err(|e| sentence(&e.to_string()))?;
         self.secrets.insert(root.to_owned(), values);
+        self.refresh_mcp();
         Ok(())
     }
 

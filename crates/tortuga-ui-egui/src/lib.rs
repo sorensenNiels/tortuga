@@ -19,6 +19,7 @@ mod environments;
 mod format;
 mod fuzzy;
 mod host;
+mod mcp_server;
 mod mocks;
 mod shell;
 mod state;
@@ -26,8 +27,9 @@ mod theme;
 mod variables;
 
 pub use host::{
-    BoxTask, DraftConflict, Host, LocalState, MockHandle, OnMockHit, SavedDraft, SavedDrafts,
-    SavedSplit, SavedTab, SavedTabs, SavedWorkflowDraft, SecretsWarning, Workspace,
+    BoxTask, DraftConflict, Host, LocalState, McpHandle, MockHandle, OnMcpAction, OnMockHit,
+    SavedDraft, SavedDrafts, SavedSplit, SavedTab, SavedTabs, SavedWorkflowDraft, SecretsWarning,
+    Workspace,
 };
 pub use shell::TortugaUi;
 
@@ -95,6 +97,8 @@ pub(crate) mod test_host {
         pub taken_ports: Vec<u16>,
         /// The answers of the last mock started, and how to report a request to it.
         pub mock: std::rc::Rc<std::cell::RefCell<Option<StartedMock>>>,
+        /// The projects of the last MCP server started, and how to report an action to it.
+        pub mcp: std::rc::Rc<std::cell::RefCell<Option<StartedMcp>>>,
         /// Look for a new version at start-up (R-SET-15); off, so other tests spawn nothing.
         pub checks_for_updates: bool,
         /// The operating system's language (R-I18N-1).
@@ -102,6 +106,19 @@ pub(crate) mod test_host {
     }
 
     /// What [`TestHost::start_mock`] was given.
+    pub struct StartedMcp(
+        pub tortuga_core::mcp::SharedProjects,
+        pub crate::host::OnMcpAction,
+    );
+
+    impl std::fmt::Debug for StartedMcp {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_tuple("StartedMcp")
+                .field(&self.0)
+                .finish_non_exhaustive()
+        }
+    }
+
     pub struct StartedMock(
         pub std::sync::Arc<std::sync::RwLock<tortuga_core::mock::MockApi>>,
         pub crate::host::OnMockHit,
@@ -149,6 +166,24 @@ pub(crate) mod test_host {
             }
             *self.mock.borrow_mut() = Some(StartedMock(api, on_hit));
             Ok(crate::host::MockHandle::new(port, Box::new(())))
+        }
+        fn start_mcp(
+            &self,
+            port: u16,
+            projects: tortuga_core::mcp::SharedProjects,
+            _client: tortuga_core::Client,
+            on_action: crate::host::OnMcpAction,
+        ) -> Result<crate::host::McpHandle, String> {
+            if self.taken_ports.contains(&port) {
+                return Err(format!("port {port} is in use"));
+            }
+            *self.mcp.borrow_mut() = Some(StartedMcp(projects, on_action));
+            Ok(crate::host::McpHandle::new(
+                port,
+                format!("http://127.0.0.1:{port}/mcp"),
+                "test-token".into(),
+                Box::new(()),
+            ))
         }
         fn load_settings(&self) -> Result<AppSettings, String> {
             Ok(AppSettings::default())

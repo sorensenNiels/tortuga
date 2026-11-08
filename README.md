@@ -308,6 +308,10 @@ claude mcp add tortuga -- tortuga-cli mcp path/to/project --env Dev
 Secrets come from `TORTUGA_VAR_<name>` as for `run` and are shown to the agent as `{{name}}`, never their values. In
 a protected environment only GET, HEAD and OPTIONS requests are sent; response bodies are cut at 100 KB.
 
+In the app, **Start MCP server for AI agents** in the workspace menu (or the command palette) serves the whole
+workspace at `http://127.0.0.1:4040/mcp` with the environment and secrets chosen in the app; its dialog copies the
+configuration for Claude Code, Cursor or VS Code (with a token that changes each start) and logs what agents did.
+
 ## Make targets
 
 | Target | What it does |

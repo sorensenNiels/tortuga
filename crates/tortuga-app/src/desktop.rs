@@ -10,7 +10,8 @@ use tortuga_core::history::{self, HistoryStore};
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
 use tortuga_ui_egui::{
-    BoxTask, Host, LocalState, MockHandle, OnMockHit, SecretsWarning, TortugaUi,
+    BoxTask, Host, LocalState, McpHandle, MockHandle, OnMcpAction, OnMockHit, SecretsWarning,
+    TortugaUi,
 };
 
 use crate::{App, dialogs, discover, folders, git, local_store, secret_store, watch};
@@ -279,6 +280,28 @@ impl Host for DesktopHost {
             .block_on(tortuga_core::mock::server::start(port, api, on_hit))
             .map_err(|e| tortuga_core::error::message(&e))?;
         Ok(MockHandle::new(running.port(), Box::new(running)))
+    }
+
+    fn start_mcp(
+        &self,
+        port: u16,
+        projects: tortuga_core::mcp::SharedProjects,
+        client: tortuga_core::Client,
+        on_action: OnMcpAction,
+    ) -> Result<McpHandle, String> {
+        // Binding the port is quick; the server then runs on the runtime.
+        let running = self
+            .runtime
+            .block_on(tortuga_core::mcp::server::http::start(
+                port, projects, client, on_action,
+            ))
+            .map_err(|e| tortuga_core::error::message(&e))?;
+        Ok(McpHandle::new(
+            running.port(),
+            running.url(),
+            running.token().to_owned(),
+            Box::new(running),
+        ))
     }
 
     fn file_reader(&self) -> Option<tortuga_core::FileReader> {

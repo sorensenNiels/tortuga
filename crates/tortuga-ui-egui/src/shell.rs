@@ -15,6 +15,7 @@ mod fanout;
 mod history;
 mod import;
 mod layout;
+mod mcp;
 mod mock;
 mod projects;
 mod request_head;
@@ -92,6 +93,8 @@ enum Modal {
     Cookies(CookiesDialog),
     /// A project's mock server: port and log (R-MOCK-2, R-MOCK-4).
     Mock(crate::components::MockDialog),
+    /// The MCP server for AI agents: address, agent configs and log (R-MCP-5).
+    Mcp,
     /// Reviewing an OpenAPI or Postman import (R-COL-15, R-COL-16).
     Import(Box<import::OpenImport>),
     /// Reviewing Postman environments for a project (R-COL-20).
@@ -130,6 +133,8 @@ enum WorkspaceAction {
     Defaults,
     SaveAsFile,
     OpenFile,
+    /// The MCP server for AI agents (R-MCP-5).
+    Mcp,
     Remove,
 }
 
@@ -367,6 +372,7 @@ impl TortugaUi {
             self.on_disk_change(&root);
         }
         self.state.mocks.take_hits();
+        self.state.mcp.take_actions();
         // A script field's own keys win over the app's (R-TEST-17).
         if self.modal.is_none() && !script_keys::field_takes_keys(ui.ctx()) {
             self.shortcuts(ui);
@@ -628,6 +634,7 @@ impl TortugaUi {
                     ))));
                 }
                 self.update_link(ui);
+                self.mcp_indicator(ui);
                 let go_to = (
                     t!("go-to-request"),
                     RichText::new("  Ctrl+P").small().color(p.muted),

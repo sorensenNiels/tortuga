@@ -176,6 +176,10 @@ shortcuts-title = Tastaturgenveje
 ## shell/mock
 
 mock-started = Mockserveren for “{$name}” kører på port {$port}.
+mcp-started = MCP-serveren kører på {$url}.
+mcp-start-failed = Kunne ikke starte MCP-serveren: {$error}
+mcp-stopped = MCP-serveren er stoppet.
+mcp-copied = Konfigurationen til {$agent} er kopieret.
 mock-start-failed = Mockserveren kunne ikke starte: {$error}
 mock-stopped = Mockserveren for “{$name}” er stoppet.
 
@@ -501,6 +505,9 @@ cmd-current = aktuelt
 cmd-mock-server = Mockserver…
 cmd-stop-mock = Stop mockserver
 cmd-start-mock = Start mockserver
+cmd-mcp-server = MCP-server til AI-agenter…
+cmd-stop-mcp = Stop MCP-server
+cmd-start-mcp = Start MCP-server til AI-agenter
 cmd-run-workflow = Kør workflow: {$name}
 cmd-new-workflow = Nyt workflow…
 cmd-environments = Miljøer, servere og variabler…
@@ -814,6 +821,19 @@ mock-nothing-yet = Intet endnu.
 mock-time = Tid
 mock-request = Anmodning
 mock-answered-by = Besvaret af
+mcp-title = MCP-server til AI-agenter
+mcp-intro = Lader AI-kodeagenter på denne computer liste, læse, sende og redigere arbejdsområdets requests. Ændringer er filer, du gennemgår i git; hemmelige værdier vises aldrig for agenten.
+mcp-connect = Forbind en agent
+mcp-copy-for = Kopiér til {$agent}
+mcp-token-hint = Konfigurationen indeholder et token, der skifter, hver gang serveren starter.
+mcp-log = Hvad agenter har gjort
+mcp-project = Projekt
+mcp-action = Handling
+mcp-outcome = Resultat
+mcp-menu-start = Start MCP-server til AI-agenter
+mcp-menu-running = MCP-server til AI-agenter…
+mcp-menu-hint = Lader AI-kodeagenter som Claude Code, Cursor eller VS Code bruge arbejdsområdets requests
+mcp-indicator-hint = MCP-server på {$url}
 
 ## settings
 
@@ -1144,6 +1164,7 @@ body-kind-hint = En tekstværdi eller en fil, der skal uploades
 
 history-not-kept-here = Historik gemmes ikke her.
 mock-needs-desktop = Mockserveren kræver desktop-appen.
+mcp-needs-desktop = MCP-serveren kræver desktop-appen.
 default-workspace = Mit arbejdsområde
 secrets-in-file = Der er ikke noget lager til adgangsoplysninger i styresystemet ({$reason}). Hemmelige værdier gemmes i {$path}, som kun din brugerkonto kan læse.
 secrets-file-unreadable = Den fil kunne ikke læses ({$error}), så hemmelige værdier gemmes kun, indtil appen lukkes.
