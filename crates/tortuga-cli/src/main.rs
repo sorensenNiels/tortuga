@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod list;
+mod mcp;
 mod mock;
 
 use tortuga_core::storage::FsStorage;
@@ -23,6 +24,7 @@ const USAGE: &str = "\
 Usage: tortuga-cli run <project> [<workflow, folder or request>] [options]
        tortuga-cli mock <project> [--port N] [--env NAME]
        tortuga-cli list <project> [--workspace FILE]
+       tortuga-cli mcp [<project>] [--env NAME] [--workspace FILE]
 
 run:  Runs a workflow (by name or id), the requests of a folder, or one request of
       the Tortuga project in <project>. Without a target, every request runs.
@@ -30,6 +32,9 @@ mock: Serves the example responses saved with the project's requests on
       http://127.0.0.1:<port> (default 4010) until stopped with Ctrl+C.
 list: Prints the project's folders, requests, workflows and environments as JSON,
       for editor extensions.
+mcp:  Serves the project (default: the current folder) to an AI agent over the Model
+      Context Protocol on stdin/stdout: it can list, read, send and edit requests.
+      Add it to an agent, e.g.: claude mcp add tortuga -- tortuga-cli mcp <project>
 
 Options:
   --env NAME            Use this environment (by name or id): the project's, or with
@@ -97,6 +102,8 @@ enum Command {
     Mock(Box<Args>),
     /// List the project for an editor (R-VSC-1).
     List(Box<Args>),
+    /// Serve the project to an AI agent (R-MCP-1).
+    Mcp(Box<Args>),
     Help,
     Version,
 }
@@ -135,12 +142,19 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Command::Mcp(mut args) => {
+            args.vars = with_env_vars(std::mem::take(&mut args.vars));
+            match mcp::serve(&args) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("tortuga-cli: {e}");
+                    ExitCode::from(2)
+                }
+            }
+        }
         Command::Run(args) => {
             let mut args = *args;
-            args.vars = env_vars(std::env::vars())
-                .into_iter()
-                .chain(args.vars)
-                .collect();
+            args.vars = with_env_vars(std::mem::take(&mut args.vars));
             // Scripts run in the JS engine, which needs more stack than the 1 MB main
             // thread Windows gives (debug builds overflow it), so run on a bigger one.
             let outcome = std::thread::Builder::new()
@@ -164,12 +178,16 @@ fn main() -> ExitCode {
 fn parse(input: Vec<String>) -> Result<Command, String> {
     let mut words = input.into_iter();
     // Mock and list take the whole project, never a target.
-    let (command, whole_project): (Subcommand, Option<&str>) = match words.next().as_deref() {
+    let first = words.next();
+    // The agent starts `mcp` in the project's folder unless told otherwise (R-MCP-1).
+    let project_optional = first.as_deref() == Some("mcp");
+    let (command, whole_project): (Subcommand, Option<&str>) = match first.as_deref() {
         None | Some("-h" | "--help" | "help") => return Ok(Command::Help),
         Some("-V" | "--version") => return Ok(Command::Version),
         Some("run") => (Command::Run, None),
         Some("mock") => (Command::Mock, Some("mock serves")),
         Some("list") => (Command::List, Some("list shows")),
+        Some("mcp") => (Command::Mcp, Some("mcp serves")),
         Some(other) => return Err(format!("unknown command '{other}'")),
     };
     let mut args = Args::default();
@@ -220,6 +238,9 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
         (Some(_), None) => return Err("--report needs --out FILE".into()),
         (None, Some(_)) => return Err("--out needs --report junit or json".into()),
     };
+    if positional.is_empty() && project_optional {
+        positional.push(".".to_owned());
+    }
     let mut positional = positional.into_iter();
     args.project = positional
         .next()
@@ -233,6 +254,11 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
         return Err(format!("{what} the whole project; remove '{target}'"));
     }
     Ok(command(Box::new(args)))
+}
+
+/// `vars` (from `--var`) over the `TORTUGA_VAR_<name>` environment variables.
+fn with_env_vars(vars: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    env_vars(std::env::vars()).into_iter().chain(vars).collect()
 }
 
 /// `TORTUGA_VAR_<name>=value` environment variables (R-CLI-2, D30).
@@ -285,39 +311,15 @@ fn check_protected(
     ))
 }
 
-/// The environment called `name` (by name or id), if one is asked for: the project's, or
-/// the workspace's with the project's of that name over it (R-WS-9).
+/// The environment called `name` (by name or id), if one is asked for (R-WS-9).
 fn environment(
     collection: &Collection,
     workspace: &WorkspaceFile,
     name: Option<&str>,
 ) -> Result<Option<Environment>, String> {
-    let Some(name) = name else { return Ok(None) };
-    let own = collection
-        .environments
-        .iter()
-        .find(|e| e.id.eq_ignore_ascii_case(name) || e.is_named(name));
-    let shared = workspace.environments.iter().find(|e| e.is_named(name));
-    // Secret values come from `--var` and `TORTUGA_VAR_<name>`, which win anyway.
-    tortuga_core::workspace::effective_environment(
-        shared,
-        &BTreeMap::new(),
-        own,
-        &collection.manifest,
-    )
-    .map(Some)
-    .ok_or_else(|| {
-        let names: Vec<&str> = workspace
-            .environments
-            .iter()
-            .map(|e| e.name.as_str())
-            .chain(collection.environments.iter().map(|e| e.name.as_str()))
-            .collect();
-        format!(
-            "no environment '{name}' in the project or workspace (there are: {})",
-            names.join(", ")
-        )
-    })
+    name.map(|name| tortuga_core::workspace::environment_named(collection, workspace, name))
+        .transpose()
+        .map_err(|e| e.to_string())
 }
 
 /// The project, with the environment `--env` asks for in it, and its id; and the
@@ -619,6 +621,22 @@ mod tests {
         assert!(args("run api --report junit").is_err(), "no --out");
         assert!(args("run api --var novalue").is_err());
         assert!(args("deploy").is_err());
+    }
+
+    /// R-MCP-1: the project defaults to the current folder; options as for `run`.
+    #[test]
+    fn parses_mcp() {
+        let Ok(Command::Mcp(a)) = args("mcp --env Dev --workspace w.toml") else {
+            panic!("mcp")
+        };
+        assert_eq!(a.project, PathBuf::from("."));
+        assert_eq!(a.env.as_deref(), Some("Dev"));
+        let Ok(Command::Mcp(a)) = args("mcp shop") else {
+            panic!("mcp shop")
+        };
+        assert_eq!(a.project, PathBuf::from("shop"));
+        assert!(args("mcp shop get-user").is_err(), "no target");
+        assert!(args("run").is_err(), "run still needs a project");
     }
 
     #[test]

@@ -159,6 +159,33 @@ impl WorkspaceEnvironment {
     }
 }
 
+/// The environment called `name` (by name, or the project's by id): the project's, or the
+/// workspace's with the project's of that name over it (R-WS-9), as `tortuga-cli --env`
+/// (R-CLI-2) and the MCP server (R-MCP-3) pick it. Secret values are not filled in; runs
+/// pass them as overrides.
+pub fn environment_named(
+    collection: &crate::Collection,
+    workspace: &WorkspaceFile,
+    name: &str,
+) -> Result<Environment> {
+    let own = collection
+        .environments
+        .iter()
+        .find(|e| e.id.eq_ignore_ascii_case(name) || e.is_named(name));
+    let shared = workspace.environments.iter().find(|e| e.is_named(name));
+    effective_environment(shared, &BTreeMap::new(), own, &collection.manifest).ok_or_else(|| {
+        Error::UnknownEnvironment {
+            name: name.to_owned(),
+            known: workspace
+                .environments
+                .iter()
+                .map(|e| e.name.clone())
+                .chain(collection.environments.iter().map(|e| e.name.clone()))
+                .collect(),
+        }
+    })
+}
+
 /// The environment a project's requests use (R-WS-9): the workspace's `shared`, with its
 /// server URLs given to the project's servers of the same name and this machine's
 /// `secret_values` for it, overridden value by value by the project's `own` environment of

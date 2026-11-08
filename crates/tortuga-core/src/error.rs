@@ -150,6 +150,14 @@ pub enum Error {
     /// R-SET-15
     #[error("could not look for a new version: {0}")]
     UpdateCheck(String),
+
+    /// `--env` or an MCP tool named an environment the project and workspace lack (R-CLI-2, R-MCP-3).
+    #[error("no environment '{name}' in the project or workspace (there are: {})", .known.join(", "))]
+    UnknownEnvironment { name: String, known: Vec<String> },
+
+    /// R-MCP-1
+    #[error("the MCP server stopped: {0}")]
+    McpServer(String),
 }
 
 impl Error {

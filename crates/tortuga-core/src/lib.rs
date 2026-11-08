@@ -21,6 +21,9 @@ pub mod insomnia;
 pub mod js_format;
 pub mod json;
 pub mod jsonpath;
+pub mod listing;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mcp;
 pub mod mock;
 pub mod model;
 pub mod openapi;

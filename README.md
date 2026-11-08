@@ -297,6 +297,17 @@ environments of a `.tortuga-workspace.toml` (the project's own values win), so `
 **In VS Code.** The extension in [editors/vscode](editors/vscode/README.md) lists your projects in the Testing view and
 runs them with `tortuga-cli`, with an environment picker and "Open in Tortuga". `make vscode` builds it.
 
+**For AI coding agents.** `tortuga-cli mcp` serves a project over the Model Context Protocol, so an agent such as
+Claude Code, Cursor or VS Code can list its requests, read them, send them and read the response and test results,
+and create, change, move and delete requests and folders (the changes are files you review in git):
+
+```sh
+claude mcp add tortuga -- tortuga-cli mcp path/to/project --env Dev
+```
+
+Secrets come from `TORTUGA_VAR_<name>` as for `run` and are shown to the agent as `{{name}}`, never their values. In
+a protected environment only GET, HEAD and OPTIONS requests are sent; response bodies are cut at 100 KB.
+
 ## Make targets
 
 | Target | What it does |
