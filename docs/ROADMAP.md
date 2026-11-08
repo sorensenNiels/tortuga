@@ -100,7 +100,9 @@ R-MOCK-8, D43 to D47), the UI in English and Danish (R-I18N-1 to R-I18N-3, D64),
 - Code snippets for other languages (IDEA-22).
 - More languages, when someone offers to keep one up to date (D64).
 - Web version (IDEA-11): the code keeps compiling for wasm, but nothing is built for it until a team asks (D6).
-- An MCP server for AI coding agents, in `tortuga-cli` and the app (R-MCP-1 to R-MCP-5, D72 to D75).
+- An MCP server for AI coding agents, in `tortuga-cli` and the app (R-MCP-1 to R-MCP-5, D72 to D75): built and tested
+  on Linux; waiting for a check with a real agent (Claude Code, Cursor, VS Code) and on Windows and macOS (see
+  [FEATURES.md](FEATURES.md#in-progress)).
 - The full UI in VS Code (IDEA-97 (b)).
 - In-app commit/pull/push (IDEA-21) — only if working outside the app proves to be a real pain point.
 
