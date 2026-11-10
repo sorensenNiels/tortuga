@@ -1,6 +1,7 @@
 // Runs inside VS Code (see main.ts): the selftest/ projects in the Testing view, and runs.
 
 import * as assert from "node:assert/strict";
+import * as path from "node:path";
 import * as vscode from "vscode";
 
 import type { Api } from "../../src/extension";
@@ -35,6 +36,14 @@ export async function run(): Promise<void> {
   const lifecycle = child(child(sending, "Workflows"), "User lifecycle");
   const getUser = child(child(sending, "Users"), "Get user");
   assert.equal(getUser.description, "GET");
+
+  // R-VSC-5: `tortuga-cli check` findings are in the Problems panel, on their line.
+  const pollAndStop = vscode.Uri.file(path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "", "flow", "workflows", "poll-and-stop.toml"));
+  const found = api.problems.get(pollAndStop) ?? [];
+  assert.equal(found.length, 1, `one problem on poll-and-stop.toml (found: ${found.map((d) => d.message).join("; ")})`);
+  assert.match(found[0].message, /^step 4: names never\.toml, which does not exist$/);
+  assert.equal(found[0].severity, vscode.DiagnosticSeverity.Warning);
+  assert.equal(found[0].range.start.line, 17);
 
   // R-VSC-2: a workflow passes against the project's mock ...
   await api.run([lifecycle], true);

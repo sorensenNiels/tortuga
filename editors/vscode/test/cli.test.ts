@@ -3,7 +3,7 @@
 import * as assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Report, Step, duration, execute, exitMessage, failures, listArgs, outcomesByRequest, runArgs } from "../src/cli";
+import { Report, Step, checkArgs, duration, execute, exitMessage, failures, lineOf, listArgs, outcomesByRequest, runArgs } from "../src/cli";
 
 function step(request: string, failed: boolean, extra: Partial<Step> = {}): Step {
   return { name: request, request, status: 200, elapsed_ms: 10, tests: [], errors: [], failed, ...extra };
@@ -100,4 +100,26 @@ test("the output of a program comes back as it prints it", async () => {
   assert.equal(exit.code, 3);
   assert.equal(exit.stdout.trim(), "ü😀");
   assert.equal(seen.join("").trim(), "ü😀");
+});
+
+// R-VSC-5
+test("check passes the workspace only when there is one, and always a JSON report", () => {
+  assert.deepEqual(checkArgs("/p ü😀", "", "/r.json"), ["check", "/p ü😀", "--report", "json", "--out", "/r.json"]);
+  assert.deepEqual(checkArgs("/p", "/w.toml", "/r.json"), [
+    "check", "/p", "--workspace", "/w.toml", "--report", "json", "--out", "/r.json",
+  ]);
+});
+
+// R-VSC-5
+test("a finding's place is found on its line of the file", () => {
+  const workflow = 'name = "Flow"\n\n[[steps]]\nrequest = "a.toml"\n\n[[steps]]\nrequest = "gone.toml"\n';
+  assert.equal(lineOf(workflow, "step 2"), 5);
+  assert.equal(lineOf(workflow, "step 9"), 0, "not there: the first line");
+  const request = 'name = "Ü😀"\nurl = "https://{{host}}/x"\n\n[[headers]]\nname = "Authorization"\nvalue = "Bearer x"\n';
+  assert.equal(lineOf(request, "{{host}}"), 1);
+  assert.equal(lineOf(request, "url"), 1);
+  assert.equal(lineOf(request, "header Authorization"), 4);
+  assert.equal(lineOf('[variables]\ntoken = "x"\n', "environment Dev: variable token"), 1);
+  assert.equal(lineOf("", ""), 0);
+  assert.equal(lineOf("x = 1\r\n[body]\r\n", "body"), 1);
 });

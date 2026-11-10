@@ -105,7 +105,8 @@ R-MOCK-8, D43 to D47), the UI in English and Danish (R-I18N-1 to R-I18N-3, D64),
   [FEATURES.md](FEATURES.md#in-progress)).
 - The full UI in VS Code (IDEA-97 (b)).
 - Catching mistakes and committed credentials before a push (D76): `tortuga-cli check` is done (R-CLI-5, R-CLI-6); the
-  secret guard in the app (R-VAR-10) is built and waits for a check in the app; the findings in VS Code (R-VSC-5) are next. Then API changes between two revisions (IDEA-98). The contract check in CI
+  secret guard in the app (R-VAR-10) and the findings in VS Code's Problems panel (R-VSC-5) are built and wait for a
+  check by hand. Next: API changes between two revisions (IDEA-98). Then API changes between two revisions (IDEA-98). The contract check in CI
   (IDEA-99) is already `tortuga-cli run --check-examples` (R-MOCK-8).
 - In-app commit/pull/push (IDEA-21) — only if working outside the app proves to be a real pain point.
 

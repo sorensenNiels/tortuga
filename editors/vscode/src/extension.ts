@@ -1,5 +1,6 @@
-// Tortuga in VS Code (IDEA-97 (a), R-VSC-1..4): the projects in the open folders as tests,
-// run through `tortuga-cli`, with code lenses on their files and a way into the app.
+// Tortuga in VS Code (IDEA-97 (a), R-VSC-1..5): the projects in the open folders as tests,
+// run through `tortuga-cli`, with code lenses on their files, `tortuga-cli check` findings
+// in the Problems panel, and a way into the app.
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -9,13 +10,16 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import {
+  CheckReport,
   Entry,
   Listing,
   Report,
+  checkArgs,
   duration,
   execute,
   exitMessage,
   failures,
+  lineOf,
   listArgs,
   outcomesByRequest,
   runArgs,
@@ -38,6 +42,9 @@ const nodes = new WeakMap<vscode.TestItem, Node>();
 const listings = new Map<string, Listing>();
 const lensesChanged = new vscode.EventEmitter<void>();
 let status: vscode.StatusBarItem;
+/** `tortuga-cli check` findings (R-VSC-5), and the files each project put them on. */
+let problems: vscode.DiagnosticCollection;
+const problemFiles = new Map<string, vscode.Uri[]>();
 
 /** What `activate` gives other code: the integration tests. */
 export interface Api {
@@ -46,6 +53,7 @@ export interface Api {
   /** Lists the projects again; resolves when the tree is up to date. */
   discover(): Promise<void>;
   run(items: vscode.TestItem[], mock: boolean): Promise<void>;
+  problems: vscode.DiagnosticCollection;
 }
 
 export function activate(context: vscode.ExtensionContext): Api {
@@ -64,6 +72,7 @@ export function activate(context: vscode.ExtensionContext): Api {
     false,
   );
 
+  problems = vscode.languages.createDiagnosticCollection("tortuga");
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   status.command = "tortuga.selectEnvironment";
   showEnvironment();
@@ -77,6 +86,7 @@ export function activate(context: vscode.ExtensionContext): Api {
   context.subscriptions.push(
     controller,
     status,
+    problems,
     watcher,
     lensesChanged,
     vscode.languages.registerCodeLensProvider({ pattern: "**/*.toml" }, { provideCodeLenses, onDidChangeCodeLenses: lensesChanged.event }),
@@ -101,6 +111,7 @@ export function activate(context: vscode.ExtensionContext): Api {
     results,
     discover,
     run: (items, mock) => run(new vscode.TestRunRequest(items), new vscode.CancellationTokenSource().token, mock),
+    problems,
   };
 }
 
@@ -141,6 +152,7 @@ async function discover(): Promise<void> {
     if (!roots.includes(root)) {
       listings.delete(root);
       controller.items.delete(root);
+      showProblems(root, []);
     }
   }
   await Promise.all(roots.map((root) => load(root)));
@@ -164,8 +176,12 @@ function treeChanged(): void {
   lensesChanged.fire();
 }
 
-/** (Re)reads one project into the tree, or shows why it can't be read. */
+/** (Re)reads one project into the tree, or shows why it can't be read, and checks it. */
 async function load(root: string): Promise<void> {
+  await Promise.all([list(root), check(root)]);
+}
+
+async function list(root: string): Promise<void> {
   const { cli, workspaceFile } = settings();
   const exit = await execute(cli, listArgs(root, workspaceFile));
   const item = controller.createTestItem(root, path.basename(root), vscode.Uri.file(path.join(root, MANIFEST)));
@@ -202,6 +218,54 @@ async function load(root: string): Promise<void> {
   }
   children.push(...entries(root, listing.items));
   item.children.replace(children);
+}
+
+// ---------------------------------------------------------------- problems
+
+/**
+ * Runs `tortuga-cli check` on a project and shows its findings as warnings on their files
+ * (R-VSC-5). A project that can't be checked shows none: the tree says why.
+ */
+async function check(root: string): Promise<void> {
+  const { cli, workspaceFile } = settings();
+  const reportFile = path.join(tmpdir(), `tortuga-vscode-check-${randomUUID()}.json`);
+  const exit = await execute(cli, checkArgs(root, workspaceFile, reportFile));
+  let report: CheckReport | undefined;
+  try {
+    report = exit.code === 0 || exit.code === 1 ? (JSON.parse(await readFile(reportFile, "utf8")) as CheckReport) : undefined;
+  } catch {
+    // An older tortuga-cli without `check`, or no report: no findings to show.
+  }
+  // The report was read (or never written); a leftover file in the temp folder is harmless.
+  await rm(reportFile, { force: true }).catch(() => undefined);
+  const byFile = new Map<string, vscode.Diagnostic[]>();
+  for (const finding of report?.findings ?? []) {
+    const file = path.resolve(root, finding.file);
+    let text = "";
+    try {
+      text = await readFile(file, "utf8");
+    } catch {
+      // The file can't be read (that is the finding, say): its first line.
+    }
+    const line = lineOf(text, finding.place);
+    const message = finding.place ? `${finding.place}: ${finding.message}` : finding.message;
+    const problem = new vscode.Diagnostic(new vscode.Range(line, 0, line, Number.MAX_SAFE_INTEGER), message, vscode.DiagnosticSeverity.Warning);
+    problem.source = "tortuga-cli check";
+    byFile.set(file, [...(byFile.get(file) ?? []), problem]);
+  }
+  showProblems(root, [...byFile].map(([file, list]) => [vscode.Uri.file(file), list]));
+}
+
+/** Replaces what a project shows in the Problems panel. */
+function showProblems(root: string, files: [vscode.Uri, vscode.Diagnostic[]][]): void {
+  for (const uri of problemFiles.get(root) ?? []) {
+    problems.delete(uri);
+  }
+  problems.set(files);
+  problemFiles.set(
+    root,
+    files.map(([uri]) => uri),
+  );
 }
 
 function entries(root: string, items: Entry[]): vscode.TestItem[] {

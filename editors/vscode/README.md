@@ -15,6 +15,10 @@ It reads and writes nothing itself: the project files stay the ones the app and 
   - Running a project runs every request, then every workflow.
   - **Run against the mock** (a second run profile and code lens) starts the project's mock and sends every request
     there, as `tortuga-cli run --mock` does.
+- **Problems.** `tortuga-cli check` runs on each project when it opens and whenever one of its files changes. Its
+  findings show as warnings in the Problems panel, on their line where it can be told: files that don't read, workflow
+  steps naming a request that is gone, `{{variables}}` with no value in an environment, and values that look like
+  credentials in files you commit. Needs a `tortuga-cli` with `check`; an older one shows no problems.
 - **Environment.** The status bar shows the environment runs use. Click it, or use **Tortuga: Select Environment**, to
   pick one of the projects' or the workspace file's environments.
 - **Open in Tortuga.** The code lens, the explorer's context menu and the command open the project in the

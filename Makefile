@@ -133,7 +133,7 @@ doc:
 clean:
 	cargo clean
 
-# The VS Code extension (R-VSC-1..4, editors/vscode/README.md). Not part of verify: it needs
+# The VS Code extension (R-VSC-1..5, editors/vscode/README.md). Not part of verify: it needs
 # Node.js, and its integration test downloads VS Code and needs a display.
 VSCODE := editors/vscode
 

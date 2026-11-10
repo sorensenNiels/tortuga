@@ -193,3 +193,58 @@ export function exitMessage(program: string, exit: Exit): string {
   // Errors in the command print the usage after a blank line; only the error matters.
   return stderr.split(/\r?\n\r?\n/)[0] || `tortuga-cli exited with ${exit.code}`;
 }
+
+/** `tortuga-cli check --report json` (R-CLI-5, R-VSC-5). */
+export interface CheckReport {
+  project: string;
+  findings: Finding[];
+}
+
+export interface Finding {
+  /** Relative to the project, with `/`. */
+  file: string;
+  /** Where in the file (`header Authorization`, `step 2`, `{{token}}`); may be empty. */
+  place: string;
+  message: string;
+}
+
+export function checkArgs(root: string, workspaceFile: string, reportFile: string): string[] {
+  return [
+    "check",
+    root,
+    ...(workspaceFile ? ["--workspace", workspaceFile] : []),
+    "--report",
+    "json",
+    "--out",
+    reportFile,
+  ];
+}
+
+/**
+ * The line of `text` (a TOML file) that `place` points at, or 0 when it can't be told:
+ * `step N` is the Nth `[[steps]]`, `{{name}}` where it is used, and a named field
+ * (`header Authorization`, `variable token`) the first line that has its name in quotes
+ * or as a key.
+ */
+export function lineOf(text: string, place: string): number {
+  const lines = text.split(/\r?\n/);
+  const first = (match: (line: string) => boolean) => Math.max(0, lines.findIndex(match));
+  const step = /^step (\d+)$/.exec(place);
+  if (step) {
+    let seen = 0;
+    const wanted = Number(step[1]);
+    return first((l) => l.trim() === "[[steps]]" && ++seen === wanted);
+  }
+  if (place.startsWith("{{")) {
+    return first((l) => l.includes(place));
+  }
+  if (place === "url" || place === "body") {
+    return first((l) => l.trimStart().startsWith(`${place} =`) || l.trim() === `[${place}]`);
+  }
+  // "environment Staging: variable token" names the variable last.
+  const name = place.split(": ").pop()?.split(" ").slice(1).join(" ");
+  if (name) {
+    return first((l) => l.includes(`"${name}"`) || l.trimStart().startsWith(`${name} =`));
+  }
+  return 0;
+}
