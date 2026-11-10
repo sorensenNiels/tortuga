@@ -5,6 +5,7 @@
 
 pub mod bruno;
 pub mod changes;
+pub mod check;
 pub mod collection;
 pub mod cookies;
 pub mod curl;

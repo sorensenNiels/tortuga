@@ -14,7 +14,7 @@ use crate::settings::RequestSettings;
 /// Newest format version this build reads (R-GIT-7). Files are written as format 1
 /// unless they use something older builds would drop when they save the file: then
 /// those builds open the project read-only instead ([`Manifest::required_format`]).
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// `tortuga.toml` at the collection root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +44,24 @@ pub struct Manifest {
     /// How the project's requests are sent, over the workspace's and app's (R-SET-1).
     #[serde(default, skip_serializing_if = "RequestSettings::is_empty")]
     pub settings: RequestSettings,
+    /// What `tortuga-cli check` accepts (R-CLI-6).
+    #[serde(default, skip_serializing_if = "CheckSettings::is_empty")]
+    pub check: CheckSettings,
+}
+
+/// `[check]` in `tortuga.toml` (R-CLI-6, D76).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CheckSettings {
+    /// Places whose credential-like value is accepted, as findings name them
+    /// (`requests/login.toml: header Authorization`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+}
+
+impl CheckSettings {
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_empty()
+    }
 }
 
 impl Manifest {
@@ -58,14 +76,21 @@ impl Manifest {
             auth: None,
             variables: BTreeMap::new(),
             settings: RequestSettings::default(),
+            check: CheckSettings::default(),
         }
     }
 
-    /// The format version this manifest is written as: 2 with settings (R-SET-1), so
-    /// builds that don't know them open the project read-only instead of dropping
-    /// them; otherwise 1.
+    /// The format version this manifest is written as: 3 with a check allow-list
+    /// (R-CLI-6), 2 with settings (R-SET-1), so builds that don't know them open the
+    /// project read-only instead of dropping them; otherwise 1.
     pub fn required_format(&self) -> u32 {
-        if self.settings.is_empty() { 1 } else { 2 }
+        if !self.check.is_empty() {
+            3
+        } else if !self.settings.is_empty() {
+            2
+        } else {
+            1
+        }
     }
 }
 
@@ -893,6 +918,23 @@ password = "{{token}}"
         m.format = 2;
         assert_eq!(parse_manifest(&text), Ok(m.clone()));
         m.settings = RequestSettings::default();
+        assert!(write_manifest(&m).starts_with("format = 1\n"), "back to 1");
+    }
+
+    /// R-CLI-6, D76: an allow-list makes the manifest format 3, so older builds open the
+    /// project read-only instead of dropping it when they save.
+    #[test]
+    fn a_check_allow_list_is_written_as_format_3() {
+        let mut m = Manifest::new("Acme API");
+        m.check.allow = vec!["requests/löğin.toml: header Authorization".into()];
+        let text = write_manifest(&m);
+        assert_eq!(
+            text,
+            "format = 3\nname = \"Acme API\"\n\n[check]\nallow = [\"requests/löğin.toml: header Authorization\"]\n"
+        );
+        m.format = 3;
+        assert_eq!(parse_manifest(&text), Ok(m.clone()));
+        m.check.allow.clear();
         assert!(write_manifest(&m).starts_with("format = 1\n"), "back to 1");
     }
 

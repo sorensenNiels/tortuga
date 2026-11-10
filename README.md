@@ -294,6 +294,20 @@ runs once per row; `--report json` writes JSON instead of JUnit XML; `--workspac
 environments of a `.tortuga-workspace.toml` (the project's own values win), so `--env Staging` finds the workspace's
 *Staging*. Download it from a release (`tortuga-cli-<version>-<os>` archive, R-CLI-4) or build it with `make cli`.
 
+**Before a push.** `tortuga-cli check` reads a project without sending anything and reports what would fail later
+or leak: files that don't read, workflow steps naming a request that is gone, `{{variables}}` with no value in some
+environment, and values that look like credentials (JWTs, Bearer tokens, AWS, GitHub, Stripe or Slack keys, private
+keys, a typed-in Basic password) in the files you commit. It exits with 1 when it finds something, so it fits CI and a
+pre-commit hook:
+
+```sh
+tortuga-cli check path/to/project --workspace team.tortuga-workspace.toml
+```
+
+A finding names its place, never the value (`login.toml: header Authorization: looks like a JWT`). To accept one, such
+as a fake token in a test request, list its place in the project's `tortuga.toml`:
+`[check]` `allow = ["login.toml: header Authorization"]`. Examples are not scanned.
+
 **In VS Code.** The extension in [editors/vscode](editors/vscode/README.md) lists your projects in the Testing view and
 runs them with `tortuga-cli`, with an environment picker and "Open in Tortuga". `make vscode` builds it.
 

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod check;
 mod list;
 mod mcp;
 mod mock;
@@ -25,6 +26,7 @@ Usage: tortuga-cli run <project> [<workflow, folder or request>] [options]
        tortuga-cli mock <project> [--port N] [--env NAME]
        tortuga-cli list <project> [--workspace FILE]
        tortuga-cli mcp [<project>] [--env NAME] [--workspace FILE]
+       tortuga-cli check [<project>] [--workspace FILE] [--report json --out FILE]
 
 run:  Runs a workflow (by name or id), the requests of a folder, or one request of
       the Tortuga project in <project>. Without a target, every request runs.
@@ -35,6 +37,11 @@ list: Prints the project's folders, requests, workflows and environments as JSON
 mcp:  Serves the project (default: the current folder) to an AI agent over the Model
       Context Protocol on stdin/stdout: it can list, read, send and edit requests.
       Add it to an agent, e.g.: claude mcp add tortuga -- tortuga-cli mcp <project>
+check: Checks the project (default: the current folder) without sending anything:
+      files that do not read, workflow steps naming missing requests, {{variables}}
+      with no value in an environment, and values that look like credentials in
+      shared files. Accept a value with [check] allow = [\"<file>: <place>\"] in
+      tortuga.toml. Exits with 1 when there is anything to report.
 
 Options:
   --env NAME            Use this environment (by name or id): the project's, or with
@@ -104,6 +111,8 @@ enum Command {
     List(Box<Args>),
     /// Serve the project to an AI agent (R-MCP-1).
     Mcp(Box<Args>),
+    /// Check the project without sending anything (R-CLI-5).
+    Check(Box<Args>),
     Help,
     Version,
 }
@@ -152,6 +161,14 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Check(args) => match check::check(&args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::from(1),
+            Err(e) => {
+                eprintln!("tortuga-cli: {e}");
+                ExitCode::from(2)
+            }
+        },
         Command::Run(args) => {
             let mut args = *args;
             args.vars = with_env_vars(std::mem::take(&mut args.vars));
@@ -180,7 +197,8 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
     // Mock and list take the whole project, never a target.
     let first = words.next();
     // The agent starts `mcp` in the project's folder unless told otherwise (R-MCP-1).
-    let project_optional = first.as_deref() == Some("mcp");
+    // So does `check`, e.g. in a pre-commit hook (R-CLI-5).
+    let project_optional = matches!(first.as_deref(), Some("mcp" | "check"));
     let (command, whole_project): (Subcommand, Option<&str>) = match first.as_deref() {
         None | Some("-h" | "--help" | "help") => return Ok(Command::Help),
         Some("-V" | "--version") => return Ok(Command::Version),
@@ -188,6 +206,7 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
         Some("mock") => (Command::Mock, Some("mock serves")),
         Some("list") => (Command::List, Some("list shows")),
         Some("mcp") => (Command::Mcp, Some("mcp serves")),
+        Some("check") => (Command::Check, Some("check reads")),
         Some(other) => return Err(format!("unknown command '{other}'")),
     };
     let mut args = Args::default();

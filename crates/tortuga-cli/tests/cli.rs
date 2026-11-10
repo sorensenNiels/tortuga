@@ -345,3 +345,50 @@ async fn protected_environments_need_allow_protected() {
     );
     assert_eq!(code, 0, "only reads: {stdout}\n{stderr}");
 }
+
+/// R-CLI-5, R-CLI-6: `check` reports, exits with 1, writes JSON, and passes once fixed.
+#[test]
+fn check_reports_mistakes_and_credentials() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    project(dir.path(), "https://api.example.com");
+    let login = dir.path().join("log-in.toml");
+    let text = std::fs::read_to_string(&login).expect("read");
+    let token = concat!("ghp_", "abcdefghijklmnopqrstuvwxyz0123");
+    std::fs::write(&login, text.replace("{{api_key}}", token)).expect("write");
+    let report = dir.path().join("check.json");
+    let project = dir.path().to_str().expect("utf-8");
+    let out = report.to_str().expect("utf-8");
+
+    let (code, stdout, _) = cli(&["check", project, "--report", "json", "--out", out], &[]);
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stdout.contains("log-in.toml: header X-Api-Key: looks like a GitHub token"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("get-user.toml: {{user}}: has no value"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Shop: 2 findings"), "{stdout}");
+    assert!(!stdout.contains(token), "the value is never shown (P6)");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report).expect("report")).expect("json");
+    assert_eq!(
+        json["findings"][1]["kind"]["credential"], "git_hub_token",
+        "{json}"
+    );
+
+    std::fs::write(&login, text).expect("write");
+    let (code, stdout, _) = cli(&["check", project, "--report", "junit", "--out", out], &[]);
+    assert_eq!(code, 2, "only JSON reports: {stdout}");
+    let manifest = dir.path().join("tortuga.toml");
+    let m = std::fs::read_to_string(&manifest).expect("read");
+    std::fs::write(
+        &manifest,
+        m.replace("[\"api_key\"]", "[\"api_key\", \"user\"]"),
+    )
+    .expect("write");
+    let (code, stdout, _) = cli(&["check", project], &[]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("Shop: no findings"), "{stdout}");
+}
