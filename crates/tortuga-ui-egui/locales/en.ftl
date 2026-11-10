@@ -653,6 +653,16 @@ response-variables-set = Variables set
 response-variable-removed = (removed)
 response-variables-kept = Kept for this project until Tortuga closes; they win over environment values.
 response-filter = Filter
+response-fold-all = Fold all
+response-fold-all-hint = Fold every object and array (JSON) or element (XML)
+response-unfold-all = Unfold all
+response-unfold-all-hint = Show every folded section again
+response-fold-hint = Fold this section
+response-unfold-hint = Unfold this section
+response-folded-lines = { $count ->
+    [one] 1 line hidden. Click to unfold.
+   *[other] { $count } lines hidden. Click to unfold.
+}
 response-wrap = Wrap
 response-wrap-hint = Wrap long lines (also in Settings → Appearance)
 response-next-match = Next match (Enter)
@@ -1204,6 +1214,7 @@ mock-label-servers = Mock ({$count} servers)
 shortcut-group-anywhere = Anywhere
 shortcut-group-tabs = Tabs
 shortcut-group-request = Request
+shortcut-group-response = Response body
 shortcut-group-scripts = Scripts
 shortcut-send = Send the request, or run the open workflow
 shortcut-send-everywhere = Send the request to every environment
@@ -1223,6 +1234,9 @@ shortcut-tab-at = The tab at that place
 shortcut-last-tab = The last tab
 shortcut-close-tab = Close the tab
 shortcut-close-preview = Close the preview under the URL
+shortcut-scroll-lines = Scroll the body (after clicking it, or with the pointer over it)
+shortcut-scroll-page = Scroll the body a page
+shortcut-scroll-ends = Go to the top or end of the body
 shortcut-indent = Indent or outdent the lines
 
 ## sidebar

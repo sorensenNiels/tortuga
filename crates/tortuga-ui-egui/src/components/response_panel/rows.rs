@@ -1,12 +1,17 @@
 //! The rows of a text body: only the visible ones are laid out (R-NF-2), search matches
-//! are highlighted (R-HTTP-12), JSON and XML are in colour (R-HTTP-24), and formatted JSON has a menu per row (R-TEST-13).
+//! are highlighted (R-HTTP-12), JSON and XML are in colour (R-HTTP-24), formatted JSON has a menu per row (R-TEST-13),
+//! formatted JSON and XML fold (R-HTTP-26), and the keyboard scrolls (R-HTTP-27).
 
 use std::ops::Range;
 
 use egui::text::{LayoutJob, TextFormat};
-use egui::{Color32, Label, RichText, ScrollArea, TextStyle, TextWrapMode, Ui};
+use egui::{
+    Color32, Key, Label, Modifiers, Rect, RichText, ScrollArea, Sense, TextStyle, TextWrapMode, Ui,
+    Vec2,
+};
 use tortuga_core::highlight::Token;
 
+use super::folding::Fold;
 use super::{ResponseAction, ResponseState, TextBody, WrappedRows, json_menu, wrap_rows};
 use crate::components::code_colours;
 use crate::theme;
@@ -64,9 +69,13 @@ pub(super) fn text_rows(
     }
     .id_salt(("response-body", body.text.as_ptr() as usize, wrap))
     .auto_shrink(false);
-    if std::mem::take(&mut st.scroll_to_match)
-        && let Some(m) = st.matches.get(st.current)
-    {
+    let scroll_to_match = std::mem::take(&mut st.scroll_to_match);
+    if scroll_to_match && let Some(m) = st.matches.get(st.current) {
+        st.folded.reveal(&body.folds, m.start);
+    }
+    st.folded.prepare(&body.folds, rows);
+    let rows = st.folded.visible(rows);
+    if scroll_to_match && let Some(m) = st.matches.get(st.current) {
         let row = rows.partition_point(|r| r.end < m.start);
         let stride = row_height + ui.spacing().item_spacing.y;
         #[expect(clippy::cast_precision_loss, reason = "row numbers are far below 2^23")]
@@ -80,23 +89,25 @@ pub(super) fn text_rows(
         )]
         let x = (column as f32 * char_width - 120.0).max(0.0);
         area = area.vertical_scroll_offset(y).horizontal_scroll_offset(x);
+    } else if let Some(to) = st
+        .keys
+        .pressed(ui, row_height + ui.spacing().item_spacing.y)
+    {
+        area = area.vertical_scroll_offset(to.y);
+        if !wrap {
+            area = area.horizontal_scroll_offset(to.x);
+        }
     }
     let font = TextStyle::Monospace.resolve(ui.style());
     let json_lines = st.json_lines.lines().filter(|_| menus == RowMenus::Json);
     let mut action = None;
     let mut wants_json_lines = false;
-    area.show_rows(ui, row_height, rows.len(), |ui, visible| {
+    let mut toggle = None;
+    let gutter = (!body.folds.is_empty()).then_some(row_height);
+    let output = area.show_rows(ui, row_height, rows.len(), |ui, visible| {
         for range in &rows[visible] {
-            let found = matches_in(&st.matches, range);
-            let row = if found.is_empty() && spans_in(&body.spans, range).is_empty() {
-                ui.add(
-                    Label::new(RichText::new(&body.text[range.clone()]).monospace())
-                        .wrap_mode(TextWrapMode::Extend)
-                        .sense(egui::Sense::click()),
-                )
-            } else {
-                highlighted_row(ui, body, range, &found, st.current, &font)
-            };
+            let (row, clicked) = text_row(ui, body, range, st, gutter, &font);
+            toggle = toggle.or(clicked);
             if menus == RowMenus::Json {
                 wants_json_lines |= row.secondary_clicked();
                 row.context_menu(|ui| {
@@ -107,11 +118,54 @@ pub(super) fn text_rows(
             }
         }
     });
+    st.keys.seen(
+        ui,
+        output.inner_rect,
+        output.state.clamped_offset(),
+        output.content_size,
+    );
+    if let Some(i) = toggle
+        && let Some(fold) = body.folds.get(i)
+    {
+        st.folded.toggle(fold);
+    }
     if wants_json_lines {
         st.json_lines.ask();
         ui.ctx().request_repaint();
     }
     action
+}
+
+/// One row: the fold toggle in the `gutter`, the text, and the marker of a folded section.
+/// Returns the text's response, and the fold (its index) whose toggle or marker was clicked.
+fn text_row(
+    ui: &mut Ui,
+    body: &TextBody,
+    range: &Range<usize>,
+    st: &ResponseState,
+    gutter: Option<f32>,
+    font: &egui::FontId,
+) -> (egui::Response, Option<usize>) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let mut toggle =
+            gutter.and_then(|width| fold_toggle(ui, &body.folds, range, &st.folded, width));
+        let found = matches_in(&st.matches, range);
+        let row = if found.is_empty() && spans_in(&body.spans, range).is_empty() {
+            ui.add(
+                Label::new(RichText::new(&body.text[range.clone()]).monospace())
+                    .wrap_mode(TextWrapMode::Extend)
+                    .sense(Sense::CLICK),
+            )
+        } else {
+            highlighted_row(ui, body, range, &found, st.current, font)
+        };
+        if let Some(at) = folded_marker(ui, body, range, &st.folded) {
+            toggle = Some(at);
+        }
+        (row, toggle)
+    })
+    .inner
 }
 
 /// A row in colour (R-HTTP-24) with the search matches in it highlighted (R-HTTP-12).
@@ -173,8 +227,163 @@ fn highlighted_row(
     ui.add(
         Label::new(job)
             .wrap_mode(TextWrapMode::Extend)
-            .sense(egui::Sense::click()),
+            .sense(Sense::CLICK),
     )
+}
+
+/// The ⏷/⏵ before a row that opens a section, else as much space. Returns the fold
+/// (its index) when clicked (R-HTTP-26).
+fn fold_toggle(
+    ui: &mut Ui,
+    folds: &[Fold],
+    row: &Range<usize>,
+    folded: &super::Folded,
+    width: f32,
+) -> Option<usize> {
+    let Ok(i) = folds.binary_search_by_key(&row.start, |f| f.start) else {
+        ui.add_space(width);
+        return None;
+    };
+    let fold = &folds[i];
+    let (symbol, hint) = if folded.is_folded(fold) {
+        ("⏵", t!("response-unfold-hint"))
+    } else {
+        ("⏷", t!("response-fold-hint"))
+    };
+    let p = theme::palette(ui);
+    let clicked = ui
+        .add(
+            egui::Button::new(RichText::new(symbol).small().color(p.muted))
+                .frame(false)
+                .min_size(Vec2::splat(width)),
+        )
+        .on_hover_text(hint)
+        .clicked();
+    clicked.then_some(i)
+}
+
+/// After the last row of a folded section's opening line: `… }` and how many lines are
+/// hidden. Returns the fold (its index) when clicked, to unfold it (R-HTTP-26).
+fn folded_marker(
+    ui: &mut Ui,
+    body: &TextBody,
+    row: &Range<usize>,
+    folded: &super::Folded,
+) -> Option<usize> {
+    let i = body
+        .folds
+        .binary_search_by_key(&row.end, |f| f.open_end)
+        .ok()?;
+    let fold = &body.folds[i];
+    if !folded.is_folded(fold) {
+        return None;
+    }
+    let closing = body.text.get(fold.closing.clone()).unwrap_or_default();
+    let p = theme::palette(ui);
+    let clicked = ui
+        .add(
+            Label::new(
+                RichText::new(format!(" … {closing}"))
+                    .monospace()
+                    .color(p.muted),
+            )
+            .wrap_mode(TextWrapMode::Extend)
+            .sense(Sense::CLICK),
+        )
+        .on_hover_text(t!("response-folded-lines", count = fold.lines))
+        .clicked();
+    clicked.then_some(i)
+}
+
+/// Scrolling the body with the keyboard (R-HTTP-27): while the pointer is over it, or it
+/// was the last thing clicked, and no text field has the keyboard.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct KeyScroll {
+    /// The body was clicked last.
+    active: bool,
+    /// Where the body was drawn, and its scroll offset and content size, last frame.
+    rect: Option<Rect>,
+    offset: Vec2,
+    content: Vec2,
+}
+
+impl KeyScroll {
+    /// The offset the keys pressed this frame scroll to, if any.
+    fn pressed(&self, ui: &Ui, line: f32) -> Option<Vec2> {
+        let rect = self.rect?;
+        if !(self.active || ui.rect_contains_pointer(rect)) || ui.ctx().egui_wants_keyboard_input()
+        {
+            return None;
+        }
+        let key = ui.input_mut(|i| {
+            SCROLL_KEYS
+                .iter()
+                .find(|(modifiers, key, _)| i.consume_key(*modifiers, *key))
+                .map(|(.., step)| *step)
+        })?;
+        let to = scrolled(key, self.offset, rect.size(), self.content, line);
+        ui.ctx().request_repaint();
+        Some(to)
+    }
+
+    /// Remembers where the body is, and whether it was clicked.
+    fn seen(&mut self, ui: &Ui, rect: Rect, offset: Vec2, content: Vec2) {
+        if let Some(at) = ui.input(|i| {
+            i.pointer
+                .any_pressed()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        }) {
+            self.active = rect.contains(at);
+        }
+        self.rect = Some(rect);
+        self.offset = offset;
+        self.content = content;
+    }
+}
+
+/// How far a key scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+}
+
+/// The keys that scroll the body (R-HTTP-27). Ctrl+PageUp/PageDown stay with the tabs.
+const SCROLL_KEYS: [(Modifiers, Key, Step); 10] = [
+    (Modifiers::NONE, Key::ArrowUp, Step::Up),
+    (Modifiers::NONE, Key::ArrowDown, Step::Down),
+    (Modifiers::NONE, Key::ArrowLeft, Step::Left),
+    (Modifiers::NONE, Key::ArrowRight, Step::Right),
+    (Modifiers::NONE, Key::PageUp, Step::PageUp),
+    (Modifiers::NONE, Key::PageDown, Step::PageDown),
+    (Modifiers::NONE, Key::Home, Step::Top),
+    (Modifiers::NONE, Key::End, Step::Bottom),
+    (Modifiers::COMMAND, Key::Home, Step::Top),
+    (Modifiers::COMMAND, Key::End, Step::Bottom),
+];
+
+/// The scroll offset after `step`, kept inside the content.
+fn scrolled(step: Step, offset: Vec2, viewport: Vec2, content: Vec2, line: f32) -> Vec2 {
+    let page = (viewport.y - line).max(line);
+    let column = line * 2.0;
+    let to = match step {
+        Step::Up => offset - Vec2::new(0.0, line),
+        Step::Down => offset + Vec2::new(0.0, line),
+        Step::Left => offset - Vec2::new(column, 0.0),
+        Step::Right => offset + Vec2::new(column, 0.0),
+        Step::PageUp => offset - Vec2::new(0.0, page),
+        Step::PageDown => offset + Vec2::new(0.0, page),
+        Step::Top => Vec2::new(offset.x, 0.0),
+        Step::Bottom => Vec2::new(offset.x, f32::INFINITY),
+    };
+    to.clamp(Vec2::ZERO, (content - viewport).max(Vec2::ZERO))
 }
 
 /// The coloured parts that overlap `row`. `spans` is sorted.
@@ -199,4 +408,40 @@ fn matches_in<'a>(
         .enumerate()
         .map(|(i, m)| (first + i, m))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R-HTTP-27: each key scrolls by its step and never past the content.
+    #[test]
+    fn keys_scroll_by_line_page_and_to_the_ends() {
+        let (viewport, content, line) = (Vec2::new(100.0, 200.0), Vec2::new(300.0, 1000.0), 20.0);
+        let at = |step, y| scrolled(step, Vec2::new(0.0, y), viewport, content, line).y;
+        assert_eq!(at(Step::Down, 100.0), 120.0);
+        assert_eq!(at(Step::Up, 100.0), 80.0);
+        assert_eq!(at(Step::Up, 0.0), 0.0);
+        assert_eq!(at(Step::PageDown, 100.0), 280.0);
+        assert_eq!(at(Step::PageDown, 790.0), 800.0);
+        assert_eq!(at(Step::PageUp, 100.0), 0.0);
+        assert_eq!(at(Step::Bottom, 0.0), 800.0);
+        assert_eq!(at(Step::Top, 500.0), 0.0);
+        let x = |step, x| scrolled(step, Vec2::new(x, 0.0), viewport, content, line).x;
+        assert_eq!(x(Step::Right, 0.0), 40.0);
+        assert_eq!(x(Step::Right, 190.0), 200.0);
+        assert_eq!(x(Step::Left, 10.0), 0.0);
+    }
+
+    #[test]
+    fn content_smaller_than_the_view_does_not_scroll() {
+        let to = scrolled(
+            Step::Bottom,
+            Vec2::ZERO,
+            Vec2::new(100.0, 200.0),
+            Vec2::new(50.0, 50.0),
+            20.0,
+        );
+        assert_eq!(to, Vec2::ZERO);
+    }
 }

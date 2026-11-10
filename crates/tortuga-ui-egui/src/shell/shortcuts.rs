@@ -49,12 +49,14 @@ pub(super) fn sheet(mac: bool, script: &ScriptKeys) -> Vec<ShortcutRow> {
     let either = |a: KeyboardShortcut, b: KeyboardShortcut| {
         format!("{}{}{}", keys(a), t!("or-separator"), keys(b))
     };
-    let (anywhere, tabs, request, scripts) = (
+    let (anywhere, tabs, request, response, scripts) = (
         t!("shortcut-group-anywhere"),
         t!("shortcut-group-tabs"),
         t!("shortcut-group-request"),
+        t!("shortcut-group-response"),
         t!("shortcut-group-scripts"),
     );
+    let plain = |key: Key| keys(KeyboardShortcut::new(Modifiers::NONE, key));
     let row = |group: &String, keys: String, does: String| ShortcutRow {
         group: group.clone(),
         keys,
@@ -96,6 +98,38 @@ pub(super) fn sheet(mac: bool, script: &ScriptKeys) -> Vec<ShortcutRow> {
         row(&tabs, keys(last), t!("shortcut-last-tab")),
         row(&tabs, keys(CLOSE_TAB), t!("shortcut-close-tab")),
         row(&request, keys(CLOSE_PREVIEW), t!("shortcut-close-preview")),
+        row(
+            &response,
+            [
+                Key::ArrowUp,
+                Key::ArrowDown,
+                Key::ArrowLeft,
+                Key::ArrowRight,
+            ]
+            .map(plain)
+            .join(" "),
+            t!("shortcut-scroll-lines"),
+        ),
+        row(
+            &response,
+            format!(
+                "{}{}{}",
+                plain(Key::PageUp),
+                t!("or-separator"),
+                plain(Key::PageDown)
+            ),
+            t!("shortcut-scroll-page"),
+        ),
+        row(
+            &response,
+            format!(
+                "{}{}{}",
+                plain(Key::Home),
+                t!("or-separator"),
+                plain(Key::End)
+            ),
+            t!("shortcut-scroll-ends"),
+        ),
         row(&scripts, either(INDENT, OUTDENT), t!("shortcut-indent")),
     ];
     for command in ScriptCommand::ALL {

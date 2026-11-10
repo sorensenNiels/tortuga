@@ -659,6 +659,16 @@ response-variables-set = Satte variabler
 response-variable-removed = (fjernet)
 response-variables-kept = Gemt for dette projekt, indtil Tortuga lukkes; de går forud for miljøets værdier.
 response-filter = Filter
+response-fold-all = Fold alle
+response-fold-all-hint = Fold alle objekter og arrays (JSON) eller elementer (XML)
+response-unfold-all = Fold alle ud
+response-unfold-all-hint = Vis alle foldede afsnit igen
+response-fold-hint = Fold dette afsnit
+response-unfold-hint = Fold dette afsnit ud
+response-folded-lines = { $count ->
+    [one] 1 linje skjult. Klik for at folde ud.
+   *[other] { $count } linjer skjult. Klik for at folde ud.
+}
 response-wrap = Ombryd
 response-wrap-hint = Ombryd lange linjer (også under Indstillinger → Udseende)
 response-next-match = Næste fund (Enter)
@@ -1210,6 +1220,7 @@ mock-label-servers = Mock ({$count} servere)
 shortcut-group-anywhere = Overalt
 shortcut-group-tabs = Faner
 shortcut-group-request = Anmodning
+shortcut-group-response = Svarets body
 shortcut-group-scripts = Scripts
 shortcut-send = Send anmodningen, eller kør det åbne workflow
 shortcut-send-everywhere = Send anmodningen til alle miljøer
@@ -1229,6 +1240,9 @@ shortcut-tab-at = Fanen på den plads
 shortcut-last-tab = Den sidste fane
 shortcut-close-tab = Luk fanen
 shortcut-close-preview = Luk forhåndsvisningen under URL'en
+shortcut-scroll-lines = Rul i body (efter et klik i den, eller med markøren over den)
+shortcut-scroll-page = Rul en side i body
+shortcut-scroll-ends = Gå til toppen eller slutningen af body
 shortcut-indent = Indryk linjerne, eller ryk dem ud
 
 ## sidebar

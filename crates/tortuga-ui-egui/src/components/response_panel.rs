@@ -13,6 +13,7 @@ use crate::{format, theme};
 
 mod cookies;
 mod filter;
+mod folding;
 mod json_menu;
 mod picture;
 mod rows;
@@ -23,6 +24,7 @@ pub use cookies::CookiesTab;
 use cookies::cookies_tab;
 use filter::Syntax;
 pub use filter::{Filtered, filter_body};
+use folding::{Fold, Folded};
 #[cfg(test)]
 use picture::MAX_IMAGE_SIDE;
 use picture::{ImageBody, ImageTexture, decode_image, image_view};
@@ -148,12 +150,15 @@ pub struct TextBody {
     spans: Vec<(Range<usize>, Token)>,
     /// How much of the body is shown when it is `truncated`.
     limit: usize,
+    /// The objects, arrays and elements that can be folded (R-HTTP-26).
+    folds: Vec<Fold>,
 }
 
 impl TextBody {
     fn new(text: String, truncated: bool, syntax: Syntax) -> Self {
         Self {
             rows: rows(&text),
+            folds: folding::folds(&text, syntax),
             spans: syntax
                 .language()
                 .map(|language| highlight::spans(language, &text))
@@ -385,6 +390,10 @@ pub struct ResponseState {
     /// The value on each line of the formatted JSON, worked out after the first
     /// right-click on it (R-TEST-13).
     json_lines: json_menu::JsonLines,
+    /// The folded sections of the shown text (R-HTTP-26).
+    folded: Folded,
+    /// Arrow keys, Page Up/Down and Home/End scroll the body (R-HTTP-27).
+    keys: rows::KeyScroll,
 }
 
 /// Rows of a text cut at a width, kept until the text or the width changes (R-SET-7).
@@ -769,9 +778,12 @@ fn body(
     // Before the toolbar, so its count is up to date.
     if let Some(shown) = shown {
         st.update_matches(&shown.text);
+        st.folded.follow(&shown.text);
     }
+    let folds = shown.map_or(&[][..], |s| &s.folds[..]);
     let filter = (full.syntax != Syntax::Plain).then_some((filter, full.syntax));
-    let wrap_changed = toolbar(ui, st, modes.as_deref(), filter, wrap).map(ResponseAction::SetWrap);
+    let wrap_changed =
+        toolbar(ui, st, modes.as_deref(), filter, folds, wrap).map(ResponseAction::SetWrap);
     if let Filtered::Failed(message) = filtered {
         theme::warning(ui, message);
     }
@@ -893,6 +905,7 @@ fn toolbar(
     st: &mut ResponseState,
     modes: Option<&str>,
     filter: Option<(&mut String, Syntax)>,
+    folds: &[Fold],
     wrap: bool,
 ) -> Option<bool> {
     let p = theme::palette(ui);
@@ -913,6 +926,21 @@ fn toolbar(
             }
         },
         |ui| {
+            if !folds.is_empty() {
+                let any = st.folded.any();
+                let (label, hint) = if any {
+                    (t!("response-unfold-all"), t!("response-unfold-all-hint"))
+                } else {
+                    (t!("response-fold-all"), t!("response-fold-all-hint"))
+                };
+                if ui
+                    .add(theme::ghost_button(label))
+                    .on_hover_text(hint)
+                    .clicked()
+                {
+                    st.folded.set_all(folds, !any);
+                }
+            }
             if ui
                 .add(egui::Button::selectable(wrap, t!("response-wrap")))
                 .on_hover_text(t!("response-wrap-hint"))
@@ -1078,6 +1106,56 @@ mod tests {
         h.get_by_label(r#"{"id":7}"#).click_secondary();
         h.run();
         assert!(h.query_by_label("Add test").is_none());
+    }
+
+    fn json_body(body: &str) -> Outcome {
+        Outcome::from_result(Ok(Response {
+            body: body.as_bytes().to_vec(),
+            ..json_response()
+        }))
+    }
+
+    /// R-HTTP-26: a section folds to its first line with `… }`, and folds back out.
+    #[test]
+    fn json_sections_fold_and_unfold() {
+        let mut h = render(Some(json_body(r#"{"user":{"name":"ü😀"},"tags":[1,2]}"#)));
+        assert!(h.query_by_label("    \"name\": \"ü😀\"").is_some());
+        h.query_all_by_label("⏷")
+            .nth(1)
+            .expect("the user's toggle")
+            .click();
+        h.run();
+        assert!(h.query_by_label("    \"name\": \"ü😀\"").is_none());
+        h.get_by_label("  \"user\": {");
+        h.get_by_label(" … },").click();
+        h.run();
+        h.get_by_label("    \"name\": \"ü😀\"");
+
+        h.get_by_label("Fold all").click();
+        h.run();
+        h.get_by_label("{");
+        assert!(h.query_by_label("  \"tags\": [").is_none());
+        h.get_by_label("Unfold all").click();
+        h.run();
+        h.get_by_label("    2");
+    }
+
+    /// R-HTTP-27: after clicking the body, End and Home scroll to its ends.
+    #[test]
+    fn keys_scroll_the_body_after_clicking_it() {
+        let items: Vec<String> = (0..500).map(|i| i.to_string()).collect();
+        let mut h = render(Some(json_body(&format!("[{}]", items.join(",")))));
+        h.get_by_label("  3,").click();
+        h.run();
+        assert!(h.query_by_label("  499").is_none());
+        h.key_press(Key::End);
+        h.run();
+        h.run();
+        h.get_by_label("  499");
+        h.key_press(Key::Home);
+        h.run();
+        h.run();
+        h.get_by_label("  3,");
     }
 
     fn text(view: &ResponseView) -> &TextBody {
