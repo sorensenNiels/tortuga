@@ -43,6 +43,7 @@ impl TortugaUi {
                     ));
                 }
             }
+            EditorAction::MakeSecret(index) => self.make_secret(key, index),
             EditorAction::EditWorkspaceDefaults => {
                 self.modal = Some(Modal::Defaults(
                     DefaultsDialog::for_workspace(&self.state).on_auth(),

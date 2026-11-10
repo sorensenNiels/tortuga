@@ -176,6 +176,7 @@ fn variables_table(ui: &mut Ui, rows: &mut Vec<WorkspaceVarRow>, new_variable: &
                         .font(egui::TextStyle::Monospace),
                 );
                 ui.end_row();
+                variable_row::credential_row(ui, &mut row.secret, [row.value.as_str()]);
             }
             if let Some(name) = variable_row::new_row_input(
                 ui,

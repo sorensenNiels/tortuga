@@ -1,4 +1,6 @@
 use egui::{Color32, ComboBox, Key, RichText, Stroke, TextEdit, Ui};
+use tortuga_core::check::credential::Credential;
+use tortuga_core::check::request::{Field, Flag};
 use tortuga_core::script::{Breakpoints, ScriptKind};
 use tortuga_core::settings::{Feature, FeatureSettings, ResolvedSettings};
 use tortuga_core::vars::Origin;
@@ -202,6 +204,9 @@ pub struct EditorContext<'a> {
     pub view: EditorView,
     /// Which features are on (R-SET-13).
     pub features: &'a FeatureSettings,
+    /// Values that look like credentials and would be committed (R-VAR-10); none for
+    /// the scratch request.
+    pub credentials: &'a [Flag],
 }
 
 /// How much of the request editor shows (R-SET-12).
@@ -242,6 +247,9 @@ pub enum EditorAction {
     ChooseFile(usize),
     /// Use the workspace's server of this name, adding it to the project (R-WS-12).
     UseWorkspaceServer(String),
+    /// Move flagged value `n` of [`EditorContext::credentials`] into a secret variable
+    /// (R-VAR-10).
+    MakeSecret(usize),
 }
 
 /// Method + server + URL bar and the request detail tabs (R-HTTP-1..4, R-HTTP-7, R-SRV-3).
@@ -285,6 +293,7 @@ pub fn request_editor(
     if let Some(host) = cx.unverified_host {
         theme::warning(ui, t!("request-unverified-host", host = host));
     }
+    let action = action.or(credential_warnings(ui, request, cx.credentials));
 
     if cx.view == EditorView::UrlOnly {
         return action;
@@ -346,6 +355,80 @@ pub fn request_editor(
         .show(ui, |ui| tab_content(ui, request, st, cx))
         .inner;
     action.or(in_tab)
+}
+
+/// A line per value that looks like a credential, each with "Make it a secret" (R-VAR-10).
+fn credential_warnings(ui: &mut Ui, request: &Request, flags: &[Flag]) -> Option<EditorAction> {
+    let mut action = None;
+    for (i, flag) in flags.iter().enumerate() {
+        ui.horizontal_wrapped(|ui| {
+            theme::warning(
+                ui,
+                t!(
+                    "request-credential",
+                    place = guard_place(request, flag.field),
+                    kind = credential_text(flag.found.kind)
+                ),
+            );
+            if ui
+                .add(theme::ghost_button(
+                    RichText::new(t!("request-make-secret")).small(),
+                ))
+                .clicked()
+            {
+                action = Some(EditorAction::MakeSecret(i));
+            }
+        });
+    }
+    action
+}
+
+/// Where a flagged value is, in the UI's words (R-VAR-10).
+pub fn guard_place(request: &Request, field: Field) -> String {
+    let body_name = |i: usize| match &request.body {
+        RequestBody::Form(rows) => rows.get(i).map(|r| r.name.clone()),
+        RequestBody::Multipart(parts) => parts.get(i).map(|p| p.name.clone()),
+        _ => None,
+    };
+    let name = |n: Option<&String>| n.cloned().unwrap_or_default();
+    match field {
+        Field::Url => t!("guard-url"),
+        Field::Param(i) => t!(
+            "guard-param",
+            name = name(request.params.get(i).map(|p| &p.name))
+        ),
+        Field::PathVariable(i) => t!(
+            "guard-path-variable",
+            name = name(request.path_vars.get(i).map(|v| &v.name))
+        ),
+        Field::Header(i) => t!(
+            "guard-header",
+            name = name(request.headers.get(i).map(|h| &h.name))
+        ),
+        Field::Body => t!("guard-body"),
+        Field::FormField(i) => t!("guard-form-field", name = body_name(i).unwrap_or_default()),
+        Field::Part(i) => t!("guard-part", name = body_name(i).unwrap_or_default()),
+        Field::AuthUsername => t!("guard-auth-username"),
+        Field::AuthPassword => t!("guard-auth-password"),
+        Field::AuthToken => t!("guard-auth-token"),
+        Field::AuthValue => t!("guard-auth-value"),
+    }
+}
+
+/// What a flagged value looks like, in the UI's words (R-VAR-10).
+pub fn credential_text(kind: Credential) -> String {
+    match kind {
+        Credential::Jwt => t!("credential-jwt"),
+        Credential::BearerToken => t!("credential-bearer-token"),
+        Credential::BasicCredentials => t!("credential-basic-credentials"),
+        Credential::AwsAccessKey => t!("credential-aws-access-key"),
+        Credential::GitHubToken => t!("credential-github-token"),
+        Credential::StripeKey => t!("credential-stripe-key"),
+        Credential::SlackToken => t!("credential-slack-token"),
+        Credential::PrivateKey => t!("credential-private-key"),
+        Credential::TypedPassword => t!("credential-typed-password"),
+        Credential::TypedToken => t!("credential-typed-token"),
+    }
 }
 
 /// What the open tab shows.
@@ -864,6 +947,7 @@ mod tests {
                         rerun: Rerun::Unavailable,
                         view: EditorView::Full,
                         features: &FeatureSettings::default(),
+                        credentials: &[],
                     },
                 );
                 if action.is_some() {
@@ -888,6 +972,67 @@ mod tests {
             request.server, None,
             "the shell sets it once the project has it"
         );
+    }
+
+    /// R-VAR-10: a flagged value is named with its place and kind, never its value, and
+    /// "Make it a secret" asks for it.
+    #[test]
+    fn credentials_show_a_warning_with_make_it_a_secret() {
+        let mut request = Request::new(HttpMethod::Get, "https://a.test/");
+        request.headers.push(KeyValue::new(
+            "X-Tökén",
+            concat!("ghp_", "abcdefghijklmnopqrstuvwxyz0123"),
+        ));
+        let credentials = tortuga_core::check::request::flags(&request);
+        let mut st = EditorState::new(&request);
+        st.focus_url = false;
+        let mut asked = None;
+        {
+            let mut h = crate::test_host::harness(|ui| {
+                let action = request_editor(
+                    ui,
+                    &mut request,
+                    &mut st,
+                    EditorContext {
+                        servers: &[],
+                        workspace_servers: &[],
+                        server_base: None,
+                        vars: &VarHelp::default(),
+                        sending: false,
+                        settings: test_settings(),
+                        unverified_host: None,
+                        collection_auth: None,
+                        inherited_headers: &[],
+                        auth_origin: &Origin::Project,
+                        cookie_count: 0,
+                        in_collection: true,
+                        preview: None,
+                        can_pick_files: false,
+                        breakpoints: &Breakpoints::default(),
+                        last_run: None,
+                        rerun: Rerun::Unavailable,
+                        view: EditorView::UrlOnly,
+                        features: &FeatureSettings::default(),
+                        credentials: &credentials,
+                    },
+                );
+                if action.is_some() {
+                    asked = action;
+                }
+            });
+            h.run();
+            h.get_by_label(
+                "Header X-Tökén looks like a GitHub token. It is committed with the file.",
+            );
+            assert!(
+                h.query_by_label_contains(concat!("ghp_", "abcdefghijklmnopqrstuvwxyz0123"))
+                    .is_none(),
+                "the value is not in the warning"
+            );
+            h.get_by_label("Make it a secret").click();
+            h.run();
+        }
+        assert_eq!(asked, Some(EditorAction::MakeSecret(0)));
     }
 
     #[test]
@@ -921,6 +1066,7 @@ mod tests {
                         rerun: Rerun::Unavailable,
                         view: EditorView::Full,
                         features: &FeatureSettings::default(),
+                        credentials: &[],
                     },
                 );
             });
@@ -974,6 +1120,7 @@ mod tests {
                         rerun: Rerun::Unavailable,
                         view: EditorView::Full,
                         features: &FeatureSettings::default(),
+                        credentials: &[],
                     },
                 );
             });
@@ -1018,6 +1165,7 @@ mod tests {
                     rerun: Rerun::Unavailable,
                     view: EditorView::Full,
                     features: &FeatureSettings::default(),
+                    credentials: &[],
                 },
             );
         })
@@ -1120,6 +1268,7 @@ mod tests {
                     rerun: Rerun::Unavailable,
                     view: EditorView::Full,
                     features: &FeatureSettings::default(),
+                    credentials: &[],
                 },
             );
         });
@@ -1179,6 +1328,7 @@ mod tests {
                         rerun: Rerun::Unavailable,
                         view: EditorView::Full,
                         features: &FeatureSettings::default(),
+                        credentials: &[],
                     },
                 );
             });
@@ -1238,6 +1388,7 @@ mod tests {
                         rerun: Rerun::Unavailable,
                         view: EditorView::Full,
                         features: &FeatureSettings::default(),
+                        credentials: &[],
                     },
                 );
             });

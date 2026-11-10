@@ -145,6 +145,7 @@ pub(super) fn defaults_view(
                         .font(egui::TextStyle::Monospace),
                 );
                 ui.end_row();
+                variable_row::credential_row(ui, &mut v.secret, [v.default.as_str()]);
             }
             add_variable_row(ui, d, names, new_variable);
         });
@@ -283,6 +284,8 @@ pub(super) fn project_values(
                     );
                 }
                 ui.end_row();
+                let value = v.values.get(col).cloned().unwrap_or_default();
+                variable_row::credential_row(ui, &mut v.secret, [value.as_str()]);
             }
             add_variable_row(ui, d, names, new_variable);
         });
@@ -534,6 +537,7 @@ pub(super) fn shared_variables(ui: &mut Ui, d: &mut EnvDraft, new_variable: &mut
                     .font(egui::TextStyle::Monospace),
             );
             ui.end_row();
+            variable_row::credential_row(ui, &mut v.secret, [v.value.as_str()]);
         }
         if let Some(name) = new_row_input(
             ui,

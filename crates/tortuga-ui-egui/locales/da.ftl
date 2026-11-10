@@ -1095,7 +1095,6 @@ auth-inherit-from = Arv fra {$origin}
 auth-uses-inherited = Denne anmodning bruger godkendelsen fra {$origin}: {$auth}.
 auth-change-in-folder = Skift den med “Mappens standarder…” i den mappes menu.
 auth-none-sent = Denne anmodning sender ingen godkendelse.
-auth-saved-in-request = anmodningsfil
 auth-kind-none = Ingen godkendelse
 auth-kind-basic = Basic
 auth-kind-bearer = Bearer-token
@@ -1111,6 +1110,35 @@ auth-header-needs-name = Der tilføjes ingen header, før den har et navn.
 
 request-server-no-url = Ingen URL til denne server i det aktive miljø
 request-undefined-variables = Ikke defineret: {$names} — definér dem i projektets miljøer eller arbejdsområdets variabler.
+request-credential = {$place} {$kind}. Den committes med filen.
+request-make-secret = Gør den hemmelig
+variable-credential = Denne værdi {$kind}. Den committes med filen.
+request-made-secret = {$place} er nu {"{{"}{$name}{"}}"}, en hemmelig variabel, der kun gemmes på denne maskine.
+request-saved-with-credentials = Gemt. {$count ->
+    [one] Én værdi ligner
+   *[other] {$count} værdier ligner
+} legitimationsoplysninger og committes med filen.
+guard-url = URL
+guard-param = Parameteren {$name}
+guard-path-variable = Stivariablen {$name}
+guard-header = Headeren {$name}
+guard-body = Body
+guard-form-field = Formularfeltet {$name}
+guard-part = Delen {$name}
+guard-auth-username = Brugernavnet
+guard-auth-password = Adgangskoden
+guard-auth-token = Tokenet
+guard-auth-value = Auth-værdien
+credential-jwt = ligner et JWT
+credential-bearer-token = ligner et Bearer-token
+credential-basic-credentials = ligner Basic-legitimationsoplysninger
+credential-aws-access-key = ligner en AWS-adgangsnøgle
+credential-github-token = ligner et GitHub-token
+credential-stripe-key = ligner en Stripe-livenøgle
+credential-slack-token = ligner et Slack-token
+credential-private-key = ligner en privat nøgle
+credential-typed-password = er skrevet ind, ikke en variabel
+credential-typed-token = er skrevet ind, ikke en variabel
 request-unverified-host = ⚠ Certifikatet for {$host} kontrolleres ikke (Indstillinger → Anmodninger). Brug kun dette til testservere.
 tab-params = Parametre
 tab-auth = Godkendelse

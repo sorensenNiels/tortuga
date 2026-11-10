@@ -123,7 +123,8 @@ pub fn request_auth(
         }
         (None, None) => theme::hint(ui, t!("auth-none-sent")),
         (Some(a), _) => {
-            auth_fields(ui, "request-auth", a, help, &t!("auth-saved-in-request"));
+            // The secret guard warns about a request's credentials (R-VAR-10).
+            auth_fields(ui, "request-auth", a, help, None);
         }
     }
     edit_defaults
@@ -153,8 +154,14 @@ pub fn kind_picker(ui: &mut Ui, auth: &mut Option<Auth>, inherit: Option<&str>) 
 }
 
 /// Fields of a concrete auth (no kind picker). `saved_in` names the file the
-/// values are written to, for the plain-text credential warning.
-pub fn auth_fields(ui: &mut Ui, id: &str, auth: &mut Auth, help: &VarHelp, saved_in: &str) -> bool {
+/// values are written to, for the plain-text credential warning; `None` shows none.
+pub fn auth_fields(
+    ui: &mut Ui,
+    id: &str,
+    auth: &mut Auth,
+    help: &VarHelp,
+    saved_in: Option<&str>,
+) -> bool {
     let mut changed = false;
     let width = ui.available_width().min(420.0);
     let mut credential = None;
@@ -205,7 +212,7 @@ pub fn auth_fields(ui: &mut Ui, id: &str, auth: &mut Auth, help: &VarHelp, saved
                 credential = Some(value.clone());
             }
         });
-    if let Some(value) = credential
+    if let (Some(value), Some(saved_in)) = (credential, saved_in)
         && looks_like_plain_credential(&value)
     {
         ui.add_space(6.0);

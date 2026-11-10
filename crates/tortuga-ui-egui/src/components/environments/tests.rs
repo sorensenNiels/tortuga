@@ -445,3 +445,42 @@ fn a_server_added_in_one_environment_is_in_all_and_in_every_project() {
     }
     std::fs::remove_dir_all(dir).expect("clean up");
 }
+
+/// R-VAR-10: a variable whose value looks like a credential is flagged in the dialog;
+/// "Make it a secret" turns its 🔒 on, so saving keeps the value on this machine.
+#[test]
+fn a_credential_in_a_variable_can_be_made_a_secret() {
+    let dir = temp("env-dialog-guard");
+    let (_, state) = open(&dir, &[("A ü😀", &["Dev"])]);
+    let mut dialog = EnvironmentsDialog::for_workspace(&state);
+    dialog.shown = Shown::Project(0);
+    dialog.projects[0].draft.variables.push(draft::VarRow {
+        name: "github".into(),
+        default: concat!("ghp_", "abcdefghijklmnopqrstuvwxyz0123").into(),
+        values: vec![String::new()],
+        ..draft::VarRow::default()
+    });
+    let result = std::cell::RefCell::new(None);
+    {
+        let mut h = harness(&mut dialog, &state, &result);
+        h.run();
+        h.get_by_label("This value looks like a GitHub token. It is committed with the file.");
+        h.get_by_label("Make it a secret").click();
+        h.run();
+        assert!(
+            h.query_by_label("Make it a secret").is_none(),
+            "a secret is not flagged"
+        );
+        h.get_by_label("Save").click();
+        h.run();
+    }
+    let saved = result.borrow_mut().take().expect("saved");
+    let config = &saved.projects[0].1;
+    assert_eq!(config.manifest.secrets, ["github"]);
+    assert!(!config.manifest.variables.contains_key("github"));
+    assert_eq!(
+        config.secrets.get(None, "github"),
+        Some(concat!("ghp_", "abcdefghijklmnopqrstuvwxyz0123"))
+    );
+    std::fs::remove_dir_all(dir).expect("clean up");
+}

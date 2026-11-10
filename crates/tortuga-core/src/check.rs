@@ -2,6 +2,7 @@
 //! its shared files, found without sending anything.
 
 pub mod credential;
+pub mod request;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -9,12 +10,12 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::collection::{Broken, Folder, Item, RequestItem};
-use crate::model::{Auth, KeyValue, RequestBody};
+use crate::model::{Auth, KeyValue};
 use crate::storage::Storage;
 use crate::workflow::path_text;
 use crate::workspace::WorkspaceFile;
 use crate::{Collection, vars};
-use credential::{AuthField, Credential, credential_in, credential_in_auth};
+use credential::{Credential, credential_in, credential_in_auth};
 
 /// One thing `check` reports: `<file>: <place>: <message>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -337,32 +338,9 @@ fn project_credentials(collection: &Collection, out: &mut Vec<Finding>) {
 
 fn request_credentials(item: &RequestItem, out: &mut Vec<Finding>) {
     let file = path_text(&item.path);
-    let request = &item.request;
-    value_credential(&file, "url", &request.url, out);
-    for p in &request.params {
-        value_credential(&file, format!("param {}", p.name), &p.value, out);
+    for flag in request::flags(&item.request) {
+        out.push(credential_finding(&file, flag.place, flag.found.kind));
     }
-    for v in &request.path_vars {
-        value_credential(&file, format!("path variable {}", v.name), &v.value, out);
-    }
-    header_credentials(&file, &request.headers, out);
-    match &request.body {
-        RequestBody::None => {}
-        RequestBody::Text(t) | RequestBody::Json(t) | RequestBody::Xml(t) => {
-            value_credential(&file, "body", t, out);
-        }
-        RequestBody::Form(fields) => {
-            for f in fields {
-                value_credential(&file, format!("form field {}", f.name), &f.value, out);
-            }
-        }
-        RequestBody::Multipart(parts) => {
-            for p in parts.iter().filter(|p| !p.file) {
-                value_credential(&file, format!("part {}", p.name), &p.value, out);
-            }
-        }
-    }
-    auth_credentials(&file, request.auth.as_ref(), out);
 }
 
 /// Credentials in the workspace file's shared values (R-CLI-6).
@@ -403,16 +381,7 @@ fn header_credentials(file: &str, headers: &[KeyValue], out: &mut Vec<Finding>) 
 }
 
 fn auth_credentials(file: &str, auth: Option<&Auth>, out: &mut Vec<Finding>) {
-    let fields: Vec<(&str, AuthField, &str)> = match auth {
-        None | Some(Auth::None) => Vec::new(),
-        Some(Auth::Basic { username, password }) => vec![
-            ("auth username", AuthField::Other, username),
-            ("auth password", AuthField::BasicPassword, password),
-        ],
-        Some(Auth::Bearer { token }) => vec![("auth token", AuthField::BearerToken, token)],
-        Some(Auth::Header { value, .. }) => vec![("auth value", AuthField::Other, value)],
-    };
-    for (place, field, value) in fields {
+    for (_, place, field, value) in request::auth_fields(auth) {
         if let Some(kind) = credential_in_auth(field, value) {
             out.push(credential_finding(file, place, kind));
         }

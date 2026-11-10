@@ -12,6 +12,7 @@ mod disk;
 mod drafts;
 mod editor_actions;
 mod fanout;
+mod guard;
 mod history;
 mod import;
 mod layout;
@@ -233,6 +234,8 @@ pub struct TortugaUi {
     workflow_events: Inbox<WorkflowEvent>,
     /// Whether a new version is out (R-SET-15).
     updates: updates::Updates,
+    /// The shown request's values that look like credentials (R-VAR-10).
+    guard: guard::Guard,
 }
 
 /// Results that background tasks send back to the UI thread, which reads them each frame.
@@ -341,6 +344,7 @@ impl TortugaUi {
             workflows: Workflows::default(),
             workflow_events: Inbox::new(),
             updates: updates::Updates::default(),
+            guard: guard::Guard::default(),
         };
         ui.restore_drafts();
         // Back where the user left off (R-WS-1, R-COL-13, R-COL-36).
@@ -655,6 +659,7 @@ impl TortugaUi {
         let root = key.as_ref().map(|k| k.root.clone());
         let ctx = self.state.request_context(key.as_ref());
         let var_help = self.state.var_help(key.as_ref(), &self.current, &ctx);
+        let credentials = self.credential_flags(&key).to_vec();
         let current_dirty = key
             .as_ref()
             .is_some_and(|k| self.is_dirty(k, &self.current));
@@ -670,10 +675,7 @@ impl TortugaUi {
         ui.add_space(4.0);
 
         let collection_auth = root.as_ref().map(|_| ctx.auth.clone().unwrap_or_default());
-        let inherited_headers: Vec<(tortuga_core::KeyValue, Origin)> = ctx
-            .inherited_headers_with_origins(&self.current)
-            .map(|(h, origin)| (h.clone(), origin.clone()))
-            .collect();
+        let inherited_headers = inherited_with_origins(&ctx, &self.current);
         let cookie_count = self.state.cookie_jar(root.as_deref()).len();
         let sending = self.sending() == Some(&key);
         let settings = self.state.resolved_settings(root.as_deref());
@@ -711,6 +713,7 @@ impl TortugaUi {
             rerun,
             view,
             features: &self.state.settings.features,
+            credentials: &credentials,
         };
         // R-SET-12: stacked, the request takes what its tab needs up to the divider's
         // height; side by side, each gets a column.
@@ -816,11 +819,17 @@ impl TortugaUi {
     /// Replaces the edited request from outside the editor; the open tab stays
     /// (R-COL-49).
     fn load(&mut self, request: Request) {
+        self.reload_editor(request);
+        self.response.reset();
+    }
+
+    /// Replaces the edited request and the editor's text with it; the open tab and the
+    /// response stay.
+    fn reload_editor(&mut self, request: Request) {
         let open = self.editor.open_tab();
         self.editor = EditorState::new(&request);
         self.editor.set_open_tab(open);
         self.current = request;
-        self.response.reset();
     }
 
     /// Shows the newly selected request on the tab it was left on, or the first tab
@@ -960,6 +969,7 @@ impl TortugaUi {
             // Saving answers a pending conflict with "keep mine".
             self.conflicts.remove(&key);
             self.remap(&key.root, &key.path, &new_path);
+            self.inform_saved_credentials(&self.selection.clone());
         }
     }
 
@@ -969,6 +979,16 @@ impl TortugaUi {
             self.load(self.state.saved_request(&key).unwrap_or_default());
         }
     }
+}
+
+/// The headers `request` inherits, with where each comes from, for the editor to show.
+fn inherited_with_origins(
+    ctx: &vars::Context,
+    request: &Request,
+) -> Vec<(tortuga_core::KeyValue, Origin)> {
+    ctx.inherited_headers_with_origins(request)
+        .map(|(h, origin)| (h.clone(), origin.clone()))
+        .collect()
 }
 
 /// Whether the tests can run again on what `last` left (R-TEST-12).

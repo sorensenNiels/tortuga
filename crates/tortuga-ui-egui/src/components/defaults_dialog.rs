@@ -494,7 +494,7 @@ fn auth_tab(
         (Some(Auth::None), true, _) => t!("defaults-auth-folder-none"),
         (Some(Auth::None), false, _) => t!("defaults-auth-project-none"),
         (Some(a), ..) => {
-            auth_fields(ui, "default-auth", a, vars, file);
+            auth_fields(ui, "default-auth", a, vars, Some(file));
             return;
         }
     };

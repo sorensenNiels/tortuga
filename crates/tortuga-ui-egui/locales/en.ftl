@@ -1089,7 +1089,6 @@ auth-inherit-from = Inherit from {$origin}
 auth-uses-inherited = This request uses the auth of {$origin}: {$auth}.
 auth-change-in-folder = Change it with “Folder defaults…” in that folder's menu.
 auth-none-sent = This request sends no authentication.
-auth-saved-in-request = request file
 auth-kind-none = No auth
 auth-kind-basic = Basic
 auth-kind-bearer = Bearer token
@@ -1105,6 +1104,35 @@ auth-header-needs-name = No header is added until it has a name.
 
 request-server-no-url = No URL for this server in the active environment
 request-undefined-variables = Undefined: {$names} — define them in the project's environments or the workspace's variables.
+request-credential = {$place} {$kind}. It is committed with the file.
+request-make-secret = Make it a secret
+variable-credential = This value {$kind}. It is committed with the file.
+request-made-secret = {$place} is now {"{{"}{$name}{"}}"}, a secret variable kept on this machine.
+request-saved-with-credentials = Saved. {$count ->
+    [one] One value looks
+   *[other] {$count} values look
+} like a credential and is committed with the file.
+guard-url = URL
+guard-param = Parameter {$name}
+guard-path-variable = Path variable {$name}
+guard-header = Header {$name}
+guard-body = Body
+guard-form-field = Form field {$name}
+guard-part = Part {$name}
+guard-auth-username = Username
+guard-auth-password = Password
+guard-auth-token = Token
+guard-auth-value = Auth value
+credential-jwt = looks like a JWT
+credential-bearer-token = looks like a Bearer token
+credential-basic-credentials = looks like Basic credentials
+credential-aws-access-key = looks like an AWS access key
+credential-github-token = looks like a GitHub token
+credential-stripe-key = looks like a Stripe live key
+credential-slack-token = looks like a Slack token
+credential-private-key = looks like a private key
+credential-typed-password = is typed in, not a variable
+credential-typed-token = is typed in, not a variable
 request-unverified-host = ⚠ The certificate of {$host} is not verified (Settings → Requests). Use this for test servers only.
 tab-params = Params
 tab-auth = Auth

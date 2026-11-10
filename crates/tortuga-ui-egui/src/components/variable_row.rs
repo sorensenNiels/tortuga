@@ -4,6 +4,44 @@ use egui::{AsIdSalt, RichText, TextEdit, Ui};
 
 use crate::theme;
 
+/// Under a variable that is not secret and whose value looks like a credential: a
+/// warning row in the variables grid, with "Make it a secret", which turns its 🔒 on so
+/// saving keeps the value on this machine (R-VAR-10).
+pub(super) fn credential_row<'a>(
+    ui: &mut Ui,
+    secret: &mut bool,
+    values: impl IntoIterator<Item = &'a str>,
+) {
+    if *secret {
+        return;
+    }
+    let Some(kind) = values
+        .into_iter()
+        .find_map(tortuga_core::check::credential::credential_in)
+    else {
+        return;
+    };
+    ui.label("");
+    ui.horizontal_wrapped(|ui| {
+        theme::warning(
+            ui,
+            t!(
+                "variable-credential",
+                kind = crate::components::credential_text(kind)
+            ),
+        );
+        if ui
+            .add(theme::ghost_button(
+                RichText::new(t!("request-make-secret")).small(),
+            ))
+            .clicked()
+        {
+            *secret = true;
+        }
+    });
+    ui.end_row();
+}
+
 /// Room the 🔒 toggle and remove button take next to the name.
 const BUTTONS_WIDTH: f32 = 82.0;
 
