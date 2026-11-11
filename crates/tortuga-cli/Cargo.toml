@@ -17,6 +17,8 @@ tortuga-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt"] }
+# Reads a project at a git revision for `diff` (R-CLI-7).
+gix = { workspace = true, features = ["revision"] }
 
 [dev-dependencies]
 tokio.workspace = true

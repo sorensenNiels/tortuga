@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod check;
+mod diff;
 mod list;
 mod mcp;
 mod mock;
@@ -27,6 +28,7 @@ Usage: tortuga-cli run <project> [<workflow, folder or request>] [options]
        tortuga-cli list <project> [--workspace FILE]
        tortuga-cli mcp [<project>] [--env NAME] [--workspace FILE]
        tortuga-cli check [<project>] [--workspace FILE] [--report json --out FILE]
+       tortuga-cli diff <project> [<revisions>] [--fail-on-breaking] [--report json --out FILE]
 
 run:  Runs a workflow (by name or id), the requests of a folder, or one request of
       the Tortuga project in <project>. Without a target, every request runs.
@@ -42,6 +44,13 @@ check: Checks the project (default: the current folder) without sending anything
       with no value in an environment, and values that look like credentials in
       shared files. Accept a value with [check] allow = [\"<file>: <place>\"] in
       tortuga.toml. Exits with 1 when there is anything to report.
+diff: Prints, as Markdown for a pull request comment, how the project's API changed:
+      requests added, removed, moved and changed (method, path, params, headers,
+      auth type, body shape, examples), never their values. <revisions> is like
+      git's: main (main and the working tree, the default being HEAD), main..HEAD,
+      or origin/main...HEAD (since the branch left main, as a pull request shows).
+      Changes that may break clients are marked; with --fail-on-breaking they make
+      it exit with 1.
 
 Options:
   --env NAME            Use this environment (by name or id): the project's, or with
@@ -92,6 +101,17 @@ struct Args {
     port: Option<u16>,
     /// Compare responses with the requests' examples (R-MOCK-8).
     check_examples: bool,
+    /// Whether `diff` fails on a change that may break clients (R-CLI-7).
+    breaking: BreakingChanges,
+}
+
+/// What `diff` does with a change that may break clients (R-CLI-7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum BreakingChanges {
+    #[default]
+    Reported,
+    /// `--fail-on-breaking`: exit with 1.
+    Fail,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +133,8 @@ enum Command {
     Mcp(Box<Args>),
     /// Check the project without sending anything (R-CLI-5).
     Check(Box<Args>),
+    /// Summarize the API changes between two revisions (R-CLI-7).
+    Diff(Box<Args>),
     Help,
     Version,
 }
@@ -161,6 +183,14 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Diff(args) => match diff::diff(&args) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::from(1),
+            Err(e) => {
+                eprintln!("tortuga-cli: {e}");
+                ExitCode::from(2)
+            }
+        },
         Command::Check(args) => match check::check(&args) {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::from(1),
@@ -207,6 +237,8 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
         Some("list") => (Command::List, Some("list shows")),
         Some("mcp") => (Command::Mcp, Some("mcp serves")),
         Some("check") => (Command::Check, Some("check reads")),
+        // The target is the revisions.
+        Some("diff") => (Command::Diff, None),
         Some(other) => return Err(format!("unknown command '{other}'")),
     };
     let mut args = Args::default();
@@ -239,6 +271,7 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
             "--out" => out = Some(PathBuf::from(value("--out")?)),
             "--mock" => args.mock = true,
             "--check-examples" => args.check_examples = true,
+            "--fail-on-breaking" => args.breaking = BreakingChanges::Fail,
             "--port" => {
                 let v = value("--port")?;
                 args.port = Some(

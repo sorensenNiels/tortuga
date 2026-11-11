@@ -81,8 +81,14 @@ pub fn shape_changes(before: &Response, after: &Response) -> Vec<Change> {
     let (Some(a), Some(b)) = (json_body(before), json_body(after)) else {
         return Vec::new();
     };
+    json_shape_changes(&a, &b)
+}
+
+/// How the shape of JSON value `b` differs from `a`'s, as [`shape_changes`] compares
+/// bodies; also used for request bodies and examples (R-CLI-7).
+pub fn json_shape_changes(a: &serde_json::Value, b: &serde_json::Value) -> Vec<Change> {
     let mut out = Vec::new();
-    shape("$", &a, &b, &mut out);
+    shape("$", a, b, &mut out);
     out.truncate(MAX_CHANGES);
     out
 }

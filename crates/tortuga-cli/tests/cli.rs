@@ -392,3 +392,115 @@ fn check_reports_mistakes_and_credentials() {
     assert_eq!(code, 0, "{stdout}");
     assert!(stdout.contains("Shop: no findings"), "{stdout}");
 }
+
+/// Runs `git` in `dir`; false where git is not installed, so the test is skipped there.
+fn git(dir: &Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .args(["-c", "user.name=T", "-c", "user.email=t@t"])
+        .args([
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn diff_summarizes_api_changes_between_revisions() {
+    // R-CLI-7, D77
+    let repo = tempfile::tempdir().expect("tempdir");
+    let root = repo.path();
+    if !git(root, &["init"]) {
+        return;
+    }
+    let api = root.join("api ü😀");
+    project(&api, "{{base_url}}");
+    assert!(git(root, &["add", "."]) && git(root, &["commit", "-m", "start"]));
+    let p = api.to_str().expect("utf-8");
+
+    // A branch removes the login and adds a request in a folder.
+    assert!(git(root, &["checkout", "-b", "feature"]));
+    let get = std::fs::read_to_string(api.join("get-user.toml")).expect("read");
+    std::fs::create_dir(api.join("orders")).expect("folder");
+    std::fs::write(
+        api.join("orders/list.toml"),
+        get.replace("/users/{{user}}", "/orders")
+            .replace("Get user", "List orders"),
+    )
+    .expect("write");
+    std::fs::remove_file(api.join("log-in.toml")).expect("remove");
+    assert!(git(root, &["add", "-A"]) && git(root, &["commit", "-m", "orders"]));
+    // Main moves on: a health check the feature branch never saw.
+    assert!(git(root, &["checkout", "main"]));
+    let health = get
+        .replace("/users/{{user}}", "/health")
+        .replace("Get user", "Health");
+    std::fs::write(api.join("health.toml"), health).expect("write");
+    assert!(git(root, &["add", "-A"]) && git(root, &["commit", "-m", "health"]));
+    let login = std::fs::read_to_string(api.join("log-in.toml")).expect("read");
+
+    let (code, stdout, stderr) = cli(&["diff", p, "main...feature"], &[]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(
+        stdout.starts_with("### API changes: Shop (main...feature)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("**1 added, 1 removed** · ⚠ 1 may break clients"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("| ➖ ⚠ | `POST /login` Log in | ⚠ removed |"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("| ➕ | `GET /orders` List orders | added |"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("Health"),
+        "main's own change is not the branch's"
+    );
+
+    let report = root.join("diff.json");
+    let out = report.to_str().expect("utf-8");
+    let (code, stdout, _) = cli(
+        &[
+            "diff",
+            p,
+            "main..feature",
+            "--fail-on-breaking",
+            "--report",
+            "json",
+            "--out",
+            out,
+        ],
+        &[],
+    );
+    assert_eq!(code, 1, "{stdout}");
+    assert!(
+        stdout.contains("| ➖ ⚠ | `GET /health` Health |"),
+        "two dots compare the tips: {stdout}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report).expect("report")).expect("json");
+    assert_eq!(json["breaking"], 2, "{json}");
+    assert_eq!(json["requests"][0]["status"], "removed", "{json}");
+
+    // Without revisions: HEAD and the working tree.
+    std::fs::write(api.join("log-in.toml"), login.replace("POST", "PUT")).expect("write");
+    let (code, stdout, _) = cli(&["diff", p], &[]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("(HEAD..working tree)"), "{stdout}");
+    assert!(stdout.contains("⚠ method `POST` → `PUT`"), "{stdout}");
+
+    let (code, _, stderr) = cli(&["diff", p, "no-such-branch..HEAD"], &[]);
+    assert_eq!(code, 2, "{stderr}");
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let (code, _, stderr) = cli(&["diff", elsewhere.path().to_str().expect("utf-8")], &[]);
+    assert_eq!(code, 2, "{stderr}");
+}

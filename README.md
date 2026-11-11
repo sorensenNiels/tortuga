@@ -308,6 +308,20 @@ A finding names its place, never the value (`login.toml: header Authorization: l
 as a fake token in a test request, list its place in the project's `tortuga.toml`:
 `[check]` `allow = ["login.toml: header Authorization"]`. Examples are not scanned.
 
+**In a pull request.** `tortuga-cli diff` prints, as Markdown, what a change does to a project's API: requests added,
+removed, moved and changed (method, path, params, headers, auth type, body shape and examples, never values), one row
+each, with the details folded away. Changes that may break clients (anything removed, renamed or of another type) are
+marked ⚠, and `--fail-on-breaking` makes them fail the build. Revisions read as in git: `main` (against your working
+tree; `HEAD` when left out), `main..HEAD`, or `origin/main...HEAD` (since the branch left main, as the pull request
+shows it). In GitHub Actions, after `actions/checkout` with `fetch-depth: 0`:
+
+```yaml
+- run: tortuga-cli diff api origin/${{ github.base_ref }}...HEAD > api-changes.md
+- run: gh pr comment ${{ github.event.pull_request.number }} --body-file api-changes.md
+  env:
+    GH_TOKEN: ${{ github.token }}
+```
+
 **In VS Code.** The extension in [editors/vscode](editors/vscode/README.md) lists your projects in the Testing view and
 runs them with `tortuga-cli`, with an environment picker and "Open in Tortuga". `make vscode` builds it.
 
