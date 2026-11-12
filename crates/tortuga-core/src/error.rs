@@ -131,6 +131,10 @@ pub enum Error {
     #[error("could not import the Insomnia export: {0}")]
     InvalidInsomnia(String),
 
+    /// R-GEO-1
+    #[error("not WFS capabilities: {0}")]
+    InvalidWfsCapabilities(String),
+
     /// R-VAR-3, R-LOC-2
     #[error("could not access secret values: {0}")]
     SecretStore(String),

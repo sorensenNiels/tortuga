@@ -171,6 +171,31 @@ async fn failures() {
     );
 }
 
+/// R-HTTP-29: an OGC exception report sent with HTTP 200 fails the step, with the
+/// server's text, even without a test script.
+#[tokio::test]
+async fn an_ogc_exception_report_fails_the_step() {
+    let server = MockServer::start().await;
+    Mock::given(path("/geoserver/wfs"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1">
+  <ows:Exception exceptionCode="InvalidParameterValue" locator="typeName">
+    <ows:ExceptionText>Feature type topp:nope unknown</ows:ExceptionText>
+  </ows:Exception>
+</ows:ExceptionReport>"#,
+        ))
+        .mount(&server)
+        .await;
+    let r = Request::new(HttpMethod::Get, format!("{}/geoserver/wfs", server.uri()));
+    let out = run_step(&Client::default(), None, &r, &ctx(&[]), Extra::default()).await;
+    assert!(
+        out.failure()
+            .is_some_and(|f| f.contains("InvalidParameterValue (typeName)")),
+        "{:?}",
+        out.failure()
+    );
+}
+
 #[test]
 fn captures_from_json_headers_and_status() {
     let res = Response {

@@ -144,7 +144,7 @@ fn paint_grip(ui: &Ui, rect: egui::Rect, active: bool) {
 }
 
 /// Cancel and confirm buttons, right-aligned. Returns (cancel clicked, confirm clicked).
-pub(super) fn actions(
+pub(crate) fn actions(
     ui: &mut Ui,
     confirm: egui::Button<'_>,
     confirm_enabled: bool,
@@ -166,7 +166,7 @@ pub(crate) fn finish<T>(cancel: bool, done: Option<T>) -> DialogResult<T> {
 }
 
 /// A small heading above a field; returns its id, to name the field for screen readers.
-fn field_label(ui: &mut Ui, text: &str) -> Id {
+pub(crate) fn field_label(ui: &mut Ui, text: &str) -> Id {
     ui.add_space(8.0);
     let color = theme::palette(ui).muted;
     ui.label(theme::semibold(text).size(12.0).color(color)).id

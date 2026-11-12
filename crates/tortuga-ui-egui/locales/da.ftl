@@ -1043,14 +1043,8 @@ env-remove-variable = Fjern denne variabel fra projektet i alle miljøer
 env-script-vars = Sat af scripts og opsamlinger
 env-script-vars-hint = Sættes når en anmodning eller et workflow kører, og huskes til Tortuga lukkes, men gemmes aldrig. De vinder over alle værdier ovenfor.
 env-script-vars-none = Ingen opsamling eller script i dette projekt sætter en variabel.
-env-script-vars-set-by = Sat af
 env-script-vars-value = Værdi i denne session
 env-script-vars-not-set = ikke sat endnu
-env-script-vars-capture = opsamling
-env-script-vars-pre-request = script før anmodning
-env-script-vars-tests = tests
-env-script-vars-workflow = Workflow “{$name}”
-env-script-vars-open = Gemmer dine ændringer her og åbner anmodningen
 env-script-vars-add-default = Tilføj en standardværdi
 env-script-vars-add-default-hint = Tilføjer den som projektvariabel, så anmodninger har en værdi før scriptet kører. Scriptets værdi vinder stadig.
 env-script-vars-has-default = har en standardværdi
@@ -1231,6 +1225,74 @@ addon-workflows-about = Kæder af requests, der giver værdier videre, og kørse
 workflows-stopped = Workflows er slået fra; kørslen, der var i gang, er stoppet.
 addon-mock-server = Mockserver
 addon-mock-server-about = Besvarer et projekts requests ud fra dets eksempler, på denne computer.
+addon-geoserver = GeoServer
+addon-geoserver-about = Opretter WFS-requests ud fra en tjenestes capabilities og viser de features, et svar indeholder.
+cmd-new-wfs-service = Ny WFS-tjeneste…
+cmd-new-wfs-service-hint = Opret GetCapabilities-, DescribeFeatureType- og GetFeature-requests til en WFS-tjenestes lag
+wfs-title = Ny WFS-tjeneste i {$place}
+wfs-hint = Henter tjenestens capabilities og opretter derefter almindelige requests til de lag, du vælger, på en projektserver. De virker uden denne tilføjelse og i tortuga-cli.
+wfs-endpoint = WFS-endpoint
+wfs-version = Version
+wfs-server-url = Server-URL
+wfs-server-url-hint = Hvor projektserverens URL slutter; resten af endpointet er forespørgslernes sti. En kortere lader andre tjenester på samme vært bruge samme server.
+wfs-server = Projektserver
+wfs-server-hint = Forespørgslerne bruger denne projektserver. Hvert miljø kan pege den på sin egen tjeneste.
+wfs-server-new = Ny server…
+wfs-server-name = Navn
+wfs-server-needs-name = Giv den nye server et navn.
+wfs-server-exists = Projektet har allerede en server, der hedder {$server}: vælg den på listen.
+wfs-server-set = I {$environment} bliver {$server} {$base}.
+wfs-server-same = I {$environment} er {$server} allerede {$base}.
+wfs-server-changes = I {$environment} ændrer Opret {$server} fra {$now} til {$base}.
+wfs-server-own-environment = Projektet har endnu ikke sit eget miljø “{$environment}”: Opret tilføjer et med kun denne URL. Det går forud for arbejdsområdets miljø, kun for dette projekt.
+wfs-server-no-environment = Intet miljø er valgt: {$server} får {$base} i hvert miljø uden en URL til den (et nyt “Default”, hvis projektet ikke har nogen).
+wfs-server-path = Forespørgslerne går til {$path} på {$server}.
+wfs-auth = Godkendelse
+wfs-auth-inherited = Forespørgslerne bruger godkendelsen fra {$origin}: {$auth}. Vælg en anden her for at give tjenesten sin egen; den gemmes i tjenestens mappe.
+wfs-auth-undefined = Ikke defineret i det aktive miljø: {$names}. Hentningen fejler, indtil den er defineret under Miljøer, eller du vælger godkendelsen for denne tjeneste her.
+wfs-auth-none = Der sendes ingen godkendelse. Vælg en her, hvis tjenesten kræver det; den gemmes i tjenestens mappe.
+wfs-fetch = Hent lag
+wfs-fetch-again = Hent igen
+wfs-fetching = Henter capabilities…
+wfs-stale = Endpoint eller version er ændret, siden lagene blev hentet: hent igen for at oprette.
+wfs-layers = {$title}: {$chosen} af {$count} lag valgt
+wfs-no-layers = Tjenesten har ingen lag.
+wfs-filter = Filtrer lag
+wfs-all = Alle
+wfs-none = Ingen
+wfs-create =
+    { $count ->
+        [0] Opret kun GetCapabilities
+        [one] Opret requests til 1 lag
+       *[other] Opret requests til {$count} lag
+    }
+wfs-created =
+    { $count ->
+        [one] Oprettede requests til {$title} og 1 lag.
+       *[other] Oprettede requests til {$title} og {$count} lag.
+    }
+features-tab = Features
+features-too-big = Svaret er over {$limit}: for stort til fanen Features.
+features-none = Svaret er ikke GeoJSON-features.
+features-empty = Ingen features i svaret.
+features-count =
+    { $count ->
+        [one] 1 feature
+       *[other] {$count} features
+    }
+features-count-of = {$count} af {$matched} features
+features-bounds-hint = Udstrækning af alle koordinater, som svaret har dem: min x, min y → max x, max y
+features-layout-above = Over
+features-layout-beside = Ved siden af
+features-layout-hint = Hvor forhåndsvisningen står: over tabellen eller ved siden af. Gælder alle svar.
+features-swap = Byt x/y
+features-swap-hint = Tegn den anden koordinat som øst–vest. Slås til af sig selv for urn:ogc:def:crs:EPSG::4326, som GeoServer skriver som bredde, længde.
+features-no-geometry = Ingen geometrier at tegne
+features-id = id
+features-geometry = geometri
+features-select-hint = Vælg denne feature i forhåndsvisningen
+response-ogc-exception = Serveren meldte en fejl (OGC exception report)
+response-ogc-more = …og {$count} mere
 mock-addon-off = Slå mockserveren til under Indstillinger → Tilføjelser først.
 mock-addon-stopped = Mockserver-tilføjelsen er slået fra; de kørende mockservere er stoppet.
 mcp-addon-off = Slå MCP-serveren til under Indstillinger → Tilføjelser først.

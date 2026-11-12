@@ -32,9 +32,10 @@ mod variable_row;
 mod workflow_view;
 mod workspace_vars;
 
-pub use auth_editor::request_auth;
+pub use auth_editor::{auth_fields, describe as describe_auth, kind_picker, request_auth};
 pub use body_editor::{BodyDrafts, body_editor};
 pub use changes_dialog::ChangesDialog;
+pub(crate) use defaults_dialog::undefined_names;
 pub use defaults_dialog::{DefaultsDialog, DefaultsTarget, EditedDefaults};
 pub use description::description_editor;
 pub use environments::{EnvironmentsDialog, SavedConfig, SavedEnvironments};
@@ -50,7 +51,7 @@ pub use modals::{
     CopyToProjectDialog, CreateProjectDialog, DialogResult, MoveDialog, NameDialog,
     RuntimeVarsDialog, SaveToCollectionDialog,
 };
-pub(crate) use modals::{dialog, finish};
+pub(crate) use modals::{actions, dialog, field_label, finish};
 use modals::{fitting_scroll_area, resizable_dialog};
 pub use palette::{Palette, PaletteItem};
 pub use request_editor::{

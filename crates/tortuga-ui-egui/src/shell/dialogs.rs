@@ -21,14 +21,7 @@ impl TortugaUi {
                     self.state.clear_runtime(Some(&root));
                 }
                 match result {
-                    DialogResult::Done(saved) => {
-                        let saved = self.save_environments(d, saved);
-                        // A request clicked in "Set by scripts and captures" (R-VAR-11).
-                        if saved && let Some(key) = d.take_go_to() {
-                            self.select(Some(key));
-                        }
-                        !saved
-                    }
+                    DialogResult::Done(saved) => !self.save_environments(d, saved),
                     result => result == DialogResult::Open,
                 }
             }
@@ -89,7 +82,7 @@ impl TortugaUi {
             | Modal::SaveRunAs(..)
             | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
             Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
-            Modal::AddOn(addon) => crate::addons::dialog(ctx, &mut self.state, *addon),
+            Modal::AddOn(addon) => self.show_addon_dialog(ctx, *addon),
             Modal::Import(open) => self.show_import_dialog(ctx, open),
             Modal::EnvironmentImport(open) => self.show_environment_import(ctx, open),
             Modal::CloseProjectTabs(root, d) => self.show_close_project_tabs(ctx, root, d),
@@ -110,6 +103,19 @@ impl TortugaUi {
         // A dialog may have opened another one ("Create a project there…"); never overwrite it.
         if keep && self.modal.is_none() {
             self.modal = Some(modal);
+        }
+    }
+
+    /// An add-on's dialog (D78). Returns whether it stays open.
+    fn show_addon_dialog(&mut self, ctx: &egui::Context, addon: crate::addons::AddOn) -> bool {
+        match crate::addons::dialog(ctx, &mut self.state, addon) {
+            crate::addons::DialogShown::Open => true,
+            crate::addons::DialogShown::Closed => false,
+            // The dialog created it (R-GEO-1).
+            crate::addons::DialogShown::OpenRequest(key) => {
+                self.open_tab(Some(key), true);
+                false
+            }
         }
     }
 

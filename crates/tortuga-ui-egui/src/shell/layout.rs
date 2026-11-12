@@ -307,6 +307,46 @@ mod tests {
         std::fs::remove_dir_all(root).expect("clean up");
     }
 
+    /// A folder made with "New folder" at the end of a long project shows its name field
+    /// in view, ready to type.
+    #[test]
+    fn a_new_folder_at_the_end_of_a_long_list_is_in_view() {
+        use egui_kittest::kittest::{NodeT as _, Queryable};
+
+        let (mut ui, root, _) = crate::shell::tests::setup("layout-new-folder");
+        ui.state.run(&root, |c, s| {
+            for i in 0..80 {
+                let request = tortuga_core::Request {
+                    name: format!("Request {i}"),
+                    ..tortuga_core::Request::default()
+                };
+                c.new_request(s, std::path::Path::new(""), &request)?;
+            }
+            Ok(())
+        });
+        let mut h = app_harness(&mut ui);
+        h.run();
+        h.get_by_label("⏷ C").click_secondary();
+        h.run();
+        h.query_by_label_contains("New folder")
+            .expect("menu entry")
+            .click();
+        // Scrolling to it is animated.
+        h.run_steps(20);
+        let field = h
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|n| n.accesskit_node().value().as_deref() == Some("New folder"))
+            .expect("the name field");
+        assert!(field.is_focused(), "typing names it");
+        let rect = field.rect();
+        assert!(
+            rect.min.y >= 0.0 && rect.max.y <= 900.0,
+            "in view: {rect:?}"
+        );
+        drop(h);
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
     /// R-SET-12: automatic is stacked in a narrow window, side by side in a wide one.
     #[test]
     fn automatic_follows_the_width() {

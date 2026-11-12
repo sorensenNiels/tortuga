@@ -2,7 +2,7 @@
 //! (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-SET-3), which importers are offered (R-COL-18),
 //! appearance (R-SET-4, R-SET-5, R-SET-7, R-SET-10), history (R-SET-6), editing
 //! (R-SET-9, R-SET-11), the script editor (R-SET-16) and the new-version check
-//! (R-SET-15), the add-ons that are on (R-ADD-1); and the request settings a workspace or project can override (R-SET-1,
+//! (R-SET-15), the add-ons that are on (R-ADD-1) and their settings (R-GEO-2); and the request settings a workspace or project can override (R-SET-1,
 //! D39).
 //!
 //! Every setting has a default that suits most developers, and only settings that
@@ -17,7 +17,7 @@ use crate::import::ImportKind;
 
 mod addons;
 mod script_editor;
-pub use addons::{AddOn, AddOnSettings};
+pub use addons::{AddOn, AddOnSettings, FeaturesLayout, GeoServerSettings};
 pub use script_editor::{KeyScheme, ScriptCommand, ScriptEditorSettings};
 
 /// Everything in the app's settings file.
@@ -45,6 +45,9 @@ pub struct AppSettings {
     /// Which add-ons are on (R-ADD-1, D78).
     #[serde(skip_serializing_if = "AddOnSettings::is_default")]
     pub addons: AddOnSettings,
+    /// The GeoServer add-on's own settings (R-GEO-2).
+    #[serde(skip_serializing_if = "GeoServerSettings::is_default")]
+    pub geoserver: GeoServerSettings,
 }
 
 /// Whether the app looks for a new version by itself (R-SET-15, D63).

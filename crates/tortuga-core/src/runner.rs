@@ -251,6 +251,10 @@ pub fn after_response(
         }
     }
 
+    // R-HTTP-29: a map server's error sent with HTTP 200.
+    if let Some(result) = crate::ogc::failed_test(&response.body) {
+        out.tests.push(result);
+    }
     if extra.check_examples
         && let Some(result) =
             crate::mock::contract::check(&request.examples, sent, response, &ctx.variables)

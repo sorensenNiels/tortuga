@@ -1,4 +1,4 @@
-//! Add-ons (D78, R-ADD-1 to R-ADD-3): parts of the app not everyone needs, off until they
+//! Add-ons (D78, D80, R-ADD-1 to R-ADD-6): parts of the app not everyone needs, off until they
 //! are turned on in Settings → Add-ons.
 //!
 //! An add-on that is off is not loaded: its state in [`AddOns`] is `None`, and none of its
@@ -11,14 +11,19 @@
 //! `components/workflow_view.rs`, woven into tabs, auto-save and the sidebar; only its
 //! switch is here, and the shell asks [`AppState::addon_on`].
 
+pub(crate) mod geoserver;
 pub(crate) mod mcp;
 pub(crate) mod mock;
 
+use std::path::Path;
+
 use egui::{Context, Ui};
 pub use tortuga_core::settings::AddOn;
+use tortuga_core::settings::FeaturesLayout;
 
+use crate::components::ResponseView;
 use crate::host::Host;
-use crate::state::AppState;
+use crate::state::{AppState, ItemKey};
 
 /// The add-ons that are loaded, each `None` while it is off.
 #[derive(Debug, Default)]
@@ -27,6 +32,8 @@ pub struct AddOns {
     pub(crate) mcp: Option<mcp::McpServer>,
     /// The projects' mock servers (R-ADD-5).
     pub(crate) mock: Option<mock::Mocks>,
+    /// WFS requests from capabilities and the Features tab (R-ADD-6).
+    pub(crate) geoserver: Option<geoserver::GeoServer>,
 }
 
 /// What an add-on's menu item or palette command asks for.
@@ -34,6 +41,7 @@ pub struct AddOns {
 pub(crate) enum Command {
     Mcp(mcp::Command),
     Mock(mock::Command),
+    GeoServer(geoserver::Command),
 }
 
 /// A command palette entry of an add-on.
@@ -51,6 +59,7 @@ pub(crate) fn name(addon: AddOn) -> String {
         AddOn::McpServer => t!("addon-mcp-server"),
         AddOn::Workflows => t!("addon-workflows"),
         AddOn::MockServer => t!("addon-mock-server"),
+        AddOn::GeoServer => t!("addon-geoserver"),
     }
 }
 
@@ -60,6 +69,7 @@ pub(crate) fn about(addon: AddOn) -> String {
         AddOn::McpServer => t!("addon-mcp-server-about"),
         AddOn::Workflows => t!("addon-workflows-about"),
         AddOn::MockServer => t!("addon-mock-server-about"),
+        AddOn::GeoServer => t!("addon-geoserver-about"),
     }
 }
 
@@ -67,7 +77,7 @@ pub(crate) fn about(addon: AddOn) -> String {
 fn available(addon: AddOn, host: &dyn Host) -> bool {
     match addon {
         AddOn::McpServer | AddOn::MockServer => host.can_run_servers(),
-        AddOn::Workflows => true,
+        AddOn::Workflows | AddOn::GeoServer => true,
     }
 }
 
@@ -112,6 +122,15 @@ impl AppState {
                         self.inform(t!("mock-addon-stopped"));
                     }
                 }
+                AddOn::GeoServer => {
+                    if on {
+                        self.addons
+                            .geoserver
+                            .get_or_insert_with(geoserver::GeoServer::default);
+                    } else {
+                        self.addons.geoserver = None;
+                    }
+                }
             }
         }
     }
@@ -129,6 +148,29 @@ impl AppState {
         }
         if let Some(mocks) = &mut self.addons.mock {
             mocks.take_hits();
+        }
+        if let Some(g) = &mut self.addons.geoserver {
+            g.take_fetched();
+        }
+    }
+
+    /// The add-ons that can add a tab to a response (D80), and how.
+    pub(crate) fn response_tabs(&self) -> ResponseTabs {
+        ResponseTabs {
+            geoserver: self
+                .addons
+                .geoserver
+                .as_ref()
+                .map(|_| self.settings.geoserver.features_layout),
+        }
+    }
+
+    /// Does what an add-on's response tab asked.
+    pub(crate) fn apply_response_tab_action(&mut self, action: ResponseTabAction) {
+        match action {
+            ResponseTabAction::GeoServer(geoserver::features_tab::TabAction::SetLayout(l)) => {
+                self.update_settings(|s| s.geoserver.features_layout = l);
+            }
         }
     }
 }
@@ -197,16 +239,133 @@ pub(crate) fn run(state: &mut AppState, command: Command) -> Option<AddOn> {
     match command {
         Command::Mcp(command) => mcp::ui::run(state, command).then_some(AddOn::McpServer),
         Command::Mock(command) => mock::ui::run(state, command).then_some(AddOn::MockServer),
+        Command::GeoServer(command) => geoserver::run(state, command).then_some(AddOn::GeoServer),
     }
+}
+
+/// An add-on's entry in a project's or folder's menu.
+pub(crate) struct MenuEntry {
+    pub icon: &'static str,
+    pub label: String,
+    pub hint: String,
+    pub command: Command,
+}
+
+/// The menu entries of the add-ons that are on, for a project (`parent` empty) or one of
+/// its folders that can be changed (D80).
+pub(crate) fn folder_menu(on: MenuAddOns, root: &Path, parent: &Path) -> Vec<MenuEntry> {
+    let mut entries = Vec::new();
+    if on.geoserver {
+        entries.push(MenuEntry {
+            icon: "🗺",
+            label: t!("cmd-new-wfs-service"),
+            hint: t!("cmd-new-wfs-service-hint"),
+            command: Command::GeoServer(geoserver::Command::NewService {
+                root: root.to_owned(),
+                parent: parent.to_owned(),
+            }),
+        });
+    }
+    entries
+}
+
+/// Which add-ons that add menu entries are on, for the sidebar's menus.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MenuAddOns {
+    pub geoserver: bool,
+}
+
+impl AppState {
+    pub(crate) fn menu_addons(&self) -> MenuAddOns {
+        MenuAddOns {
+            geoserver: self.addons.geoserver.is_some(),
+        }
+    }
+}
+
+/// A response tab an add-on adds (D80).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseTab {
+    /// The features of a GeoJSON body (R-GEO-2).
+    Features,
+}
+
+/// The add-ons that can add response tabs, and what they need to draw them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResponseTabs {
+    /// The Features tab's layout while the GeoServer add-on is on.
+    geoserver: Option<FeaturesLayout>,
+}
+
+impl ResponseTabs {
+    /// The tabs with the GeoServer add-on on, for tests of the response panel.
+    #[cfg(test)]
+    pub(crate) fn with_geoserver(layout: FeaturesLayout) -> Self {
+        Self {
+            geoserver: Some(layout),
+        }
+    }
+
+    /// The add-on tabs a response with `body` gets, with their labels.
+    pub(crate) fn offered(self, body: &[u8]) -> Vec<(ResponseTab, String)> {
+        let mut tabs = Vec::new();
+        if self.geoserver.is_some() && geoserver::features_tab::offered(body) {
+            tabs.push((ResponseTab::Features, t!("features-tab")));
+        }
+        tabs
+    }
+}
+
+/// What the add-on tabs keep about the shown response; reset with it.
+#[derive(Debug, Clone, Default)]
+pub struct ResponseTabState {
+    features: geoserver::features_tab::FeaturesState,
+}
+
+/// What an add-on's response tab asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseTabAction {
+    GeoServer(geoserver::features_tab::TabAction),
+}
+
+/// Draws an add-on's response tab.
+pub(crate) fn response_tab(
+    ui: &mut Ui,
+    tab: ResponseTab,
+    tabs: ResponseTabs,
+    view: &ResponseView,
+    st: &mut ResponseTabState,
+) -> Option<ResponseTabAction> {
+    match tab {
+        ResponseTab::Features => {
+            let layout = tabs.geoserver?;
+            geoserver::features_tab::features_tab(ui, view, &mut st.features, layout)
+                .map(ResponseTabAction::GeoServer)
+        }
+    }
+}
+
+/// What showing an add-on's dialog led to.
+pub(crate) enum DialogShown {
+    Open,
+    Closed,
+    /// Open this request: the dialog created it (R-GEO-1).
+    OpenRequest(ItemKey),
 }
 
 /// Shows an add-on's dialog. Returns whether it stays open; it closes when the add-on
 /// is off.
-pub(crate) fn dialog(ctx: &Context, state: &mut AppState, addon: AddOn) -> bool {
-    match addon {
+pub(crate) fn dialog(ctx: &Context, state: &mut AppState, addon: AddOn) -> DialogShown {
+    let open = match addon {
         AddOn::McpServer => state.addons.mcp.is_some() && mcp::ui::dialog(ctx, state),
         AddOn::MockServer => mock::ui::dialog(ctx, state),
+        AddOn::GeoServer => return geoserver::dialog(ctx, state),
         AddOn::Workflows => false,
+    };
+    if open {
+        DialogShown::Open
+    } else {
+        DialogShown::Closed
     }
 }
 

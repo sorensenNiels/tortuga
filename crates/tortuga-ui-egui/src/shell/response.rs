@@ -69,6 +69,7 @@ impl TortugaUi {
             trend,
             changes: comparison.as_deref(),
             cookies,
+            addon_tabs: self.state.response_tabs(),
         };
         match response_panel(ui, outcome, &mut self.response, cx) {
             Some(ResponseAction::SaveBody) => {
@@ -96,6 +97,7 @@ impl TortugaUi {
                 self.state
                     .update_settings(|s| s.appearance.wrap_lines = wrap);
             }
+            Some(ResponseAction::AddOn(asked)) => self.state.apply_response_tab_action(asked),
             Some(ResponseAction::AddTest(code)) => self.add_test(&code),
             Some(ResponseAction::AddCapture { name, from }) => self.add_capture(&name, &from),
             Some(ResponseAction::ShowChanges) => {

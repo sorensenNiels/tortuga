@@ -1,0 +1,568 @@
+//! The Features tab of a GeoJSON response (R-GEO-2): a line about the features, a shape
+//! preview with no map underneath (P5), and a table of their properties. Hovering or
+//! clicking a feature in one shows it in the other.
+
+use std::sync::Arc;
+
+use egui::{Color32, Label, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui, Vec2, pos2, vec2};
+use tortuga_core::geoserver::features::{self, Point};
+use tortuga_core::geoserver::{Bounds, Features, Shape};
+use tortuga_core::settings::FeaturesLayout;
+
+use crate::components::ResponseView;
+use crate::theme;
+
+/// Bodies bigger than this are not read for the tab (R-GEO-2): reading and drawing them
+/// every frame would make the app stutter.
+pub(crate) const MAX_BYTES: usize = 5 * 1024 * 1024;
+
+const ROW_HEIGHT: f32 = 22.0;
+const INDEX_WIDTH: f32 = 44.0;
+const ID_WIDTH: f32 = 130.0;
+const GEOMETRY_WIDTH: f32 = 110.0;
+const PROPERTY_WIDTH: f32 = 150.0;
+/// How near, in points, the pointer must be to a line or point to hit it.
+const HIT_DISTANCE: f32 = 5.0;
+
+/// What the tab keeps about the shown response.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FeaturesState {
+    /// The features read from the shown body.
+    read: Option<ReadBody>,
+    selected: Option<usize>,
+    /// The table row under the pointer last frame, highlighted in the preview.
+    hovered_row: Option<usize>,
+    /// Scroll the table to the selected row (it was clicked in the preview).
+    scroll_to_selected: bool,
+    /// Swap x and y; `None` follows the CRS ([`Features::lat_lon`]).
+    swap: Option<bool>,
+}
+
+/// The features read from the body at `key` (address, length); `None` when the body is
+/// not features after all.
+#[derive(Debug, Clone)]
+struct ReadBody {
+    key: (usize, usize),
+    features: Option<Arc<Features>>,
+}
+
+/// What the tab asks of the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabAction {
+    SetLayout(FeaturesLayout),
+}
+
+/// Whether a response gets the tab: its body starts like GeoJSON features.
+pub(crate) fn offered(body: &[u8]) -> bool {
+    features::looks_like_features(body)
+}
+
+pub(crate) fn features_tab(
+    ui: &mut Ui,
+    view: &ResponseView,
+    st: &mut FeaturesState,
+    layout: FeaturesLayout,
+) -> Option<TabAction> {
+    let body = &view.response.body;
+    if body.len() > MAX_BYTES {
+        theme::hint(
+            ui,
+            t!("features-too-big", limit = crate::format::size(MAX_BYTES)),
+        );
+        return None;
+    }
+    let key = (body.as_ptr() as usize, body.len());
+    if st.read.as_ref().is_none_or(|r| r.key != key) {
+        let features = view.json().and_then(features::read).map(Arc::new);
+        *st = FeaturesState {
+            read: Some(ReadBody { key, features }),
+            swap: st.swap,
+            ..FeaturesState::default()
+        };
+    }
+    let Some(found) = st.read.as_ref().and_then(|r| r.features.clone()) else {
+        theme::hint(ui, t!("features-none"));
+        return None;
+    };
+    let swap = st.swap.unwrap_or_else(|| found.lat_lon());
+    let action = summary(ui, &found, st, swap, layout);
+    if found.features.is_empty() {
+        theme::hint(ui, t!("features-empty"));
+        return action;
+    }
+    ui.add_space(6.0);
+    match layout {
+        FeaturesLayout::Above => {
+            let height = (ui.available_height() * 0.4).clamp(140.0, 360.0);
+            preview(ui, &found, st, swap, vec2(ui.available_width(), height));
+            ui.add_space(6.0);
+            table(ui, &found, st);
+        }
+        FeaturesLayout::Beside => {
+            let size = ui.available_size();
+            let table_width = (size.x * 0.55).max(200.0);
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui(vec2(table_width, size.y), |ui| {
+                    ui.set_min_size(vec2(table_width, size.y));
+                    table(ui, &found, st);
+                });
+                let rest = ui.available_size();
+                preview(ui, &found, st, swap, vec2(rest.x, rest.y.min(size.y)));
+            });
+        }
+    }
+    action
+}
+
+/// "12 features of 49 · CRS · bounds", Swap x/y, and the layout switch.
+fn summary(
+    ui: &mut Ui,
+    f: &Features,
+    st: &mut FeaturesState,
+    swap: bool,
+    layout: FeaturesLayout,
+) -> Option<TabAction> {
+    let p = theme::palette(ui);
+    let mut action = None;
+    egui::Sides::new().shrink_left().show(
+        ui,
+        |ui| {
+            let count = match f.matched {
+                Some(m) if m != f.features.len() as u64 => {
+                    t!("features-count-of", count = f.features.len(), matched = m)
+                }
+                _ => t!("features-count", count = f.features.len()),
+            };
+            ui.label(theme::semibold(count));
+            if let Some(crs) = &f.crs {
+                ui.label(RichText::new("·").color(p.muted));
+                ui.label(RichText::new(crs).monospace().small().color(p.muted));
+            }
+            if let Some(b) = f.bounds {
+                ui.label(RichText::new("·").color(p.muted));
+                ui.label(RichText::new(bounds_text(b)).small().color(p.muted))
+                    .on_hover_text(t!("features-bounds-hint"));
+            }
+        },
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (value, label) in [
+                (FeaturesLayout::Beside, t!("features-layout-beside")),
+                (FeaturesLayout::Above, t!("features-layout-above")),
+            ] {
+                if ui
+                    .add(egui::Button::selectable(layout == value, label))
+                    .on_hover_text(t!("features-layout-hint"))
+                    .clicked()
+                    && layout != value
+                {
+                    action = Some(TabAction::SetLayout(value));
+                }
+            }
+            ui.add_space(10.0);
+            let mut on = swap;
+            if ui
+                .checkbox(&mut on, t!("features-swap"))
+                .on_hover_text(t!("features-swap-hint"))
+                .changed()
+            {
+                st.swap = Some(on);
+            }
+        },
+    );
+    action
+}
+
+fn bounds_text(b: Bounds) -> String {
+    format!(
+        "{:.4}, {:.4} → {:.4}, {:.4}",
+        b.min[0], b.min[1], b.max[0], b.max[1]
+    )
+}
+
+/// Maps the body's coordinates into a rectangle, north up, keeping the aspect ratio.
+#[derive(Debug, Clone, Copy)]
+struct Projection {
+    min: Point,
+    scale: f32,
+    origin: Pos2,
+    swap: bool,
+}
+
+impl Projection {
+    /// For `bounds` (as the body has them) drawn in `rect` with a margin.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "screen positions need no more than f32"
+    )]
+    fn new(bounds: Bounds, rect: Rect, swap: bool) -> Self {
+        let (min, max) = if swap {
+            (
+                [bounds.min[1], bounds.min[0]],
+                [bounds.max[1], bounds.max[0]],
+            )
+        } else {
+            (bounds.min, bounds.max)
+        };
+        let inner = rect.shrink(12.0);
+        let (w, h) = ((max[0] - min[0]) as f32, (max[1] - min[1]) as f32);
+        // A single point, or features on one line, still get a scale.
+        let scale = match (w > 0.0, h > 0.0) {
+            (true, true) => (inner.width() / w).min(inner.height() / h),
+            (true, false) => inner.width() / w,
+            (false, true) => inner.height() / h,
+            (false, false) => 1.0,
+        };
+        // Centre what is drawn.
+        let used = vec2(w * scale, h * scale);
+        let origin = pos2(
+            inner.center().x - used.x / 2.0,
+            inner.center().y + used.y / 2.0,
+        );
+        Self {
+            min,
+            scale,
+            origin,
+            swap,
+        }
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "screen positions need no more than f32"
+    )]
+    fn to_screen(self, p: Point) -> Pos2 {
+        let [x, y] = if self.swap { [p[1], p[0]] } else { p };
+        pos2(
+            self.origin.x + (x - self.min[0]) as f32 * self.scale,
+            self.origin.y - (y - self.min[1]) as f32 * self.scale,
+        )
+    }
+}
+
+/// A shape in screen positions.
+enum Drawn {
+    Point(Pos2),
+    Line(Vec<Pos2>),
+    Polygon(Vec<Vec<Pos2>>),
+}
+
+fn project(shape: &Shape, proj: Projection) -> Drawn {
+    let line = |l: &[Point]| l.iter().map(|p| proj.to_screen(*p)).collect::<Vec<_>>();
+    match shape {
+        Shape::Point(p) => Drawn::Point(proj.to_screen(*p)),
+        Shape::Line(l) => Drawn::Line(line(l)),
+        Shape::Polygon(rings) => Drawn::Polygon(rings.iter().map(|r| line(r)).collect()),
+    }
+}
+
+/// Whether `at` is on or in the drawn shape.
+fn hits(drawn: &Drawn, at: Pos2) -> bool {
+    match drawn {
+        Drawn::Point(p) => p.distance(at) <= HIT_DISTANCE + 2.0,
+        Drawn::Line(l) => near_line(l, at),
+        Drawn::Polygon(rings) => {
+            rings.iter().any(|r| near_line(r, at))
+                || rings.first().is_some_and(|outer| inside(outer, at))
+                    && !rings[1..].iter().any(|hole| inside(hole, at))
+        }
+    }
+}
+
+fn near_line(points: &[Pos2], at: Pos2) -> bool {
+    points
+        .windows(2)
+        .any(|w| distance_to_segment(at, w[0], w[1]) <= HIT_DISTANCE)
+}
+
+fn distance_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let length = ab.length_sq();
+    if length == 0.0 {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(ab) / length).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
+/// Even-odd rule: whether `p` is inside the ring.
+fn inside(ring: &[Pos2], p: Pos2) -> bool {
+    let mut odd = false;
+    let n = ring.len();
+    for i in 0..n {
+        let (a, b) = (ring[i], ring[(i + n - 1) % n]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            odd = !odd;
+        }
+    }
+    odd
+}
+
+fn preview(ui: &mut Ui, f: &Features, st: &mut FeaturesState, swap: bool, size: Vec2) {
+    let p = theme::palette(ui);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 6.0, p.surface);
+    painter.rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(1.0, p.border),
+        egui::StrokeKind::Inside,
+    );
+    let Some(bounds) = f.bounds else {
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            t!("features-no-geometry"),
+            egui::FontId::proportional(12.0),
+            p.muted,
+        );
+        return;
+    };
+    let proj = Projection::new(bounds, rect, swap);
+    let hover_at = response.hover_pos();
+    let mut under_pointer = None;
+    let mut highlighted = Vec::new();
+    for (i, feature) in f.features.iter().enumerate() {
+        let drawn: Vec<Drawn> = feature.shapes.iter().map(|s| project(s, proj)).collect();
+        if hover_at.is_some_and(|at| drawn.iter().any(|d| hits(d, at))) {
+            under_pointer = Some(i);
+        }
+        if Some(i) == st.selected || Some(i) == st.hovered_row {
+            // Drawn last, on top.
+            highlighted.push(drawn);
+        } else {
+            paint(&painter, &drawn, Stroke::new(1.0, p.blue));
+        }
+    }
+    for drawn in &highlighted {
+        paint(&painter, drawn, Stroke::new(2.5, p.accent));
+    }
+    if let Some(i) = under_pointer {
+        if Some(i) != st.selected && Some(i) != st.hovered_row {
+            let drawn: Vec<Drawn> = f.features[i]
+                .shapes
+                .iter()
+                .map(|s| project(s, proj))
+                .collect();
+            paint(&painter, &drawn, Stroke::new(2.0, p.accent));
+        }
+        let label = f.features[i]
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("#{}", i + 1));
+        response.clone().on_hover_text_at_pointer(label);
+    }
+    if response.clicked() {
+        st.selected = under_pointer;
+        st.scroll_to_selected = under_pointer.is_some();
+    }
+}
+
+fn paint(painter: &egui::Painter, drawn: &[Drawn], stroke: Stroke) {
+    for d in drawn {
+        match d {
+            Drawn::Point(p) => {
+                painter.circle_filled(*p, 3.0 + stroke.width / 2.0, stroke.color);
+            }
+            Drawn::Line(l) => {
+                painter.line(l.clone(), stroke);
+            }
+            Drawn::Polygon(rings) => {
+                for ring in rings {
+                    painter.add(egui::Shape::closed_line(ring.clone(), stroke));
+                }
+            }
+        }
+    }
+}
+
+/// A row per feature: its number (click to select), id, geometry type and properties.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "column and row counts are far below f32's exact range"
+)]
+fn table(ui: &mut Ui, f: &Features, st: &mut FeaturesState) {
+    let p = theme::palette(ui);
+    let width = INDEX_WIDTH + ID_WIDTH + GEOMETRY_WIDTH + PROPERTY_WIDTH * f.columns.len() as f32;
+    let mut hovered_row = None;
+    ScrollArea::horizontal()
+        .id_salt("features-table-h")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.set_min_width(width);
+            row(ui, p.muted, |cell| {
+                cell(INDEX_WIDTH, String::new());
+                cell(ID_WIDTH, t!("features-id"));
+                cell(GEOMETRY_WIDTH, t!("features-geometry"));
+                for c in &f.columns {
+                    cell(PROPERTY_WIDTH, c.clone());
+                }
+            });
+            ui.separator();
+            let mut scroll = ScrollArea::vertical()
+                .id_salt("features-table-v")
+                .auto_shrink([false, false]);
+            if st.scroll_to_selected
+                && let Some(i) = st.selected
+            {
+                scroll = scroll
+                    .vertical_scroll_offset(i as f32 * (ROW_HEIGHT + ui.spacing().item_spacing.y));
+                st.scroll_to_selected = false;
+            }
+            scroll.show_rows(ui, ROW_HEIGHT, f.features.len(), |ui, range| {
+                for i in range {
+                    let feature = &f.features[i];
+                    let selected = st.selected == Some(i);
+                    let top = ui.cursor().min;
+                    let rect = Rect::from_min_size(top, vec2(width, ROW_HEIGHT));
+                    if selected {
+                        ui.painter().rect_filled(rect, 3.0, p.accent_fill);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.set_height(ROW_HEIGHT);
+                        let clicked = ui
+                            .add_sized(
+                                [INDEX_WIDTH - 4.0, ROW_HEIGHT - 2.0],
+                                egui::Button::selectable(selected, (i + 1).to_string()),
+                            )
+                            .on_hover_text(t!("features-select-hint"))
+                            .clicked();
+                        if clicked {
+                            st.selected = (!selected).then_some(i);
+                        }
+                        let text = |ui: &mut Ui, w: f32, s: &str, muted: bool| {
+                            let mut rich = RichText::new(s);
+                            if muted {
+                                rich = rich.color(p.muted);
+                            }
+                            ui.allocate_ui(vec2(w, ROW_HEIGHT), |ui| {
+                                ui.set_width(w - 8.0);
+                                ui.add(Label::new(rich).truncate());
+                            });
+                        };
+                        text(ui, ID_WIDTH, feature.id.as_deref().unwrap_or(""), true);
+                        text(
+                            ui,
+                            GEOMETRY_WIDTH,
+                            feature.geometry_type.as_deref().unwrap_or("—"),
+                            true,
+                        );
+                        for value in &feature.properties {
+                            text(ui, PROPERTY_WIDTH, value, false);
+                        }
+                    });
+                    if ui.rect_contains_pointer(rect) {
+                        hovered_row = Some(i);
+                    }
+                }
+            });
+        });
+    if st.hovered_row != hovered_row {
+        st.hovered_row = hovered_row;
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The header row: a cell per column, each `width` wide.
+fn row(ui: &mut Ui, color: Color32, cells: impl FnOnce(&mut dyn FnMut(f32, String))) {
+    ui.horizontal(|ui| {
+        let mut cell = |w: f32, s: String| {
+            ui.allocate_ui(vec2(w, ROW_HEIGHT), |ui| {
+                ui.set_width(w - 8.0);
+                ui.add(Label::new(theme::semibold(s).size(12.0).color(color)).truncate());
+            });
+        };
+        cells(&mut cell);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn square() -> Vec<Pos2> {
+        vec![
+            pos2(0.0, 0.0),
+            pos2(10.0, 0.0),
+            pos2(10.0, 10.0),
+            pos2(0.0, 10.0),
+            pos2(0.0, 0.0),
+        ]
+    }
+
+    /// R-GEO-2: the pointer hits a polygon inside it, not in its hole.
+    #[test]
+    fn polygons_are_hit_inside_but_not_in_holes() {
+        let outer: Vec<Pos2> = square()
+            .iter()
+            .map(|p| pos2(p.x * 4.0, p.y * 4.0))
+            .collect();
+        let hole = vec![
+            pos2(10.0, 10.0),
+            pos2(30.0, 10.0),
+            pos2(30.0, 30.0),
+            pos2(10.0, 30.0),
+        ];
+        let drawn = Drawn::Polygon(vec![outer, hole]);
+        assert!(hits(&drawn, pos2(2.0, 20.0)));
+        assert!(!hits(&drawn, pos2(20.0, 20.0)), "in the hole");
+        assert!(
+            hits(&drawn, pos2(20.0, 10.0 + HIT_DISTANCE - 1.0)),
+            "near the hole's edge"
+        );
+        assert!(!hits(&drawn, pos2(60.0, 60.0)));
+        assert!(
+            hits(&drawn, pos2(40.0 + HIT_DISTANCE - 1.0, 20.0)),
+            "near the outer edge"
+        );
+    }
+
+    #[test]
+    fn lines_and_points_are_hit_near_them() {
+        let line = Drawn::Line(vec![pos2(0.0, 0.0), pos2(100.0, 0.0)]);
+        assert!(hits(&line, pos2(50.0, 4.0)));
+        assert!(!hits(&line, pos2(50.0, 9.0)));
+        assert!(!hits(&line, pos2(110.0, 0.0)));
+        assert!(hits(&Drawn::Point(pos2(5.0, 5.0)), pos2(9.0, 5.0)));
+        assert!(!hits(&Drawn::Line(Vec::new()), pos2(0.0, 0.0)));
+        assert!(!hits(&Drawn::Polygon(Vec::new()), pos2(0.0, 0.0)));
+    }
+
+    /// R-GEO-2: north is up, the aspect ratio is kept, and swapping reads lat/lon.
+    #[test]
+    fn the_projection_puts_north_up() {
+        let bounds = Bounds {
+            min: [0.0, 0.0],
+            max: [10.0, 5.0],
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(224.0, 224.0));
+        let proj = Projection::new(bounds, rect, false);
+        let sw = proj.to_screen([0.0, 0.0]);
+        let ne = proj.to_screen([10.0, 5.0]);
+        assert!(ne.y < sw.y, "north is up");
+        assert!(ne.x > sw.x, "east is right");
+        assert!(
+            (ne.x - sw.x - 2.0 * (sw.y - ne.y)).abs() < 0.01,
+            "aspect kept"
+        );
+        assert!(rect.contains(sw) && rect.contains(ne));
+
+        let swapped = Projection::new(bounds, rect, true);
+        // [lat, lon]: the body's first number goes up.
+        let a = swapped.to_screen([0.0, 0.0]);
+        let b = swapped.to_screen([10.0, 0.0]);
+        assert!(b.y < a.y && (b.x - a.x).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_single_point_still_projects() {
+        let bounds = Bounds {
+            min: [3.0, 4.0],
+            max: [3.0, 4.0],
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0));
+        let at = Projection::new(bounds, rect, false).to_screen([3.0, 4.0]);
+        assert!((at - rect.center()).length() < 0.01);
+    }
+}

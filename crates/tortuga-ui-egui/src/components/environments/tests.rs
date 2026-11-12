@@ -487,7 +487,7 @@ fn a_credential_in_a_variable_can_be_made_a_secret() {
 
 /// R-VAR-11: what a project's scripts set is listed on its page with this session's
 /// value; "Add a default" adds a project variable, "Clear values" asks to forget the
-/// values, and a click on the request saves the dialog and asks to open it.
+/// values. Where a variable is set is not shown.
 #[test]
 fn variables_set_by_scripts_are_listed_on_the_projects_page() {
     let dir = temp("env-dialog-script-vars");
@@ -500,8 +500,7 @@ fn variables_set_by_scripts_are_listed_on_the_projects_page() {
     };
     request.scripts.pre_request = "vars.set('batchId', 'b-4711');".into();
     request.scripts.tests = "vars.set('ü😀', 1);".into();
-    let path = c
-        .new_request(&FsStorage, Path::new(""), &request)
+    c.new_request(&FsStorage, Path::new(""), &request)
         .expect("request");
     let mut state = AppState::new(Box::new(crate::test_host::TestHost {
         open: roots.clone(),
@@ -519,6 +518,7 @@ fn variables_set_by_scripts_are_listed_on_the_projects_page() {
         h.run();
         h.get_by_label("b-4711");
         h.get_by_label(&t!("env-script-vars-not-set"));
+        assert!(h.query_by_label("Create batch").is_none());
         for _ in 0..2 {
             h.query_all_by_label(&t!("env-script-vars-add-default"))
                 .next()
@@ -542,32 +542,7 @@ fn variables_set_by_scripts_are_listed_on_the_projects_page() {
         .map(|v| v.name.as_str())
         .collect();
     assert_eq!(names, ["batchId", "ü😀"]);
-    // Typed into the new row's default, as a user would.
-    dialog.projects[0].draft.variables[0].default = "none".into();
     assert_eq!(dialog.take_clear().as_ref(), Some(root));
     assert!(result.borrow().is_none());
-    {
-        let mut h = harness(&mut dialog, &state, &result);
-        h.run();
-        h.query_all_by_label("Create batch")
-            .next()
-            .expect("link")
-            .scroll_to_me();
-        h.run();
-        h.query_all_by_label("Create batch")
-            .next()
-            .expect("link")
-            .click();
-        h.run();
-    }
-    let saved = result.borrow_mut().take().expect("saved before opening");
-    assert!(
-        saved.projects[0]
-            .1
-            .manifest
-            .variables
-            .contains_key("batchId")
-    );
-    assert_eq!(dialog.take_go_to(), Some(ItemKey::new(root, path)));
     let _ = std::fs::remove_dir_all(&dir);
 }

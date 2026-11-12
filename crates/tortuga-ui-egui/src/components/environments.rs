@@ -23,7 +23,7 @@ use views::{EnvDrag, Inherited};
 
 use super::{DialogResult, resizable_dialog};
 use crate::environments::SecretsByEnvironment;
-use crate::state::{AppState, ItemKey};
+use crate::state::AppState;
 use crate::theme;
 
 /// What saving the dialog writes.
@@ -73,8 +73,6 @@ pub struct EnvironmentsDialog {
     new_variable: String,
     /// Shown when the environments cannot be saved.
     pub error: Option<String>,
-    /// A request to open once the dialog has saved (R-VAR-11).
-    go_to: Option<ItemKey>,
     /// A project whose values from this session are to be forgotten (R-VAR-11).
     clear: Option<PathBuf>,
 }
@@ -137,7 +135,6 @@ impl EnvironmentsDialog {
             new_server: String::new(),
             new_variable: String::new(),
             error: None,
-            go_to: None,
             clear: None,
         }
     }
@@ -207,14 +204,10 @@ impl EnvironmentsDialog {
                             });
                     });
                 });
-                // Opening a request saves first, so no edit is lost (R-VAR-11).
-                if save || self.go_to.is_some() {
+                if save {
                     match self.to_saved(state) {
                         Ok(saved) => return DialogResult::Done(saved),
-                        Err(e) => {
-                            self.error = Some(e);
-                            self.go_to = None;
-                        }
+                        Err(e) => self.error = Some(e),
                     }
                 }
                 if cancel {
@@ -397,11 +390,6 @@ impl EnvironmentsDialog {
         }
     }
 
-    /// The request to open, once the dialog has saved (R-VAR-11).
-    pub fn take_go_to(&mut self) -> Option<ItemKey> {
-        self.go_to.take()
-    }
-
     /// The project whose values from this session to forget (R-VAR-11).
     pub fn take_clear(&mut self) -> Option<PathBuf> {
         self.clear.take()
@@ -451,9 +439,6 @@ impl EnvironmentsDialog {
             })
             .inner;
         match action {
-            Some(script_vars::Action::Open(path)) => {
-                self.go_to = Some(ItemKey::new(&project.root, path));
-            }
             Some(script_vars::Action::AddDefault(name)) => project.draft.add_variable(name),
             Some(script_vars::Action::Clear) => self.clear = Some(project.root.clone()),
             None => {}

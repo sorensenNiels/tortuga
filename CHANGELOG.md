@@ -4,6 +4,19 @@ What changes in each release of Tortuga, for the people who use it. The newest r
 
 ## Unreleased
 
+### Added
+
+- **GeoServer add-on**, off by default. "New WFS service…" in a project's or folder's menu lists a WFS service's layers and creates requests for the ones you pick, with the auth you choose for the service. GeoJSON responses get a Features tab with a shape preview and a table.
+- **Map server errors show as errors.** An OGC exception report sent with status 200 is shown above the response and fails the request in workflow and `tortuga-cli` runs.
+
+### Changed
+
+- **Variables set by scripts and captures no longer show where they are set.** The Environments list now shows only each name, its value this session and "Add a default".
+
+### Fixed
+
+- **A new folder's name field is always in view.** In a long project the sidebar now scrolls to it; a folded parent folder opens and the filter is cleared so you can name it.
+
 ## 0.20.0 — 2026-11-12
 
 ### Added

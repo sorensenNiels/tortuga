@@ -125,6 +125,8 @@ pub struct ResponseView {
     xml: OnceLock<Option<tortuga_core::xml::Document>>,
     /// What the `Set-Cookie` headers set (R-CK-6).
     cookies: ResponseCookies,
+    /// The exceptions of an OGC exception report sent as the body (R-HTTP-29).
+    ogc: Option<Vec<tortuga_core::ogc::Exception>>,
 }
 
 #[derive(Debug)]
@@ -187,6 +189,7 @@ impl ResponseView {
                 raw: Some(TextBody::hex(&response.body)),
                 body: Body::Image(image),
                 cookies: ResponseCookies::of(&response),
+                ogc: None,
                 response,
                 json: OnceLock::new(),
                 xml: OnceLock::new(),
@@ -225,6 +228,7 @@ impl ResponseView {
         };
         Self {
             cookies: ResponseCookies::of(&response),
+            ogc: tortuga_core::ogc::exceptions(&response.body),
             response,
             body,
             raw,
@@ -362,6 +366,8 @@ enum Tab {
     Console,
     /// The cookies the response set (R-CK-6).
     Cookies,
+    /// A tab an add-on adds (D80).
+    AddOn(crate::addons::ResponseTab),
 }
 
 /// Panel state that is not part of the response; reset for each new response.
@@ -394,6 +400,8 @@ pub struct ResponseState {
     folded: Folded,
     /// Arrow keys, Page Up/Down and Home/End scroll the body (R-HTTP-27).
     keys: rows::KeyScroll,
+    /// What the add-ons' tabs keep about this response (D80).
+    addon: crate::addons::ResponseTabState,
 }
 
 /// Rows of a text cut at a width, kept until the text or the width changes (R-SET-7).
@@ -457,6 +465,8 @@ pub struct PanelContext<'a> {
     pub changes: Option<&'a Comparison>,
     /// Whether there is a Cookies tab (R-CK-6).
     pub cookies: CookiesTab,
+    /// The add-ons that may add a tab (D80).
+    pub addon_tabs: crate::addons::ResponseTabs,
 }
 
 /// "Save as example" is offered for requests of projects that can be changed (R-MOCK-1).
@@ -469,6 +479,8 @@ pub enum SaveExample {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseAction {
     SaveBody,
+    /// What an add-on's tab asked (D80).
+    AddOn(crate::addons::ResponseTabAction),
     /// Add the response to the request's examples for the mock server (R-MOCK-1).
     SaveAsExample,
     /// Turn wrapping long lines on or off (R-SET-7).
@@ -507,6 +519,7 @@ fn response_tabs(
     view: &ResponseView,
     tests: Option<&TestsView>,
     cookies: CookiesTab,
+    addon_tabs: crate::addons::ResponseTabs,
     st: &mut ResponseState,
 ) {
     let header_count = view.response.headers.len().to_string();
@@ -534,6 +547,12 @@ fn response_tabs(
     if !console.is_empty() {
         tabs.push((Tab::Console, t!("console"), Some(console.len().to_string())));
     }
+    tabs.extend(
+        addon_tabs
+            .offered(&view.response.body)
+            .into_iter()
+            .map(|(tab, label)| (Tab::AddOn(tab), label, None)),
+    );
     if !tabs.iter().any(|(t, ..)| *t == st.tab) {
         st.tab = Tab::Body;
     }
@@ -628,6 +647,7 @@ fn details(
         trend,
         changes,
         cookies,
+        addon_tabs,
         ..
     } = cx;
     let (now_ms, offset_minutes) = (trend.now_ms, trend.offset_minutes);
@@ -686,7 +706,8 @@ fn details(
     if st.focus_search {
         st.tab = Tab::Body;
     }
-    response_tabs(ui, view, tests, cookies, st);
+    ogc_callout(ui, view.ogc.as_deref());
+    response_tabs(ui, view, tests, cookies, addon_tabs, st);
     let console = tests.map(|t| t.console.as_slice()).unwrap_or_default();
 
     theme::card(ui).show(ui, |ui| match st.tab {
@@ -708,8 +729,37 @@ fn details(
                 .show(ui, |ui| console_view(ui, console));
         }
         Tab::Headers => headers_tab(ui, response),
+        Tab::AddOn(tab) => {
+            if let Some(asked) =
+                crate::addons::response_tab(ui, tab, addon_tabs, view, &mut st.addon)
+            {
+                action = Some(ResponseAction::AddOn(asked));
+            }
+        }
     });
     action
+}
+
+/// The exceptions of an OGC exception report, in red above the tabs (R-HTTP-29): the
+/// status says 200, the body says it failed.
+fn ogc_callout(ui: &mut Ui, exceptions: Option<&[tortuga_core::ogc::Exception]>) {
+    let Some(exceptions) = exceptions else {
+        return;
+    };
+    let p = theme::palette(ui);
+    theme::banner_frame(ui, true)
+        .corner_radius(egui::CornerRadius::same(8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(theme::semibold(t!("response-ogc-exception")).color(p.fail));
+            for e in exceptions.iter().take(5) {
+                ui.add(Label::new(RichText::new(e.summary()).color(p.fail)).wrap());
+            }
+            if exceptions.len() > 5 {
+                theme::hint(ui, t!("response-ogc-more", count = exceptions.len() - 5));
+            }
+        });
+    ui.add_space(6.0);
 }
 
 fn headers_tab(ui: &mut Ui, response: &Response) {
@@ -1081,6 +1131,7 @@ mod tests {
                 trend: Trend::default(),
                 changes: None,
                 cookies: CookiesTab::Project,
+                addon_tabs: crate::addons::ResponseTabs::default(),
             };
             response_panel(ui, outcome.as_ref(), &mut st, cx);
         });
@@ -1108,6 +1159,7 @@ mod tests {
                 trend: Trend::default(),
                 changes: None,
                 cookies: CookiesTab::Project,
+                addon_tabs: crate::addons::ResponseTabs::default(),
             };
             if let Some(a) = response_panel(ui, outcome.as_ref(), &mut st, cx) {
                 asked = Some(a);
@@ -1614,6 +1666,7 @@ mod tests {
                         trend: Trend::default(),
                         changes: Some(c),
                         cookies: CookiesTab::Hidden,
+                        addon_tabs: crate::addons::ResponseTabs::default(),
                     };
                     if let Some(a) = response_panel(ui, Some(&outcome), &mut st, cx) {
                         asked = Some(a);
@@ -1657,6 +1710,7 @@ mod tests {
                     trend: Trend::default(),
                     changes: None,
                     cookies: CookiesTab::Project,
+                    addon_tabs: crate::addons::ResponseTabs::default(),
                 };
                 if let Some(a) = response_panel(ui, outcome.as_ref(), &mut st, cx) {
                     asked = Some(a);
@@ -1690,11 +1744,35 @@ mod tests {
                 trend: Trend::default(),
                 changes: None,
                 cookies: CookiesTab::Hidden,
+                addon_tabs: crate::addons::ResponseTabs::default(),
             };
             response_panel(ui, outcome.as_ref(), &mut st, cx);
         });
         h.run();
         assert!(h.query_by_label_contains("Cookies").is_none());
+    }
+
+    /// R-HTTP-29: an OGC exception report sent with 200 shows as an error above the tabs.
+    #[test]
+    fn an_ogc_exception_report_shows_as_an_error() {
+        let report = Response {
+            status: 200,
+            status_text: "OK".into(),
+            headers: vec![KeyValue::new("content-type", "application/xml")],
+            body: r#"<ows:ExceptionReport xmlns:ows="http://www.opengis.net/ows/1.1">
+<ows:Exception exceptionCode="InvalidParameterValue" locator="typeName">
+<ows:ExceptionText>Unknown ü😀</ows:ExceptionText></ows:Exception></ows:ExceptionReport>"#
+                .as_bytes()
+                .to_vec(),
+            elapsed: Duration::from_millis(3),
+            timing: None,
+        };
+        let h = render(Some(Outcome::from_result(Ok(report))));
+        h.get_by_label("The server reported an error (OGC exception report)");
+        h.get_by_label("InvalidParameterValue (typeName): Unknown ü😀");
+
+        let h = render(Some(Outcome::from_result(Ok(json_response()))));
+        assert!(h.query_by_label_contains("OGC").is_none());
     }
 
     /// R-CK-6: a response without cookies still has the tab, with no count.

@@ -236,24 +236,24 @@ pub struct TortugaUi {
 
 /// Results that background tasks send back to the UI thread, which reads them each frame.
 #[derive(Debug)]
-struct Inbox<T> {
+pub(crate) struct Inbox<T> {
     tx: Sender<T>,
     rx: Receiver<T>,
 }
 
 impl<T> Inbox<T> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (tx, rx) = channel();
         Self { tx, rx }
     }
 
     /// For a task to send its result with.
-    fn sender(&self) -> Sender<T> {
+    pub(crate) fn sender(&self) -> Sender<T> {
         self.tx.clone()
     }
 
     /// The next result that arrived, if any.
-    fn try_recv(&self) -> Option<T> {
+    pub(crate) fn try_recv(&self) -> Option<T> {
         self.rx.try_recv().ok()
     }
 }

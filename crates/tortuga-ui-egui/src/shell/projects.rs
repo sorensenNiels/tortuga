@@ -98,6 +98,7 @@ impl TortugaUi {
             SidebarAction::StartMock(root) => self.run_addon(Mock(mock::Command::Start(root))),
             SidebarAction::StopMock(root) => self.run_addon(Mock(mock::Command::Stop(root))),
             SidebarAction::ShowMock(root) => self.run_addon(Mock(mock::Command::Show(root))),
+            SidebarAction::AddOn(command) => self.run_addon(command),
             SidebarAction::Close(root) => {
                 self.forget(&root, Path::new(""));
                 self.state.close_collection(&root);

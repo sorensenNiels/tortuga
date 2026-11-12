@@ -1037,14 +1037,8 @@ env-remove-variable = Remove this variable from the project, in every environmen
 env-script-vars = Set by scripts and captures
 env-script-vars-hint = Set when a request or workflow runs and kept until Tortuga closes, never saved. They win over every value above.
 env-script-vars-none = No capture or script in this project sets a variable.
-env-script-vars-set-by = Set by
 env-script-vars-value = Value this session
 env-script-vars-not-set = not set yet
-env-script-vars-capture = capture
-env-script-vars-pre-request = pre-request script
-env-script-vars-tests = tests
-env-script-vars-workflow = Workflow “{$name}”
-env-script-vars-open = Saves your edits here and opens the request
 env-script-vars-add-default = Add a default
 env-script-vars-add-default-hint = Adds it as a project variable, so requests have a value before the script runs. The script's value still wins.
 env-script-vars-has-default = has a default
@@ -1225,6 +1219,74 @@ addon-workflows-about = Chains of requests that pass values on, and running a pr
 workflows-stopped = Workflows are off; the run going on stopped.
 addon-mock-server = Mock server
 addon-mock-server-about = Answers a project's requests from its examples, on this computer.
+addon-geoserver = GeoServer
+addon-geoserver-about = Creates WFS requests from a service's capabilities and shows the features a response returns.
+cmd-new-wfs-service = New WFS service…
+cmd-new-wfs-service-hint = Create GetCapabilities, DescribeFeatureType and GetFeature requests for a WFS service's layers
+wfs-title = New WFS service in {$place}
+wfs-hint = Fetches the service's capabilities, then creates ordinary requests for the layers you choose, on a project server. They work without this add-on and in tortuga-cli.
+wfs-endpoint = WFS endpoint
+wfs-version = Version
+wfs-server-url = Server URL
+wfs-server-url-hint = Where the project server's URL ends; the rest of the endpoint is the requests' path. A shorter one lets other services on the same host use the same server.
+wfs-server = Project server
+wfs-server-hint = The requests use this project server. Each environment can point it at its own service.
+wfs-server-new = New server…
+wfs-server-name = Name
+wfs-server-needs-name = Give the new server a name.
+wfs-server-exists = The project already has a server called {$server}: pick it in the list.
+wfs-server-set = In {$environment}, {$server} will be {$base}.
+wfs-server-same = In {$environment}, {$server} is already {$base}.
+wfs-server-changes = In {$environment}, Create changes {$server} from {$now} to {$base}.
+wfs-server-own-environment = The project has no “{$environment}” environment of its own yet: Create adds one holding just this URL. It overrides the workspace's environment for this project only.
+wfs-server-no-environment = No environment is chosen: {$server} gets {$base} in each environment without a URL for it (a new “Default” one if the project has none).
+wfs-server-path = Requests go to {$path} on {$server}.
+wfs-auth = Auth
+wfs-auth-inherited = The requests use the auth of {$origin}: {$auth}. Choose another here to give the service its own; it is saved in the service folder.
+wfs-auth-undefined = Not defined in the active environment: {$names}. Fetching fails until it is defined in Environments, or until you choose the auth for this service here.
+wfs-auth-none = No auth is sent. Choose one here if the service needs it; it is saved in the service folder.
+wfs-fetch = Fetch layers
+wfs-fetch-again = Fetch again
+wfs-fetching = Fetching capabilities…
+wfs-stale = The endpoint or version changed since the layers were fetched: fetch again to create.
+wfs-layers = {$title}: {$chosen} of {$count} layers chosen
+wfs-no-layers = The service lists no layers.
+wfs-filter = Filter layers
+wfs-all = All
+wfs-none = None
+wfs-create =
+    { $count ->
+        [0] Create GetCapabilities only
+        [one] Create requests for 1 layer
+       *[other] Create requests for {$count} layers
+    }
+wfs-created =
+    { $count ->
+        [one] Created requests for {$title} and 1 layer.
+       *[other] Created requests for {$title} and {$count} layers.
+    }
+features-tab = Features
+features-too-big = The body is over {$limit}: too big for the Features tab.
+features-none = The body is not GeoJSON features.
+features-empty = No features in the response.
+features-count =
+    { $count ->
+        [one] 1 feature
+       *[other] {$count} features
+    }
+features-count-of = {$count} of {$matched} features
+features-bounds-hint = Bounds of every coordinate, as the body has them: min x, min y → max x, max y
+features-layout-above = Above
+features-layout-beside = Beside
+features-layout-hint = Where the preview goes: above the table or beside it. Kept for every response.
+features-swap = Swap x/y
+features-swap-hint = Draw the second coordinate as east–west. On by itself for urn:ogc:def:crs:EPSG::4326, which GeoServer writes as latitude, longitude.
+features-no-geometry = No geometries to draw
+features-id = id
+features-geometry = geometry
+features-select-hint = Select this feature in the preview
+response-ogc-exception = The server reported an error (OGC exception report)
+response-ogc-more = …and {$count} more
 mock-addon-off = Turn on the mock server in Settings → Add-ons first.
 mock-addon-stopped = The mock server add-on is off; the running mock servers stopped.
 mcp-addon-off = Turn on the MCP server in Settings → Add-ons first.

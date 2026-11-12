@@ -1,7 +1,7 @@
 //! The sidebar's menus: "+ Add" (R-WS-3, R-COL-15..18), a project's menu and a
 //! request's or folder's menu, with only the entries that work here (R-SET-13).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use egui::{AtomExt as _, RichText, Ui};
 use tortuga_core::collection::Direction;
@@ -180,6 +180,9 @@ pub(super) fn collection_menu(
             parent: PathBuf::new(),
         }));
     }
+    if writable {
+        pick(addon_entries(ui, offers.features, root, Path::new("")));
+    }
     if offers.features.workflows && writable && entry(ui, "🔀", &t!("cmd-new-workflow")).clicked()
     {
         pick(act(SidebarAction::NewWorkflow(root.clone())));
@@ -352,6 +355,9 @@ pub(super) fn item_menu(
                 parent: key.path.clone(),
             });
         }
+        if let Some(asked) = addon_entries(ui, features, &key.root, &key.path) {
+            choice = Some(asked);
+        }
         if entry(ui, "⚙", &t!("menu-folder-defaults"))
             .on_hover_text(t!("menu-folder-defaults-hint"))
             .clicked()
@@ -419,6 +425,22 @@ fn has_folders(items: &[Item]) -> bool {
 const ICON_WIDTH: f32 = 18.0;
 
 /// A menu entry with its icon left of the label.
+/// The entries add-ons add to a project's or folder's menu (D80).
+fn addon_entries(
+    ui: &mut Ui,
+    features: ShownFeatures,
+    root: &Path,
+    parent: &Path,
+) -> Option<MenuChoice> {
+    let mut choice = None;
+    for e in crate::addons::folder_menu(features.addons, root, parent) {
+        if entry(ui, e.icon, &e.label).on_hover_text(e.hint).clicked() {
+            choice = Some(MenuChoice::Action(SidebarAction::AddOn(e.command)));
+        }
+    }
+    choice
+}
+
 fn entry(ui: &mut Ui, icon: &str, label: &str) -> egui::Response {
     entry_text(ui, RichText::new(icon), RichText::new(label))
 }

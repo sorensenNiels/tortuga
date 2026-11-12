@@ -70,13 +70,18 @@ fn turning_the_mcp_server_off_stops_it() {
 fn addons_that_cannot_work_here_are_not_listed() {
     assert_eq!(
         listed(&TestHost::default()),
-        vec![AddOn::Workflows, AddOn::MockServer, AddOn::McpServer]
+        vec![
+            AddOn::Workflows,
+            AddOn::MockServer,
+            AddOn::McpServer,
+            AddOn::GeoServer
+        ]
     );
     let web = TestHost {
         no_servers: true,
         ..host(true)
     };
-    assert_eq!(listed(&web), vec![AddOn::Workflows]);
+    assert_eq!(listed(&web), vec![AddOn::Workflows, AddOn::GeoServer]);
     let state = AppState::new(Box::new(web));
     assert!(state.addons.mcp.is_none());
     assert!(

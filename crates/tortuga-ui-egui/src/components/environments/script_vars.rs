@@ -2,17 +2,15 @@
 //! found in its files, with their values this session (R-TEST-5).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use egui::{Grid, RichText, Ui};
-use tortuga_core::vars::set_by::{Place, SetBy, Setter};
+use tortuga_core::vars::set_by::SetBy;
 
 use crate::theme;
 
 /// One variable as the section shows it.
 pub(super) struct Row<'a> {
     pub name: &'a str,
-    pub places: &'a [SetBy],
     /// Its value this session; `None`: not set yet.
     pub value: Option<&'a str>,
     /// What "Add a default" can do for it.
@@ -33,15 +31,13 @@ pub(super) enum Default {
 /// What the user asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Action {
-    /// Open the request at this path in the project.
-    Open(PathBuf),
     /// Add the name as a project variable.
     AddDefault(String),
     /// Forget the project's values from this session.
     Clear,
 }
 
-/// The rows for `set_by`, with values from `value`; `has_variable` tells whether the
+/// The rows for the names in `set_by`, with values from `value`; `has_variable` tells whether the
 /// project already has a variable of that name.
 pub(super) fn rows<'a>(
     set_by: &'a BTreeMap<String, Vec<SetBy>>,
@@ -49,10 +45,9 @@ pub(super) fn rows<'a>(
     has_variable: impl Fn(&str) -> bool,
 ) -> Vec<Row<'a>> {
     set_by
-        .iter()
-        .map(|(name, places)| Row {
+        .keys()
+        .map(|name| Row {
             name,
-            places,
             value: value(name),
             default: if tortuga_core::runner::target(name).0 {
                 Default::Workspace
@@ -83,23 +78,15 @@ pub(super) fn section(
     }
     let muted = theme::palette(ui).muted;
     Grid::new("script-vars")
-        .num_columns(4)
+        .num_columns(3)
         .spacing([16.0, 6.0])
         .show(ui, |ui| {
             theme::section_label(ui, &t!("variable"));
-            theme::section_label(ui, &t!("env-script-vars-set-by"));
             theme::section_label(ui, &t!("env-script-vars-value"));
             ui.label("");
             ui.end_row();
             for row in rows {
                 ui.label(RichText::new(row.name).monospace());
-                ui.vertical(|ui| {
-                    for by in row.places {
-                        if let Some(a) = place(ui, by) {
-                            action = Some(a);
-                        }
-                    }
-                });
                 value_cell(ui, row.value, muted);
                 match row.default {
                     Default::Missing => {
@@ -133,32 +120,6 @@ pub(super) fn section(
     action
 }
 
-/// Where a variable is set: a request is a link that opens it.
-fn place(ui: &mut Ui, by: &SetBy) -> Option<Action> {
-    let setter = match by.setter {
-        Setter::Capture => t!("env-script-vars-capture"),
-        Setter::PreRequest => t!("env-script-vars-pre-request"),
-        Setter::Tests => t!("env-script-vars-tests"),
-    };
-    let muted = theme::palette(ui).muted;
-    ui.horizontal(|ui| match &by.place {
-        Place::Request(path) => {
-            let open = ui
-                .link(by.name.as_str())
-                .on_hover_text(t!("env-script-vars-open"))
-                .clicked();
-            ui.label(RichText::new(setter).color(muted));
-            open.then(|| Action::Open(path.clone()))
-        }
-        Place::Workflow(_) => {
-            ui.label(t!("env-script-vars-workflow", name = by.name.as_str()));
-            ui.label(RichText::new(setter).color(muted));
-            None
-        }
-    })
-    .inner
-}
-
 /// The value this session; a credential-like one is hidden until hovered (P6, R-VAR-10).
 fn value_cell(ui: &mut Ui, value: Option<&str>, muted: egui::Color32) {
     let Some(value) = value else {
@@ -182,6 +143,7 @@ fn value_cell(ui: &mut Ui, value: Option<&str>, muted: egui::Color32) {
 #[cfg(test)]
 mod tests {
     use egui_kittest::kittest::Queryable;
+    use tortuga_core::vars::set_by::{Place, Setter};
 
     use super::*;
 
@@ -194,7 +156,7 @@ mod tests {
     }
 
     /// R-VAR-11: each name is listed with its value, or "not set yet", and "Add a
-    /// default" adds a project variable; clicking the request asks to open it.
+    /// default" adds a project variable. Where it is set is not shown.
     #[test]
     fn rows_show_values_and_offer_actions() {
         let set_by: BTreeMap<String, Vec<SetBy>> = [
@@ -222,6 +184,8 @@ mod tests {
         });
         harness.run();
         harness.get_by_label("b-4711");
+        assert!(harness.query_by_label("Create batch").is_none());
+        assert!(harness.query_by_label("Set by").is_none());
         assert_eq!(
             harness
                 .query_all_by_label(&t!("env-script-vars-not-set"))
@@ -234,22 +198,6 @@ mod tests {
         harness.run();
         drop(harness);
         assert_eq!(action, Some(Action::AddDefault("batchId".into())));
-
-        let mut action = None;
-        let mut harness = crate::test_host::harness(|ui| {
-            if let Some(a) = section(ui, &rows, true, true) {
-                action = Some(a);
-            }
-        });
-        harness.run();
-        harness
-            .query_all_by_label("Create batch")
-            .next()
-            .expect("link")
-            .click();
-        harness.run();
-        drop(harness);
-        assert_eq!(action, Some(Action::Open("b.toml".into())));
     }
 
     /// R-VAR-11, P6: a value that looks like a credential is not shown as text.

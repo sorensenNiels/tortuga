@@ -522,7 +522,11 @@ fn var_help(
 
 /// Variables used in the defaults that the active environment does not define (R-VAR-5).
 /// Only the dialog's own headers and auth count, not what the project has saved.
-fn undefined_names(ctx: &VarContext, headers: &[KeyValue], auth: Option<&Auth>) -> Vec<String> {
+pub(crate) fn undefined_names(
+    ctx: &VarContext,
+    headers: &[KeyValue],
+    auth: Option<&Auth>,
+) -> Vec<String> {
     let mut texts: Vec<&str> = auth.map(Auth::fields).unwrap_or_default();
     for h in headers.iter().filter(|h| h.enabled) {
         texts.extend([h.name.as_str(), h.value.as_str()]);

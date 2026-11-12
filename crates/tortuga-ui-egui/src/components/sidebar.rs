@@ -107,6 +107,8 @@ pub enum SidebarAction {
     StopMock(PathBuf),
     /// The mock server dialog: port and log (R-MOCK-4).
     ShowMock(PathBuf),
+    /// What an add-on's menu entry asks (D80).
+    AddOn(crate::addons::Command),
     /// A missing project was moved: pick its new folder (R-WS-5).
     LocateMissing(PathBuf),
     RemoveMissing(PathBuf),
@@ -186,7 +188,13 @@ impl SidebarState {
     }
 
     /// Starts inline renaming of an item, e.g. a folder that was just created.
+    /// Unfolds the folders and project it is in and clears the filter, so its name field
+    /// is drawn; the field scrolls into view when it takes focus.
     pub fn start_rename(&mut self, key: ItemKey, current_name: String) {
+        for parent in key.path.ancestors().skip(1) {
+            self.changed |= self.collapsed.remove(&ItemKey::new(&key.root, parent));
+        }
+        self.filter.clear();
         self.rename = Some(Rename::new(key, current_name));
     }
 }
@@ -240,6 +248,8 @@ struct ShownFeatures {
     workflows: bool,
     mock: bool,
     docs: bool,
+    /// Add-ons with entries in project and folder menus (D80).
+    addons: crate::addons::MenuAddOns,
 }
 
 #[cfg(test)]
@@ -248,6 +258,7 @@ impl ShownFeatures {
         workflows: true,
         mock: true,
         docs: true,
+        addons: crate::addons::MenuAddOns { geoserver: true },
     };
 }
 
@@ -327,6 +338,7 @@ pub fn sidebar(
                 workflows: state.addon_on(crate::addons::AddOn::Workflows),
                 mock: state.addon_on(crate::addons::AddOn::MockServer),
                 docs: state.settings.features.enabled(Feature::Docs),
+                addons: state.menu_addons(),
             },
         },
         color_dots: state.collections.len() > 1,
@@ -1060,6 +1072,8 @@ fn rename_row(ui: &mut Ui, depth: usize, tree: &mut Tree<'_>, key: &ItemKey) -> 
             ui.add_space(indent(depth));
             TextEdit::singleline(&mut rename.text)
                 .id_salt("rename")
+                // Also its accessible name.
+                .hint_text(t!("name"))
                 .desired_width(ui.available_width())
                 .show(ui)
         })
@@ -1072,6 +1086,8 @@ fn rename_row(ui: &mut Ui, depth: usize, tree: &mut Tree<'_>, key: &ItemKey) -> 
             .cursor
             .set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(end))));
         out.state.store(ui.ctx(), out.response.id);
+        // A new folder lands at the end of a list that may reach below the panel.
+        out.response.scroll_to_me(None);
         rename.focused = true;
         return None;
     }
@@ -1247,6 +1263,72 @@ mod tests {
         harness.hover_at(egui::pos2(1000.0, 1000.0));
         harness.run();
         assert_eq!(*shown.borrow(), [true, false]);
+    }
+
+    /// A new folder's name field is shown, ready to type, even in a folded folder or with
+    /// a filter that would hide it. (Scrolling to it in the whole app:
+    /// `a_new_folder_at_the_end_of_a_long_list_is_in_view`.)
+    #[test]
+    fn a_new_folder_in_a_folded_or_filtered_list_shows_its_name_field() {
+        use egui_kittest::kittest::NodeT as _;
+        use tortuga_core::storage::FsStorage;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("long-ü😀");
+        let c = Collection::create(&FsStorage, &root, "Long").expect("create");
+        let group = c
+            .new_folder(&FsStorage, Path::new(""), "Group")
+            .expect("folder");
+        for i in 0..40 {
+            let request = tortuga_core::Request {
+                name: format!("Request {i}"),
+                ..tortuga_core::Request::default()
+            };
+            c.new_request(&FsStorage, &group, &request)
+                .expect("request");
+        }
+        let new = c
+            .new_folder(&FsStorage, &group, "Brand new")
+            .expect("folder");
+        let state = AppState::new(Box::new(crate::test_host::TestHost {
+            open: vec![root.clone()],
+            ..crate::test_host::TestHost::default()
+        }));
+        let mut st = SidebarState::default();
+        st.collapsed.insert(ItemKey::new(&root, group.clone()));
+        st.filter = "Request 1".into();
+        st.start_rename(ItemKey::new(&root, new), "Brand new".into());
+        assert!(st.collapsed.is_empty(), "the folder it is in unfolds");
+        assert_eq!(st.filter, "");
+
+        let (dirty, conflicts, workflows) = (HashSet::new(), HashSet::new(), HashSet::new());
+        let mut installed = false;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(300.0, 300.0))
+            .build_ui(|ui| {
+                if !installed {
+                    crate::theme::install(ui.ctx());
+                    installed = true;
+                }
+                let marks = Marks {
+                    dirty: &dirty,
+                    conflicts: &conflicts,
+                    dirty_workflows: &workflows,
+                    scratch_edited: false,
+                };
+                sidebar(ui, &state, &mut st, None, None, marks);
+            });
+        h.run();
+        let field = h
+            .get_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|n| n.accesskit_node().value().as_deref() == Some("Brand new"))
+            .expect("the name field");
+        assert!(field.is_focused(), "typing renames it");
+        let rect = field.rect();
+        assert!(
+            rect.min.y >= 0.0 && rect.max.y <= 300.0,
+            "in view: {rect:?}"
+        );
     }
 
     pub(super) fn folder(path: &str, items: Vec<Item>) -> Item {

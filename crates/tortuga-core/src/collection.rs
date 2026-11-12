@@ -227,7 +227,13 @@ impl Collection {
 
     /// Adds requests and folders of requests at the end of `parent` in one go, e.g. from
     /// an import (R-COL-15, R-COL-16). The collection must be opened again to see them.
-    pub fn add_items(&self, storage: &dyn Storage, parent: &Path, items: &[NewItem]) -> Result<()> {
+    /// Returns the paths of `items` (not of what is inside the folders), in order.
+    pub fn add_items(
+        &self,
+        storage: &dyn Storage,
+        parent: &Path,
+        items: &[NewItem],
+    ) -> Result<Vec<PathBuf>> {
         self.ensure_writable()?;
         self.write_new_items(storage, parent, self.next_seq(parent), items)
     }
@@ -238,8 +244,9 @@ impl Collection {
         parent: &Path,
         first_seq: i64,
         items: &[NewItem],
-    ) -> Result<()> {
+    ) -> Result<Vec<PathBuf>> {
         let mut seq = first_seq;
+        let mut paths = Vec::with_capacity(items.len());
         for item in items {
             match item {
                 NewItem::Request(request) => {
@@ -249,6 +256,7 @@ impl Collection {
                         &self.root.join(&path),
                         &format::write_request(request, Some(seq)),
                     )?;
+                    paths.push(path);
                 }
                 NewItem::Folder {
                     name,
@@ -263,11 +271,12 @@ impl Collection {
                         &format::write_folder(&meta),
                     )?;
                     self.write_new_items(storage, &path, SEQ_STEP, items)?;
+                    paths.push(path);
                 }
             }
             seq += SEQ_STEP;
         }
-        Ok(())
+        Ok(paths)
     }
 
     /// Adds a folder at the end of `parent`. Returns its path.

@@ -18,11 +18,19 @@ pub enum AddOn {
     /// A project's mock server answering from its examples, and the "Mock" environment
     /// (R-MOCK-2, R-MOCK-4, R-ADD-5). On by default.
     MockServer,
+    /// Creating WFS requests from a service's capabilities and the Features tab of
+    /// GeoJSON responses (R-ADD-6, R-GEO-1, R-GEO-2).
+    GeoServer,
 }
 
 impl AddOn {
     /// Every add-on, in the order Settings lists them.
-    pub const ALL: [Self; 3] = [Self::Workflows, Self::MockServer, Self::McpServer];
+    pub const ALL: [Self; 4] = [
+        Self::Workflows,
+        Self::MockServer,
+        Self::McpServer,
+        Self::GeoServer,
+    ];
 
     /// The name the settings file keeps it under.
     pub fn id(self) -> &'static str {
@@ -30,6 +38,7 @@ impl AddOn {
             Self::McpServer => "mcp-server",
             Self::Workflows => "workflows",
             Self::MockServer => "mock-server",
+            Self::GeoServer => "geoserver",
         }
     }
 
@@ -37,7 +46,7 @@ impl AddOn {
     pub fn on_by_default(self) -> bool {
         match self {
             Self::MockServer => true,
-            Self::McpServer | Self::Workflows => false,
+            Self::McpServer | Self::Workflows | Self::GeoServer => false,
         }
     }
 }
@@ -84,10 +93,54 @@ impl AddOnSettings {
     }
 }
 
+/// Where the Features tab puts the shape preview (R-GEO-2): the user's choice, changed in
+/// the tab and kept like the other settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FeaturesLayout {
+    /// Above the table, the whole width: fits a narrow response panel.
+    #[default]
+    Above,
+    /// Beside the table, on the right.
+    Beside,
+}
+
+/// The GeoServer add-on's settings (R-ADD-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeoServerSettings {
+    pub features_layout: FeaturesLayout,
+}
+
+impl GeoServerSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::AppSettings;
+
+    /// R-GEO-2: the Features layout is written only when it is not the default.
+    #[test]
+    fn the_features_layout_round_trips() {
+        let mut settings = AppSettings::default();
+        assert!(
+            !toml::to_string(&settings)
+                .expect("serialize")
+                .contains("geoserver")
+        );
+        settings.geoserver.features_layout = FeaturesLayout::Beside;
+        let text = toml::to_string(&settings).expect("serialize");
+        assert!(
+            text.contains("[geoserver]\nfeatures_layout = \"beside\""),
+            "{text}"
+        );
+        let back: AppSettings = toml::from_str(&text).expect("parse");
+        assert_eq!(back.geoserver.features_layout, FeaturesLayout::Beside);
+    }
 
     /// R-ADD-1: add-ons have their own default (the mock server on, the rest off); only a
     /// change from it is written.
