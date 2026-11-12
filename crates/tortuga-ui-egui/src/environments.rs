@@ -113,10 +113,10 @@ impl AppState {
 
     /// Switches every project to the environment called `name` (R-WS-6).
     pub fn set_workspace_environment(&mut self, name: &str) {
-        self.mocks.selected = false;
+        self.leave_mock_environment();
         self.refresh_mocks();
         self.workspace_mut().environment = Some(name.to_owned());
-        self.refresh_mcp();
+        self.refresh_addons();
         self.save_local();
     }
 
@@ -216,6 +216,33 @@ impl AppState {
 }
 
 /// Whether two lists name the same environments, whatever their case.
+impl AppState {
+    /// The project to run a workflow of, and the id of the environment to run it in: while
+    /// the mock is chosen, a copy with the mock's environment added, as `tortuga-cli run
+    /// --mock` does (R-MOCK-4, R-MOCK-5).
+    pub fn collection_for_run(
+        &self,
+        root: &Path,
+    ) -> Option<(tortuga_core::Collection, Option<String>)> {
+        let mut collection = self.collection(root)?.clone();
+        match self.mock_environment(root) {
+            Some(mock) => {
+                let id = mock.id.clone();
+                collection.environments.push(mock);
+                Some((collection, Some(id)))
+            }
+            None => match self.effective_environment(root) {
+                // The workspace's environment, with the project's own over it (R-WS-9).
+                Some(env) => {
+                    let id = env.id.clone();
+                    Some((collection.with_environment(env), Some(id)))
+                }
+                None => Some((collection, None)),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 fn same_names(a: &[String], b: &[&str]) -> bool {
     use tortuga_core::format::names_match;

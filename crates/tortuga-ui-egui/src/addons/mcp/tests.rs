@@ -27,9 +27,14 @@ fn project(root: &Path) {
 }
 
 fn state(root: &Path, taken_ports: Vec<u16>) -> (AppState, TestHost) {
+    let mut settings = tortuga_core::AppSettings::default();
+    settings
+        .addons
+        .set_enabled(tortuga_core::settings::AddOn::McpServer, true);
     let host = TestHost {
         open: vec![root.to_owned()],
         taken_ports,
+        settings,
         ..TestHost::default()
     };
     let probe = TestHost {
@@ -37,6 +42,10 @@ fn state(root: &Path, taken_ports: Vec<u16>) -> (AppState, TestHost) {
         ..TestHost::default()
     };
     (AppState::new(Box::new(host)), probe)
+}
+
+fn server(state: &AppState) -> &McpServer {
+    state.addons.mcp.as_ref().expect("the add-on is on")
 }
 
 fn served(probe: &TestHost) -> Vec<McpProject> {
@@ -54,7 +63,7 @@ fn starts_on_4040_else_a_free_port() {
     assert_eq!(state.start_mcp(), Ok("http://127.0.0.1:4040/mcp".into()));
     assert_eq!(state.start_mcp(), Ok("http://127.0.0.1:4040/mcp".into()));
     state.stop_mcp();
-    assert!(state.mcp.running().is_none());
+    assert!(server(&state).running().is_none());
 
     let (mut taken, _) = state_with_taken(dir.path());
     assert_eq!(taken.start_mcp(), Ok("http://127.0.0.1:0/mcp".into()));
@@ -122,11 +131,11 @@ fn actions_are_logged() {
         }
     }
 
-    state.mcp.take_actions();
+    state.poll_addons();
 
-    let log = state.mcp.log();
+    let log = server(&state).log();
     assert_eq!(log.len(), 2);
     assert_eq!(log[1].summary, "Create folder Orders");
-    state.mcp.clear_log();
-    assert_eq!(state.mcp.log(), &[]);
+    state.addons.mcp.as_mut().expect("on").clear_log();
+    assert_eq!(server(&state).log(), &[]);
 }

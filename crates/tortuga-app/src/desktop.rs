@@ -264,6 +264,10 @@ impl Host for DesktopHost {
         true
     }
 
+    fn can_run_servers(&self) -> bool {
+        true
+    }
+
     fn os_language(&self) -> Option<String> {
         sys_locale::get_locale()
     }

@@ -83,13 +83,8 @@ impl TortugaUi {
                         action = Some(WorkspaceAction::OpenFile);
                     }
                 }
-                let mcp = if self.state.mcp.running().is_some() {
-                    t!("mcp-menu-running")
-                } else {
-                    t!("mcp-menu-start")
-                };
-                if ui.button(mcp).on_hover_text(t!("mcp-menu-hint")).clicked() {
-                    action = Some(WorkspaceAction::Mcp);
+                if let Some(command) = crate::addons::workspace_menu(ui, &self.state) {
+                    action = Some(WorkspaceAction::AddOn(command));
                 }
                 let danger = theme::palette(ui).fail;
                 if ui
@@ -168,12 +163,7 @@ impl TortugaUi {
                     }
                 }
             }
-            WorkspaceAction::Mcp => {
-                if self.state.mcp.running().is_none() {
-                    self.start_mcp();
-                }
-                self.show_mcp();
-            }
+            WorkspaceAction::AddOn(command) => self.run_addon(command),
             WorkspaceAction::Remove => {
                 let name = self.state.workspace().name.clone();
                 self.modal = Some(Modal::RemoveWorkspace(ConfirmDialog {
@@ -213,11 +203,11 @@ impl TortugaUi {
         let p = theme::palette(ui);
         ui.label(RichText::new(t!("environment")).color(p.muted));
         // The mock's environment, while a mock server runs (R-MOCK-4, D45).
-        let mock = mock_label(&self.state.mocks.ports());
+        let mock = crate::addons::mock::ui::environment_label(&self.state.mock_ports());
         let edit = if names.is_empty() && mock.is_none() {
             ui.button(t!("workspace-add-environments")).clicked()
         } else {
-            let in_mock = self.state.mocks.in_use();
+            let in_mock = self.state.mocks_in_use();
             let shown = if in_mock {
                 mock.clone()
             } else {
@@ -268,14 +258,5 @@ impl TortugaUi {
                 &self.state,
             )));
         }
-    }
-}
-
-/// "Mock (port 4010)", or "Mock (2 servers)"; `None` when no mock server runs.
-fn mock_label(ports: &[u16]) -> Option<String> {
-    match ports {
-        [] => None,
-        [port] => Some(t!("mock-label-port", port = *port)),
-        more => Some(t!("mock-label-servers", count = more.len())),
     }
 }

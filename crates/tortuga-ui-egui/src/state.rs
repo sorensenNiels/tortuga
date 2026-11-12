@@ -123,10 +123,8 @@ pub struct AppState {
     /// This machine's values of the secret variables of the active workspace's
     /// environments, by environment id, then name (R-WS-9).
     pub workspace_env_secrets: BTreeMap<String, BTreeMap<String, String>>,
-    /// The projects' running mock servers (R-MOCK-2).
-    pub mocks: crate::mocks::Mocks,
-    /// The app's MCP server for AI agents (R-MCP-5).
-    pub mcp: crate::mcp_server::McpServer,
+    /// The add-ons that are on (R-ADD-1, R-ADD-2).
+    pub addons: crate::addons::AddOns,
 }
 
 impl fmt::Debug for AppState {
@@ -219,9 +217,9 @@ impl AppState {
             workspace_runtime: BTreeMap::new(),
             workspace_secrets: BTreeMap::new(),
             workspace_env_secrets: BTreeMap::new(),
-            mocks: crate::mocks::Mocks::default(),
-            mcp: crate::mcp_server::McpServer::default(),
+            addons: crate::addons::AddOns::default(),
         };
+        state.load_addons();
         state.open_workspace();
         state
     }
@@ -257,6 +255,7 @@ impl AppState {
         let size = settings.history.size;
         let trim = size > 0 && size != self.settings.history.size;
         self.settings = settings.clone();
+        self.load_addons();
         if trim && let Err(e) = self.host.trim_history(size) {
             self.notify(t!("history-trim-failed", error = e));
         }
@@ -272,6 +271,7 @@ impl AppState {
             return;
         }
         self.settings = settings;
+        self.load_addons();
         if let Err(e) = self.host.save_settings(&self.settings) {
             self.notify(e);
         }
@@ -326,7 +326,7 @@ impl AppState {
                 // A saved edit or a `git pull` changes the mock's next answer (R-MOCK-2).
                 self.refresh_mock(root);
                 // A renamed project is found by its new name (R-MCP-5).
-                self.refresh_mcp();
+                self.refresh_addons();
             }
             Err(e) => self.notify(t!("project-reload-failed", error = e.to_string())),
         }
@@ -377,7 +377,7 @@ impl AppState {
         self.revision += 1;
         self.start_watching(root);
         self.adopt_environments();
-        self.refresh_mcp();
+        self.refresh_addons();
         Ok(())
     }
 
@@ -391,7 +391,7 @@ impl AppState {
         self.revision += 1;
         self.secrets.remove(root);
         self.cookies.remove(root);
-        self.refresh_mcp();
+        self.refresh_addons();
     }
 
     // ------------------------------------------------------------ workspaces (M6.5)
@@ -587,7 +587,7 @@ impl AppState {
 
     /// Saves local state and the workspace file after the workspace changed.
     pub(crate) fn workspace_changed(&mut self) {
-        self.refresh_mcp();
+        self.refresh_addons();
         self.save_local();
         if let Err(e) = self.write_workspace_file() {
             self.notify(e);
@@ -628,7 +628,7 @@ impl AppState {
         }
         self.workspace_secrets = values;
         self.workspace_env_secrets = env_values;
-        self.refresh_mcp();
+        self.refresh_addons();
         if let Some(e) = problem {
             self.notify(t!("secrets-read-failed", error = e.to_string()));
         }
@@ -978,7 +978,7 @@ impl AppState {
         tortuga_core::secrets::save(self.host.secrets(), root, &old, &values)
             .map_err(|e| sentence(&e.to_string()))?;
         self.secrets.insert(root.to_owned(), values);
-        self.refresh_mcp();
+        self.refresh_addons();
         Ok(())
     }
 

@@ -7,13 +7,12 @@ use std::time::UNIX_EPOCH;
 use egui::{Context, Grid, RichText, ScrollArea, TextEdit, Ui};
 use tortuga_core::mock::{Hit, Outcome};
 
-use super::DialogResult;
-use super::modals::{dialog, finish};
+use crate::components::{DialogResult, dialog, finish};
 use crate::theme;
 
 /// What the user asked of the mock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MockAction {
+pub(crate) enum MockAction {
     Start,
     Stop,
     /// Use this port from now on; a running mock restarts on it.
@@ -25,7 +24,7 @@ pub enum MockAction {
 
 /// What the dialog shows about the project's mock.
 #[derive(Debug, Clone, Copy)]
-pub struct MockView<'a> {
+pub(crate) struct MockView<'a> {
     /// The port it runs on; `None` when stopped.
     pub running: Option<u16>,
     /// The port it starts on.
@@ -38,7 +37,7 @@ pub struct MockView<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct MockDialog {
+pub(crate) struct MockDialog {
     pub root: PathBuf,
     title: String,
     port_text: String,

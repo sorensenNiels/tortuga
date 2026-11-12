@@ -2,7 +2,7 @@
 //! (R-HTTP-7, R-HTTP-8, R-HTTP-16, R-SET-3), which importers are offered (R-COL-18),
 //! appearance (R-SET-4, R-SET-5, R-SET-7, R-SET-10), history (R-SET-6), editing
 //! (R-SET-9, R-SET-11), the script editor (R-SET-16) and the new-version check
-//! (R-SET-15); and the request settings a workspace or project can override (R-SET-1,
+//! (R-SET-15), the add-ons that are on (R-ADD-1); and the request settings a workspace or project can override (R-SET-1,
 //! D39).
 //!
 //! Every setting has a default that suits most developers, and only settings that
@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::http::ClientSettings;
 use crate::import::ImportKind;
 
+mod addons;
 mod script_editor;
+pub use addons::{AddOn, AddOnSettings};
 pub use script_editor::{KeyScheme, ScriptCommand, ScriptEditorSettings};
 
 /// Everything in the app's settings file.
@@ -40,6 +42,9 @@ pub struct AppSettings {
     pub updates: UpdateSettings,
     #[serde(skip_serializing_if = "ScriptEditorSettings::is_default")]
     pub script_editor: ScriptEditorSettings,
+    /// Which add-ons are on (R-ADD-1, D78).
+    #[serde(skip_serializing_if = "AddOnSettings::is_default")]
+    pub addons: AddOnSettings,
 }
 
 /// Whether the app looks for a new version by itself (R-SET-15, D63).
@@ -71,22 +76,19 @@ pub enum Feature {
     Scripts,
     /// Example responses and the mock server (R-MOCK-1, R-MOCK-2).
     Examples,
-    /// Workflows (R-FLOW-1).
-    Workflows,
     /// Descriptions of requests, folders and projects (R-COL-22).
     Docs,
 }
 
 impl Feature {
     /// Every feature, in the order Settings lists them.
-    pub const ALL: [Self; 4] = [Self::Scripts, Self::Examples, Self::Workflows, Self::Docs];
+    pub const ALL: [Self; 3] = [Self::Scripts, Self::Examples, Self::Docs];
 
     /// The name the settings file keeps it under.
     pub fn id(self) -> &'static str {
         match self {
             Self::Scripts => "scripts",
             Self::Examples => "examples",
-            Self::Workflows => "workflows",
             Self::Docs => "docs",
         }
     }
@@ -685,16 +687,16 @@ mod tests {
     fn features_default_on_and_round_trip() {
         let mut settings = AppSettings::default();
         assert!(Feature::ALL.iter().all(|f| settings.features.enabled(*f)));
-        settings.features.set_enabled(Feature::Workflows, false);
+        settings.features.set_enabled(Feature::Examples, false);
         settings.features.set_enabled(Feature::Docs, false);
         settings.features.set_enabled(Feature::Docs, true);
         let text = toml::to_string(&settings).expect("toml");
         assert!(
-            text.contains("[features]\ndisabled = [\"workflows\"]\n"),
+            text.contains("[features]\ndisabled = [\"examples\"]\n"),
             "{text}"
         );
         let back: AppSettings = toml::from_str(&text).expect("read");
-        assert!(!back.features.enabled(Feature::Workflows));
+        assert!(!back.features.enabled(Feature::Examples));
         assert!(back.features.enabled(Feature::Docs));
         let newer: AppSettings =
             toml::from_str("[features]\ndisabled = [\"graphql\"]\n").expect("newer");

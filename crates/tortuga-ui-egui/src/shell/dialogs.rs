@@ -76,8 +76,7 @@ impl TortugaUi {
             | Modal::SaveRunAs(..)
             | Modal::RuntimeVars(_) => self.show_workflow_modal(ctx, &mut modal),
             Modal::Cookies(d) => self.show_cookies_dialog(ctx, d),
-            Modal::Mock(d) => self.show_mock_dialog(ctx, d),
-            Modal::Mcp => self.show_mcp_dialog(ctx),
+            Modal::AddOn(addon) => crate::addons::dialog(ctx, &mut self.state, *addon),
             Modal::Import(open) => self.show_import_dialog(ctx, open),
             Modal::EnvironmentImport(open) => self.show_environment_import(ctx, open),
             Modal::CloseProjectTabs(root, d) => self.show_close_project_tabs(ctx, root, d),
@@ -371,6 +370,12 @@ impl TortugaUi {
             .map(|e| t!("code-font-unusable", error = e))
     }
 
+    /// The settings dialog, listing the add-ons this build has (R-ADD-1).
+    pub(super) fn settings_dialog(&self) -> SettingsDialog {
+        SettingsDialog::new(&self.state.settings)
+            .with_addons(crate::addons::listed(self.state.host.as_ref()))
+    }
+
     /// Applies and saves the settings. Returns whether the dialog stays open.
     fn save_settings(
         &mut self,
@@ -380,6 +385,7 @@ impl TortugaUi {
         match self.state.apply_settings(settings) {
             Ok(()) => {
                 self.trim_loaded_history();
+                self.close_workflows_when_off();
                 false
             }
             Err(e) => {

@@ -20,7 +20,7 @@ pub enum DialogResult<T> {
 
 /// Shows a modal dialog with a heading. Escape or a click outside closes it
 /// when `dismissable` (dialogs with a lot of input are not, so nothing is lost by accident).
-pub(super) fn dialog<T>(
+pub(crate) fn dialog<T>(
     ctx: &Context,
     id: &str,
     title: &str,
@@ -157,7 +157,7 @@ pub(super) fn actions(
     })
 }
 
-pub(super) fn finish<T>(cancel: bool, done: Option<T>) -> DialogResult<T> {
+pub(crate) fn finish<T>(cancel: bool, done: Option<T>) -> DialogResult<T> {
     match done {
         Some(value) => DialogResult::Done(value),
         None if cancel => DialogResult::Close,

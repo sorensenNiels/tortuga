@@ -13,8 +13,6 @@ mod fanout_dialog;
 mod history_list;
 mod import_dialog;
 mod key_value_table;
-mod mcp_dialog;
-mod mock_dialog;
 mod modals;
 mod palette;
 mod request_editor;
@@ -47,14 +45,13 @@ pub use import_dialog::{
     environments_entry, file_names, importer_name, kind_label,
 };
 pub use key_value_table::key_value_table;
-pub use mcp_dialog::{McpDialogAction, McpView, mcp_dialog};
-pub use mock_dialog::{MockAction, MockDialog, MockView};
 pub use modals::{
     AddProjects, AddProjectsDialog, ConfirmDialog, CookieAction, CookiesDialog, CopyCurlDialog,
     CopyToProjectDialog, CreateProjectDialog, DialogResult, MoveDialog, NameDialog,
     RuntimeVarsDialog, SaveToCollectionDialog,
 };
-use modals::{dialog, fitting_scroll_area, resizable_dialog};
+pub(crate) use modals::{dialog, finish};
+use modals::{fitting_scroll_area, resizable_dialog};
 pub use palette::{Palette, PaletteItem};
 pub use request_editor::{
     EditorAction, EditorContext, EditorState, EditorView, OpenTab, Rerun, credential_text,

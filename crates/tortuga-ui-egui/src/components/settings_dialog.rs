@@ -5,6 +5,7 @@
 //! history (R-SET-6) and about, with the new-version check (R-SET-14, R-SET-15).
 
 mod about;
+mod addons;
 mod layout;
 mod network;
 mod script_editor_tab;
@@ -61,6 +62,8 @@ pub struct SettingsDialog {
     pub copy_command_requested: Option<String>,
     /// The key being recorded on the Script editor page (R-SET-16).
     script_editor_tab: script_editor_tab::ScriptEditorTab,
+    /// The add-ons Settings → Add-ons lists (R-ADD-1).
+    addons: Vec<crate::addons::AddOn>,
 }
 
 impl SettingsDialog {
@@ -82,7 +85,15 @@ impl SettingsDialog {
             check_requested: false,
             copy_command_requested: None,
             script_editor_tab: script_editor_tab::ScriptEditorTab::default(),
+            addons: Vec::new(),
         }
+    }
+
+    /// Lists these add-ons on the Add-ons page (R-ADD-1); none are listed otherwise.
+    #[must_use]
+    pub fn with_addons(mut self, addons: Vec<crate::addons::AddOn>) -> Self {
+        self.addons = addons;
+        self
     }
 
     /// Opens on the About page, e.g. to show what "Check for updates" finds (R-SET-15).
@@ -179,6 +190,7 @@ impl SettingsDialog {
                 feature_settings(ui, &mut self.draft.features);
                 importer_settings(ui, &mut self.draft.importers);
             }
+            Page::AddOns => addons::addons_page(ui, &mut self.draft.addons, &self.addons),
             Page::History => {
                 history_settings(ui, &mut self.draft.history, &mut self.history_text);
             }
@@ -387,7 +399,6 @@ fn feature_name(feature: Feature) -> String {
     match feature {
         Feature::Scripts => t!("feature-scripts"),
         Feature::Examples => t!("feature-examples"),
-        Feature::Workflows => t!("feature-workflows"),
         Feature::Docs => t!("feature-docs"),
     }
 }
@@ -397,7 +408,6 @@ fn feature_hides(feature: Feature) -> String {
     match feature {
         Feature::Scripts => t!("feature-scripts-hides"),
         Feature::Examples => t!("feature-examples-hides"),
-        Feature::Workflows => t!("feature-workflows-hides"),
         Feature::Docs => t!("feature-docs-hides"),
     }
 }
@@ -819,15 +829,42 @@ mod tests {
         let saved = saved(&mut dialog, |h| {
             h.get_by_label("Features").click();
             h.run();
-            h.get_by_label("Workflows").click();
-            h.get_by_label("Examples and the mock server").click();
+            assert!(h.query_by_label("Workflows").is_none(), "an add-on now");
+            h.get_by_label("Examples").click();
             h.run();
         })
         .expect("saved");
-        assert!(!saved.features.enabled(Feature::Workflows));
         assert!(!saved.features.enabled(Feature::Examples));
         assert!(saved.features.enabled(Feature::Scripts));
         assert!(saved.features.enabled(Feature::Docs));
+    }
+
+    /// R-ADD-1: the add-ons listed are off by default and turned on with their switch;
+    /// none listed, the page says so.
+    #[test]
+    fn addons_are_turned_on_in_settings() {
+        use tortuga_core::settings::AddOn;
+
+        let mut dialog =
+            SettingsDialog::new(&AppSettings::default()).with_addons(AddOn::ALL.to_vec());
+        let on = saved(&mut dialog, |h| {
+            h.get_by_label("Add-ons").click();
+            h.run();
+            h.get_by_label("MCP server").click();
+            h.run();
+        })
+        .expect("saved");
+        assert!(on.addons.enabled(AddOn::McpServer));
+
+        let mut dialog = SettingsDialog::new(&AppSettings::default());
+        let none = saved(&mut dialog, |h| {
+            h.get_by_label("Add-ons").click();
+            h.run();
+            h.get_by_label("This version has no add-ons.");
+            assert!(h.query_by_label("MCP server").is_none());
+        })
+        .expect("saved");
+        assert!(none.addons.is_default());
     }
 
     /// R-SET-14: the About tab shows the version, and copies it for a bug report.

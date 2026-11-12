@@ -1,6 +1,11 @@
-//! The app's MCP server (R-MCP-5, D72, D75): started and stopped for the whole workspace,
-//! serving its projects with the environment and secret values chosen in the app, with a
-//! log of what agents did.
+//! The MCP server add-on (R-ADD-3): the app's MCP server (R-MCP-5, D72, D75), started and
+//! stopped for the whole workspace, serving its projects with the environment and secret
+//! values chosen in the app, with a log of what agents did.
+
+mod dialog;
+pub(crate) mod ui;
+
+pub(crate) use ui::Command;
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -73,13 +78,17 @@ impl AppState {
     /// Starts the MCP server for the workspace (R-MCP-5) on port 4040, else a free one.
     /// Returns its address.
     pub fn start_mcp(&mut self) -> Result<String, String> {
-        if let Some(running) = self.mcp.running() {
+        let Some(server) = &self.addons.mcp else {
+            return Err(t!("mcp-addon-off"));
+        };
+        if let Some(running) = server.running() {
             return Ok(running.url.clone());
         }
+        let tx = server.tx.clone();
         let projects = Arc::new(RwLock::new(self.mcp_projects()));
         let mut problem = String::new();
         for port in [mcp::DEFAULT_PORT, 0] {
-            let tx = self.mcp.tx.clone();
+            let tx = tx.clone();
             let wake = self.waker();
             let on_action = Arc::new(move |action| {
                 // The receiver only goes away with the app.
@@ -92,8 +101,10 @@ impl AppState {
             {
                 Ok(handle) => {
                     let url = handle.url.clone();
-                    self.mcp.log.clear();
-                    self.mcp.running = Some(Running { handle, projects });
+                    if let Some(server) = &mut self.addons.mcp {
+                        server.log.clear();
+                        server.running = Some(Running { handle, projects });
+                    }
                     return Ok(url);
                 }
                 Err(e) => problem = e,
@@ -104,13 +115,15 @@ impl AppState {
 
     /// Stops the MCP server; agents lose their connection.
     pub fn stop_mcp(&mut self) {
-        self.mcp.running = None;
+        if let Some(server) = &mut self.addons.mcp {
+            server.running = None;
+        }
     }
 
     /// Gives the running MCP server the workspace's projects as they are now: after a
     /// project was opened, closed or reloaded, or the environment or secrets changed.
-    pub(crate) fn refresh_mcp(&self) {
-        let Some(running) = &self.mcp.running else {
+    pub(super) fn refresh_mcp(&self) {
+        let Some(running) = self.addons.mcp.as_ref().and_then(|s| s.running.as_ref()) else {
             return;
         };
         *running

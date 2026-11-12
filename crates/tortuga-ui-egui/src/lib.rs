@@ -14,13 +14,12 @@
 #[macro_use]
 mod i18n;
 
+mod addons;
 mod components;
 mod environments;
 mod format;
 mod fuzzy;
 mod host;
-mod mcp_server;
-mod mocks;
 mod shell;
 mod state;
 mod theme;
@@ -99,6 +98,10 @@ pub(crate) mod test_host {
         pub mock: std::rc::Rc<std::cell::RefCell<Option<StartedMock>>>,
         /// The projects of the last MCP server started, and how to report an action to it.
         pub mcp: std::rc::Rc<std::cell::RefCell<Option<StartedMcp>>>,
+        /// What `load_settings` gives, e.g. with an add-on on (R-ADD-1).
+        pub settings: AppSettings,
+        /// Can't run local servers, as in the web version.
+        pub no_servers: bool,
         /// Look for a new version at start-up (R-SET-15); off, so other tests spawn nothing.
         pub checks_for_updates: bool,
         /// The operating system's language (R-I18N-1).
@@ -152,6 +155,9 @@ pub(crate) mod test_host {
         fn checks_for_updates(&self) -> bool {
             self.checks_for_updates
         }
+        fn can_run_servers(&self) -> bool {
+            !self.no_servers
+        }
         fn os_language(&self) -> Option<String> {
             self.os_language.clone()
         }
@@ -186,7 +192,7 @@ pub(crate) mod test_host {
             ))
         }
         fn load_settings(&self) -> Result<AppSettings, String> {
-            Ok(AppSettings::default())
+            Ok(self.settings.clone())
         }
         fn save_settings(&self, _: &AppSettings) -> Result<(), String> {
             Ok(())

@@ -7,6 +7,7 @@ use std::sync::mpsc::channel;
 use tortuga_core::{Item, Request};
 
 use super::{Modal, TortugaUi};
+use crate::addons::{Command::Mock, mock};
 use crate::components::{
     AddProjectsDialog, ConfirmDialog, CopyToProjectDialog, CreateProjectDialog, DefaultsDialog,
     EnvironmentsDialog, MoveDialog, SidebarAction,
@@ -94,9 +95,9 @@ impl TortugaUi {
                 self.notify_failure(self.state.host.open_in_terminal(&root));
             }
             SidebarAction::ShowCookies(root) => self.show_cookies(root),
-            action @ (SidebarAction::StartMock(_)
-            | SidebarAction::StopMock(_)
-            | SidebarAction::ShowMock(_)) => self.on_mock_sidebar(action),
+            SidebarAction::StartMock(root) => self.run_addon(Mock(mock::Command::Start(root))),
+            SidebarAction::StopMock(root) => self.run_addon(Mock(mock::Command::Stop(root))),
+            SidebarAction::ShowMock(root) => self.run_addon(Mock(mock::Command::Show(root))),
             SidebarAction::Close(root) => {
                 self.forget(&root, Path::new(""));
                 self.state.close_collection(&root);

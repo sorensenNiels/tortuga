@@ -4,13 +4,13 @@
 use std::path::{Path, PathBuf};
 
 use tortuga_core::import::ImportKind;
-use tortuga_core::settings::{Feature, ImporterSettings};
+use tortuga_core::settings::ImporterSettings;
 use tortuga_core::{Item, Request};
 
 use super::{Modal, Selection, TortugaUi, WorkspaceAction};
 use crate::components::{
     DefaultsDialog, DialogResult, ENVIRONMENT_KINDS, EnvironmentsDialog, Palette, PaletteItem,
-    SettingsDialog, environments_entry,
+    environments_entry,
 };
 use crate::state::ItemKey;
 
@@ -65,16 +65,8 @@ pub(super) enum Command {
     Import(ImportKind),
     /// Postman (R-COL-20) or HTTP Client (R-COL-29) environments into a project.
     ImportEnvironments(PathBuf, ImportKind),
-    /// A project's mock server (R-MOCK-2, R-MOCK-4).
-    StartMock(PathBuf),
-    StopMock(PathBuf),
-    ShowMock(PathBuf),
-    /// Send requests to the running mocks (D45).
-    MockEnvironment,
-    /// The MCP server for AI agents (R-MCP-5).
-    StartMcp,
-    StopMcp,
-    ShowMcp,
+    /// An add-on's command, e.g. the MCP server's (R-ADD-2, R-MCP-5).
+    AddOn(crate::addons::Command),
 }
 
 /// Adding, creating and importing projects (R-WS-3, R-COL-15, R-COL-16, R-COL-17,
@@ -164,14 +156,14 @@ impl TortugaUi {
         items
     }
 
-    /// Switching the workspace's environment (R-WS-6), and to the mocks while one runs
-    /// (R-MOCK-4).
+    /// Switching the workspace's environment (R-WS-6); the mocks' is the mock server
+    /// add-on's (R-MOCK-4).
     fn environment_items(&self) -> Vec<PaletteItem<PaletteChoice>> {
         let run =
             |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
-        let in_mock = self.state.mocks.in_use();
+        let in_mock = self.state.mocks_in_use();
         let shown = self.state.chosen_environment_name();
-        let mut items: Vec<_> = self
+        let items: Vec<_> = self
             .state
             .environment_names()
             .into_iter()
@@ -189,58 +181,7 @@ impl TortugaUi {
                 .keywords("switch")
             })
             .collect();
-        if !self.state.mocks.ports().is_empty() {
-            items.push(
-                run(t!("cmd-environment-mock"), Command::MockEnvironment)
-                    .hint(if in_mock {
-                        t!("cmd-current")
-                    } else {
-                        String::new()
-                    })
-                    .keywords("switch mock server"),
-            );
-        }
         items
-    }
-
-    /// The MCP server's commands (R-MCP-5).
-    fn mcp_items(&self) -> Vec<PaletteItem<PaletteChoice>> {
-        let run =
-            |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
-        let items = if self.state.mcp.running().is_some() {
-            vec![
-                run(t!("cmd-mcp-server"), Command::ShowMcp),
-                run(t!("cmd-stop-mcp"), Command::StopMcp),
-            ]
-        } else {
-            vec![run(t!("cmd-start-mcp"), Command::StartMcp)]
-        };
-        items
-            .into_iter()
-            .map(|item| item.keywords("mcp ai agent claude cursor copilot"))
-            .collect()
-    }
-
-    /// A project's mock server commands (R-MOCK-2, R-MOCK-4).
-    fn mock_items(&self, c: &tortuga_core::Collection) -> Vec<PaletteItem<PaletteChoice>> {
-        let run =
-            |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
-        let root = &c.root;
-        let items = if self.state.mocks.port(root).is_some() {
-            vec![
-                run(t!("cmd-mock-server"), Command::ShowMock(root.clone())),
-                run(t!("cmd-stop-mock"), Command::StopMock(root.clone())),
-            ]
-        } else if self.state.settings.features.enabled(Feature::Examples) {
-            vec![run(t!("cmd-start-mock"), Command::StartMock(root.clone()))]
-        } else {
-            // Turned off (R-SET-13); one that is running can still be stopped.
-            Vec::new()
-        };
-        items
-            .into_iter()
-            .map(|item| item.detail(c.name()).keywords("mock examples"))
-            .collect()
     }
 
     /// The project the palette's commands are for (R-COL-25): the open workflow's, else
@@ -258,7 +199,7 @@ impl TortugaUi {
     fn project_items(&self, c: &tortuga_core::Collection) -> Vec<PaletteItem<PaletteChoice>> {
         let run =
             |label: String, command: Command| PaletteItem::new(label, PaletteChoice::Run(command));
-        let workflows = self.state.settings.features.enabled(Feature::Workflows);
+        let workflows = self.state.addon_on(crate::addons::AddOn::Workflows);
         let mut items = Vec::new();
         for w in c.workflows.iter().filter(|_| workflows) {
             let key = crate::state::WorkflowKey {
@@ -324,7 +265,11 @@ impl TortugaUi {
             .detail(c.name())
             .keywords("headers auth timeout redirects cookies settings"),
         );
-        items.extend(self.mock_items(c));
+        items.extend(
+            crate::addons::project_palette(&self.state, &c.root)
+                .into_iter()
+                .map(|e| addon_item(e).detail(c.name())),
+        );
         items
     }
 
@@ -382,7 +327,7 @@ impl TortugaUi {
                 .keywords("captured clear"),
         );
         items.extend(workspace_commands(&self.state.workspace().name));
-        items.extend(self.mcp_items());
+        items.extend(addon_items(&self.state));
         items.push(run(t!("cmd-settings"), Command::Settings).keywords("preferences options"));
         if self.state.host.checks_for_updates() {
             items.push(
@@ -470,16 +415,7 @@ impl TortugaUi {
                 );
             }
             Command::Environment(name) => self.state.set_workspace_environment(&name),
-            Command::MockEnvironment => self.state.use_mock_environment(),
-            Command::StartMcp => {
-                self.start_mcp();
-                self.show_mcp();
-            }
-            Command::StopMcp => self.stop_mcp(),
-            Command::ShowMcp => self.show_mcp(),
-            Command::StartMock(root) => self.start_mock(&root),
-            Command::StopMock(root) => self.stop_mock(&root),
-            Command::ShowMock(root) => self.show_mock(root),
+            Command::AddOn(command) => self.run_addon(command),
             Command::Workspace(i) => self.on_workspace(WorkspaceAction::Switch(i)),
             Command::Environments(root) => {
                 self.modal = Some(Modal::Environments(EnvironmentsDialog::new(
@@ -491,14 +427,12 @@ impl TortugaUi {
                 self.modal = Some(Modal::Defaults(DefaultsDialog::new(&self.state, root)));
             }
             Command::Settings => {
-                self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(
-                    &self.state.settings,
-                ))));
+                self.modal = Some(Modal::Settings(Box::new(self.settings_dialog())));
             }
             Command::CheckForUpdates => {
                 self.check_for_updates_now(ctx);
                 self.modal = Some(Modal::Settings(Box::new(
-                    SettingsDialog::new(&self.state.settings).on_about_tab(),
+                    self.settings_dialog().on_about_tab(),
                 )));
             }
             Command::History => {
@@ -569,8 +503,38 @@ fn collect(items: &[Item], root: &Path, trail: &str, sub: &str, out: &mut Vec<(I
     }
 }
 
+/// The palette entries of the add-ons that are on (R-ADD-2).
+fn addon_items(state: &crate::state::AppState) -> Vec<PaletteItem<PaletteChoice>> {
+    crate::addons::palette(state)
+        .into_iter()
+        .map(addon_item)
+        .collect()
+}
+
+fn addon_item(e: crate::addons::PaletteEntry) -> PaletteItem<PaletteChoice> {
+    let hint = if e.current {
+        t!("cmd-current")
+    } else {
+        String::new()
+    };
+    PaletteItem::new(e.label, PaletteChoice::Run(Command::AddOn(e.command)))
+        .keywords(e.keywords)
+        .hint(hint)
+}
+
+impl TortugaUi {
+    /// Does what an add-on's menu item or command asked, and opens its dialog if it says so.
+    pub(super) fn run_addon(&mut self, command: crate::addons::Command) {
+        if let Some(addon) = crate::addons::run(&mut self.state, command) {
+            self.modal = Some(Modal::AddOn(addon));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use tortuga_core::settings::Feature;
+
     use super::*;
 
     /// R-COL-18: importers that are off are not in the command palette.
@@ -614,9 +578,13 @@ mod tests {
         assert!(has(&before, "Run project: C"));
 
         ui.state.update_settings(|s| {
-            for feature in [Feature::Workflows, Feature::Examples, Feature::Scripts] {
+            for feature in [Feature::Examples, Feature::Scripts] {
                 s.features.set_enabled(feature, false);
             }
+            // R-ADD-4, R-ADD-5: workflows and the mock server are add-ons now.
+            s.addons.set_enabled(crate::addons::AddOn::Workflows, false);
+            s.addons
+                .set_enabled(crate::addons::AddOn::MockServer, false);
         });
         let after = labels(&ui);
         for gone in [

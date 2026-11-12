@@ -87,7 +87,39 @@ pub(super) struct Workflows {
     waiting: HashMap<WorkflowKey, (Workflow, Option<Workflow>)>,
 }
 
+impl OpenWorkflow {
+    /// Stops the run going on, if one is. Returns whether one was.
+    fn cancel(&mut self) -> bool {
+        if let Some(abort) = self.abort.take() {
+            abort.abort();
+        }
+        let Some(run) = self.run.as_mut().filter(|r| r.running) else {
+            return false;
+        };
+        run.running = false;
+        run.current = None;
+        run.cancelled = true;
+        true
+    }
+}
+
 impl TortugaUi {
+    /// Once the Workflows add-on is off (R-ADD-4): closes the workflow shown and stops
+    /// runs, saying so. Unsaved edits are kept for when it is on again.
+    pub(super) fn close_workflows_when_off(&mut self) {
+        if self.state.addon_on(crate::addons::AddOn::Workflows) {
+            return;
+        }
+        self.workflows.open = None;
+        let mut stopped = false;
+        for open in self.workflows.editors.values_mut() {
+            stopped |= open.cancel();
+        }
+        if stopped {
+            self.state.inform(t!("workflows-stopped"));
+        }
+    }
+
     fn saved_workflow(&self, key: &WorkflowKey) -> Option<Workflow> {
         self.state.collection(&key.root)?.workflow(&key.id).cloned()
     }
@@ -489,14 +521,7 @@ impl TortugaUi {
             WorkflowAction::Run => self.run_workflow(key, ctx),
             WorkflowAction::Cancel => {
                 if let Some(open) = self.workflows.editors.get_mut(key) {
-                    if let Some(abort) = open.abort.take() {
-                        abort.abort();
-                    }
-                    if let Some(run) = &mut open.run {
-                        run.running = false;
-                        run.current = None;
-                        run.cancelled = true;
-                    }
+                    open.cancel();
                 }
             }
             WorkflowAction::ChooseData => {
@@ -1199,6 +1224,51 @@ mod tests {
         };
         ui.state
             .run(root, |c, s| c.save_config(s, &c.manifest, &[production]));
+    }
+
+    /// R-ADD-4: turning the Workflows add-on off closes the workflow shown and stops its
+    /// run, saying so; its sidebar group and commands are gone, its file stays.
+    #[test]
+    fn turning_workflows_off_closes_and_stops_them() {
+        let (mut ui, root, _) = crate::shell::tests::setup("workflows-off");
+        ui.create_workflow(&root, "Smoke ü😀");
+        let key = ui.workflows.open.clone().expect("opened");
+        ui.workflows.editors.get_mut(&key).expect("editor").run = Some(RunView {
+            running: true,
+            ..RunView::default()
+        });
+
+        let mut settings = ui.state.settings.clone();
+        settings
+            .addons
+            .set_enabled(crate::addons::AddOn::Workflows, false);
+        ui.state.apply_settings(&settings).expect("apply");
+        ui.close_workflows_when_off();
+
+        assert!(ui.workflows.open.is_none());
+        let run = ui.workflows.editors[&key].run.as_ref().expect("run");
+        assert!(run.cancelled && !run.running);
+        assert_eq!(
+            ui.state.toast.as_ref().map(|t| t.text.as_str()),
+            Some("Workflows are off; the run going on stopped.")
+        );
+        let labels: Vec<String> = ui.command_items().into_iter().map(|i| i.label).collect();
+        assert!(
+            !labels.iter().any(|l| l.starts_with("Run workflow")),
+            "{labels:?}"
+        );
+        assert!(
+            ui.state
+                .collection(&root)
+                .expect("open")
+                .workflow(&key.id)
+                .is_some()
+        );
+
+        // Nothing running, turning it off again says nothing.
+        ui.state.toast = None;
+        ui.close_workflows_when_off();
+        assert!(ui.state.toast.is_none());
     }
 
     /// R-SRV-9: to a protected environment a POST waits for a yes, a GET goes at once;

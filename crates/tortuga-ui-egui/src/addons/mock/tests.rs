@@ -73,7 +73,7 @@ fn starts_on_a_free_port_and_remembers_it() {
     let (mut state, probe) = state(dir.path(), vec![4010]);
     let root = dir.path();
     assert_eq!(state.start_mock(root), Ok(4011));
-    assert_eq!(state.mocks.port(root), Some(4011));
+    assert_eq!(state.mock_port(root), Some(4011));
     assert_eq!(state.start_mock(root), Ok(4011), "already running");
     let saved = probe.local.borrow().clone().expect("saved");
     assert_eq!(
@@ -81,10 +81,10 @@ fn starts_on_a_free_port_and_remembers_it() {
         Some(&4011)
     );
     state.stop_mock(root);
-    assert_eq!(state.mocks.port(root), None);
+    assert_eq!(state.mock_port(root), None);
     assert_eq!(state.start_mock(root), Ok(4011), "the remembered port");
     assert_eq!(state.set_mock_port(root, 5000), Ok(5000), "restarts on it");
-    assert_eq!(state.mocks.port(root), Some(5000));
+    assert_eq!(state.mock_port(root), Some(5000));
 }
 
 /// R-MOCK-2: a remembered port that is taken is an error, not another port.
@@ -96,7 +96,7 @@ fn a_taken_remembered_port_is_an_error() {
     let root = dir.path();
     assert_eq!(state.set_mock_port(root, 4500), Ok(4500), "not running yet");
     assert_eq!(state.start_mock(root), Err("port 4500 is in use".into()));
-    assert_eq!(state.mocks.port(root), None);
+    assert_eq!(state.mock_port(root), None);
 }
 
 /// R-MOCK-4, D45: while the mock environment is chosen, the project's servers point at
@@ -112,7 +112,7 @@ fn the_mock_environment_points_servers_at_the_mock() {
     state.start_mock(root).expect("start");
     assert_eq!(url(&state), "https://dev.test", "not chosen yet");
     state.use_mock_environment();
-    assert!(state.mocks.in_use());
+    assert!(state.mocks_in_use());
     assert_eq!(url(&state), "http://127.0.0.1:4010");
     assert_eq!(
         state.context(Some(root)).variables["greeting"],
@@ -123,7 +123,7 @@ fn the_mock_environment_points_servers_at_the_mock() {
     assert_eq!(url(&state), "https://dev.test");
     state.use_mock_environment();
     state.stop_mock(root);
-    assert!(!state.mocks.in_use());
+    assert!(!state.mocks_in_use());
     assert_eq!(url(&state), "https://dev.test");
 }
 
@@ -158,14 +158,14 @@ fn answers_follow_the_files_and_hits_are_logged() {
         on_hit(hit.clone());
         on_hit(hit);
     }
-    state.mocks.take_hits();
-    assert_eq!(state.mocks.hits(root).len(), 2);
-    state.mocks.clear_hits(root);
-    assert_eq!(state.mocks.hits(root).len(), 0);
+    state.poll_addons();
+    assert_eq!(state.addons.mock.as_ref().expect("on").hits(root).len(), 2);
+    state.addons.mock.as_mut().expect("on").clear_hits(root);
+    assert_eq!(state.addons.mock.as_ref().expect("on").hits(root).len(), 0);
 
     state.close_collection(root);
     assert_eq!(
-        state.mocks.port(root),
+        state.mock_port(root),
         None,
         "closing the project stops its mock"
     );

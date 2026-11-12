@@ -16,8 +16,6 @@ mod guard;
 mod history;
 mod import;
 mod layout;
-mod mcp;
-mod mock;
 mod projects;
 mod request_head;
 mod response;
@@ -92,10 +90,8 @@ enum Modal {
     RuntimeVars(crate::components::RuntimeVarsDialog),
     /// The cookie viewer (R-CK-5).
     Cookies(CookiesDialog),
-    /// A project's mock server: port and log (R-MOCK-2, R-MOCK-4).
-    Mock(crate::components::MockDialog),
-    /// The MCP server for AI agents: address, agent configs and log (R-MCP-5).
-    Mcp,
+    /// An add-on's dialog, e.g. the MCP server's (R-ADD-2, R-MCP-5).
+    AddOn(crate::addons::AddOn),
     /// Reviewing an OpenAPI or Postman import (R-COL-15, R-COL-16).
     Import(Box<import::OpenImport>),
     /// Reviewing Postman environments for a project (R-COL-20).
@@ -123,7 +119,7 @@ enum Guarded {
 }
 
 /// What the user picked in the workspace menu (R-WS-1, R-WS-5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum WorkspaceAction {
     Switch(usize),
     New,
@@ -134,8 +130,8 @@ enum WorkspaceAction {
     Defaults,
     SaveAsFile,
     OpenFile,
-    /// The MCP server for AI agents (R-MCP-5).
-    Mcp,
+    /// An add-on's item, e.g. the MCP server's (R-ADD-2, R-MCP-5).
+    AddOn(crate::addons::Command),
     Remove,
 }
 
@@ -375,8 +371,7 @@ impl TortugaUi {
         for root in self.state.take_changes() {
             self.on_disk_change(&root);
         }
-        self.state.mocks.take_hits();
-        self.state.mcp.take_actions();
+        self.state.poll_addons();
         // A script field's own keys win over the app's (R-TEST-17).
         if self.modal.is_none() && !script_keys::field_takes_keys(ui.ctx()) {
             self.shortcuts(ui);
@@ -396,9 +391,7 @@ impl TortugaUi {
                     ui.label(RichText::new("⚠").color(p.warning_text));
                     ui.label(RichText::new(t!("tls-off-warning")).color(p.warning_text));
                     if ui.link(t!("tls-off-change")).clicked() {
-                        self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(
-                            &self.state.settings,
-                        ))));
+                        self.modal = Some(Modal::Settings(Box::new(self.settings_dialog())));
                     }
                 });
             });
@@ -633,12 +626,12 @@ impl TortugaUi {
                     egui::WidgetInfo::labeled(egui::accesskit::Role::Button, true, t!("settings"))
                 });
                 if settings.clicked() {
-                    self.modal = Some(Modal::Settings(Box::new(SettingsDialog::new(
-                        &self.state.settings,
-                    ))));
+                    self.modal = Some(Modal::Settings(Box::new(self.settings_dialog())));
                 }
                 self.update_link(ui);
-                self.mcp_indicator(ui);
+                if let Some(addon) = crate::addons::top_bar(ui, &self.state) {
+                    self.modal = Some(Modal::AddOn(addon));
+                }
                 let go_to = (
                     t!("go-to-request"),
                     RichText::new("  Ctrl+P").small().color(p.muted),
@@ -1066,8 +1059,14 @@ mod tests {
         let path = collection
             .new_request(&FsStorage, Path::new(""), &request)
             .expect("request");
+        // The Workflows add-on is on, as the workflow tests need (R-ADD-4).
+        let mut settings = tortuga_core::AppSettings::default();
+        settings
+            .addons
+            .set_enabled(crate::addons::AddOn::Workflows, true);
         let host = TestHost {
             open: vec![root.clone()],
+            settings,
             ..TestHost::default()
         };
         let (local, drafts) = (

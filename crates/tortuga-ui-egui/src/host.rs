@@ -491,6 +491,12 @@ pub trait Host {
         Err(t!("mock-needs-desktop"))
     }
 
+    /// Whether this build can run local servers: mock servers and the MCP server (R-ADD-1
+    /// lists the MCP server add-on only then).
+    fn can_run_servers(&self) -> bool {
+        false
+    }
+
     /// Starts the MCP server for `projects` on `127.0.0.1:port` (`0`: a free port) with a
     /// new token (R-MCP-5); the UI replaces the projects when the workspace changes.
     fn start_mcp(

@@ -6,13 +6,12 @@ use std::time::UNIX_EPOCH;
 use egui::{Context, Grid, RichText, ScrollArea, Ui};
 use tortuga_core::mcp::{Agent, McpAction};
 
-use super::DialogResult;
-use super::modals::{dialog, finish};
+use crate::components::{DialogResult, dialog, finish};
 use crate::theme;
 
 /// What the user asked of the MCP server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum McpDialogAction {
+pub(crate) enum McpDialogAction {
     Start,
     Stop,
     /// Copy the configuration for this agent.
@@ -22,7 +21,7 @@ pub enum McpDialogAction {
 
 /// What the dialog shows.
 #[derive(Debug, Clone, Copy)]
-pub struct McpView<'a> {
+pub(crate) struct McpView<'a> {
     /// The address agents connect to; `None` when stopped.
     pub url: Option<&'a str>,
     /// Oldest first.
@@ -31,7 +30,10 @@ pub struct McpView<'a> {
 }
 
 /// Shows the MCP server dialog; returns whether it stays open and what was asked.
-pub fn mcp_dialog(ctx: &Context, view: McpView<'_>) -> (DialogResult<()>, Option<McpDialogAction>) {
+pub(crate) fn mcp_dialog(
+    ctx: &Context,
+    view: McpView<'_>,
+) -> (DialogResult<()>, Option<McpDialogAction>) {
     {
         let mut action = None;
         let result = dialog(ctx, "mcp", &t!("mcp-title"), 820.0, true, |ui| {

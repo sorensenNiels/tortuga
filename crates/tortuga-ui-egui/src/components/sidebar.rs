@@ -324,8 +324,8 @@ pub fn sidebar(
                 state.settings.importers.enabled(kind) && state.host.can_pick_folders()
             }),
             features: ShownFeatures {
-                workflows: state.settings.features.enabled(Feature::Workflows),
-                mock: state.settings.features.enabled(Feature::Examples),
+                workflows: state.addon_on(crate::addons::AddOn::Workflows),
+                mock: state.addon_on(crate::addons::AddOn::MockServer),
                 docs: state.settings.features.enabled(Feature::Docs),
             },
         },
@@ -400,7 +400,7 @@ fn project_tree<'a>(ui: &mut Ui, state: &'a AppState, tree: &mut Tree<'a>) {
             ui.push_id(&c.root, |ui| {
                 tree.git = state.git.get(&c.root);
                 tree.show_branch = shared.is_none();
-                tree.mock_port = state.mocks.port(&c.root);
+                tree.mock_port = state.mock_port(&c.root);
                 collection(ui, c, state.cookie_jar(Some(&c.root)).len(), depth, tree);
             });
         }

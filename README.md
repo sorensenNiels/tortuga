@@ -272,7 +272,7 @@ To share a captured value with the other projects of the workspace, start its na
 `workspace.token = $.access_token` in the *Auth* project's login request (or `vars.set("workspace.token", …)`) gives
 every project `{{token}}`. The workspace menu's **Variables…** lists these values and clears them.
 
-**Workflows.** **New workflow…** in a project's **…** menu creates a workflow: a list of the project's requests that
+**Workflows** are an add-on: turn them on in **Settings → Add-ons**. **New workflow…** in a project's **…** menu creates a workflow: a list of the project's requests that
 run in order, each step with optional extra captures and tests. Values captured by a step are available to the next
 ones as `{{variables}}`. Choose a CSV or JSON **data file** to run the workflow once per row. Workflows are saved in
 the project's `workflows/` folder, so they are shared through git too. **Run** (or **Ctrl+Enter**) shows each step's
@@ -336,7 +336,8 @@ claude mcp add tortuga -- tortuga-cli mcp path/to/project --env Dev
 Secrets come from `TORTUGA_VAR_<name>` as for `run` and are shown to the agent as `{{name}}`, never their values. In
 a protected environment only GET, HEAD and OPTIONS requests are sent; response bodies are cut at 100 KB.
 
-In the app, **Start MCP server for AI agents** in the workspace menu (or the command palette) serves the whole
+In the app, the MCP server is an add-on: turn it on in **Settings → Add-ons** (add-ons are off by default). Then
+**Start MCP server for AI agents** in the workspace menu (or the command palette) serves the whole
 workspace at `http://127.0.0.1:4040/mcp` with the environment and secrets chosen in the app; its dialog copies the
 configuration for Claude Code, Cursor or VS Code (with a token that changes each start) and logs what agents did.
 

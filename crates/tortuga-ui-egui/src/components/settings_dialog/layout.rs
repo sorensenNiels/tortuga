@@ -18,6 +18,8 @@ pub(super) enum Page {
     Requests,
     Network,
     Features,
+    /// Add-ons (R-ADD-1).
+    AddOns,
     History,
     About,
 }
@@ -31,6 +33,7 @@ impl Page {
             Self::Requests => t!("import-row-requests"),
             Self::Network => t!("settings-network"),
             Self::Features => t!("settings-features"),
+            Self::AddOns => t!("settings-addons"),
             Self::History => t!("history"),
             Self::About => t!("settings-about"),
         }
@@ -50,7 +53,7 @@ fn sections() -> [(String, &'static [Page]); 3] {
         ),
         (
             t!("settings-group-app"),
-            &[Page::Features, Page::History, Page::About],
+            &[Page::Features, Page::AddOns, Page::History, Page::About],
         ),
     ]
 }
