@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Makes a release (docs/RELEASING.md): bumps the version in Cargo.toml, runs `make verify`,
-# commits, tags vX.Y.Z and pushes both, which starts the Release workflow (a draft GitHub release).
+# Makes a release (docs/RELEASING.md): bumps the version in Cargo.toml, turns "## Unreleased" in CHANGELOG.md into
+# the version's heading, runs `make verify`, commits, tags vX.Y.Z and pushes both, which starts the Release workflow (a draft GitHub release).
 #
 # Usage: scripts/release.sh patch|minor|major   (or: make release-patch / release-minor / release-major)
 set -euo pipefail
@@ -39,19 +39,28 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     fail "tag $tag already exists (delete it with 'git tag -d $tag' if it was never pushed)"
 fi
 
+# What the release notes say (the Release workflow publishes this section): nothing to say, no release.
+unreleased=$(awk '/^## Unreleased/ { on = 1; next } /^## / { on = 0 } on && NF' CHANGELOG.md)
+[ -n "$unreleased" ] || fail "CHANGELOG.md has nothing under \"## Unreleased\": say what changed for users first"
+echo "$unreleased"
+echo
+
 read -r -p "Release $tag (now $current): bump, verify, commit, tag and push? [y/N] " answer
 [[ $answer =~ ^[yY]$ ]] || fail "release cancelled"
 
-# Put Cargo.toml and Cargo.lock back if anything fails before the commit.
-trap 'git checkout --quiet -- Cargo.toml Cargo.lock; echo "tortuga: release failed, version left at $current" >&2' ERR
+# Put Cargo.toml, Cargo.lock and CHANGELOG.md back if anything fails before the commit.
+trap 'git checkout --quiet -- Cargo.toml Cargo.lock CHANGELOG.md; echo "tortuga: release failed, version left at $current" >&2' ERR
 
 awk -v old="version = \"$current\"" -v new="version = \"$next\"" \
     '!done && $0 == old { print new; done = 1; next } { print }' Cargo.toml >Cargo.toml.new
 mv Cargo.toml.new Cargo.toml
 cargo update --workspace --quiet
+awk -v heading="## $next — $(date +%Y-%m-%d)" \
+    '!done && /^## Unreleased/ { print; print ""; print heading; done = 1; next } { print }' CHANGELOG.md >CHANGELOG.md.new
+mv CHANGELOG.md.new CHANGELOG.md
 make verify
 
-git commit --quiet -m "Release $tag" -- Cargo.toml Cargo.lock
+git commit --quiet -m "Release $tag" -m "Changelog: none" -- Cargo.toml Cargo.lock CHANGELOG.md
 trap - ERR
 git tag -a "$tag" -m "Tortuga $next"
 

@@ -15,12 +15,14 @@ change a decision recorded in the roadmap, ask before building.
 | `docs/ROADMAP.md` | Vision, principles, open work and phases, open requirements (`R-COL-3`), ideas (`IDEA-n`), decisions (`D1`), next free IDs. | The plan and the spec for what is not done. Implement requirements as written; suggest new ideas by adding a row to its Ideas section; record new decisions there. |
 | `docs/FEATURES.md` | Implemented **and verified** features by requirement ID, and how each was verified. | Add an entry only when the requirement is fully met, tested, and checked in the running app; record which OS. Otherwise it goes under "In progress". |
 | `docs/REQUIREMENTS.md` | The text of every completed requirement. | When a requirement is verified, move its row here from the roadmap. |
+| `CHANGELOG.md` | What changed for users, per release. | Every commit that changes what users see adds a line under `## Unreleased` (Added, Changed or Fixed; one line, plain words, no IDs). A commit users can't notice says `Changelog: none` in its message. `scripts/check-changelog.sh` refuses commits that do neither (`docs/RELEASING.md`, "The changelog"). |
 
 ## Working efficiently
 
 Context is the budget; spend it on code that changes.
 - Never read `FEATURES.md`, `REQUIREMENTS.md`, `ROADMAP.md` or `README.md` whole. `grep -n` the ID (`"R-COL-3 "`,
   `"| D42 "`, `IDEA-7`) or heading, then read that range. Planning needs roadmap §4 to §6; next free IDs are its last line.
+  In `CHANGELOG.md` read only "## Unreleased" (`grep -n "^## " CHANGELOG.md | head -2`).
 - Source files over ~500 lines: `grep -n` the symbol, then read with offset/limit. Don't re-read a file after editing it.
 - While working, run the narrowest check (`cargo test -p <crate> <filter>`); run `/verify` once at the end. Send long
   command output to a file under `target/` and grep it instead of printing it.

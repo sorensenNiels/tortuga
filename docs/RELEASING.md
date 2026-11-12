@@ -26,7 +26,8 @@ make package      # installers for this OS in target/packages/
 
 ## Make a release
 
-1. Make sure `docs/FEATURES.md` is up to date. CI runs only on release tags (or by hand from the Actions tab),
+1. Make sure `docs/FEATURES.md` is up to date, and that `CHANGELOG.md` says under "## Unreleased" what changed for
+   users (see "The changelog" below). CI runs only on release tags (or by hand from the Actions tab),
    so `make verify` locally is the check before a release; the release script runs it too.
 2. Run one of these on an up-to-date, clean `main`:
 
@@ -36,21 +37,36 @@ make package      # installers for this OS in target/packages/
    make release-major   # 0.3.0 → 1.0.0: breaking changes (e.g. the project file format)
    ```
 
-   It asks first, then sets the version in the root `Cargo.toml` (`[workspace.package] version`) and
-   `Cargo.lock`, runs `make verify`, commits "Release vX.Y.Z", makes the tag `vX.Y.Z` and pushes the commit and the
-   tag together. If verify fails, the version is put back and nothing is committed. If only the push fails, the
+   It shows what is under "## Unreleased" (and stops if nothing is) and asks first, then sets the version in the root
+   `Cargo.toml` (`[workspace.package] version`) and `Cargo.lock`, puts a heading `## X.Y.Z — date` under
+   "## Unreleased" in `CHANGELOG.md`, runs `make verify`, commits "Release vX.Y.Z", makes the tag `vX.Y.Z` and pushes the commit and the
+   tag together. If verify fails, the version and the changelog are put back and nothing is committed. If only the push fails, the
    commit and tag are local and it prints the command to push them. (It runs in Git Bash on Windows.)
 
    By hand, the same is: set the version, commit and push, then `git tag vX.Y.Z` and `git push origin vX.Y.Z`.
 
 4. The **Release** workflow builds every installer and a `tortuga-cli` archive per OS (R-CLI-4), checks that the tag
-   matches the version, and **publishes** a GitHub release with them and `SHA256SUMS.txt` attached, marked latest.
+   matches the version, and **publishes** a GitHub release with them and `SHA256SUMS.txt` attached, marked latest. Its notes are the
+   version's section of `CHANGELOG.md`, followed by GitHub's list of commits.
    The app's update check (R-SET-15) only sees published releases, so it offers the new version right away.
 5. Download the installers and run the checks below on each OS. Edit the release notes on GitHub if needed. If an
    installer is broken, mark the release as a draft again (or delete it) so the update check stops offering it.
 
 To try the installers without releasing, run the workflow by hand: **Actions → Release → Run workflow**. The
 installers are then attached to the run as artifacts.
+
+## The changelog
+
+`CHANGELOG.md` tells users what changed. Every commit that changes what they see adds a line under "## Unreleased",
+under **Added**, **Changed** or **Fixed** (add the heading if it is missing): one line per entry (GitHub shows line
+breaks in release notes as they are), in plain words, about what the user can now do or no longer runs into, with no
+requirement IDs. A commit users can't notice (refactoring, tests, docs, build) says `Changelog: none` on a line of its
+message instead.
+
+`scripts/check-changelog.sh` checks this: a commit that changes a crate's `src/`, `locales/` or `icons/`, or the VS Code
+extension's `src/` or `package.json` (test files aside), without `CHANGELOG.md` and without `Changelog: none` is
+refused. Claude Code runs it before each `git commit` (a hook in `.claude/settings.json`); for your own commits, turn
+it on once with `git config core.hooksPath .githooks`.
 
 ## Check an installer
 

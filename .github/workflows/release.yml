@@ -132,6 +132,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      # For CHANGELOG.md.
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v8
         with:
           path: downloads
@@ -141,6 +143,12 @@ jobs:
         run: mkdir packages && find downloads -type f -exec mv -t packages {} + && ls -l packages
       - name: Checksums
         run: cd packages && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      # The release notes are the version's section of CHANGELOG.md (scripts/release.sh wrote its heading).
+      - name: Release notes
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" '$0 ~ "^## " { on = index($0, "## " v " ") == 1; next } on' \
+            CHANGELOG.md > notes.md
+          cat notes.md
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -149,4 +157,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --latest \
             --title "Tortuga ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md \
             --generate-notes
