@@ -4,6 +4,8 @@ What changes in each release of Tortuga, for the people who use it. The newest r
 
 ## Unreleased
 
+## 0.21.0 — 2026-11-12
+
 ### Added
 
 - **GeoServer add-on**, off by default. "New WFS service…" in a project's or folder's menu lists a WFS service's layers and creates requests for the ones you pick, with the auth you choose for the service. GeoJSON responses get a Features tab with a shape preview and a table.
