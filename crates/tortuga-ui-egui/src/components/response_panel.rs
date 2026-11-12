@@ -782,8 +782,14 @@ fn body(
     }
     let folds = shown.map_or(&[][..], |s| &s.folds[..]);
     let filter = (full.syntax != Syntax::Plain).then_some((filter, full.syntax));
+    let copy = || match shown {
+        Some(shown) if !copies_whole_body(view, raw.is_some(), &filtered, shown) => {
+            shown.text.clone()
+        }
+        _ => String::from_utf8_lossy(&view.response.body).into_owned(),
+    };
     let wrap_changed =
-        toolbar(ui, st, modes.as_deref(), filter, folds, wrap).map(ResponseAction::SetWrap);
+        toolbar(ui, st, modes.as_deref(), filter, folds, wrap, copy).map(ResponseAction::SetWrap);
     if let Filtered::Failed(message) = filtered {
         theme::warning(ui, message);
     }
@@ -809,6 +815,20 @@ fn body(
         RowMenus::None
     };
     text_rows(ui, shown, st, wrap, menus).or(wrap_changed)
+}
+
+/// Whether "Copy" copies the body as it came rather than the `shown` text (R-HTTP-28): in the
+/// raw view of a text body, and when the shown text is the body unformatted but maybe cut short.
+fn copies_whole_body(
+    view: &ResponseView,
+    raw: bool,
+    filtered: &Filtered<'_>,
+    shown: &TextBody,
+) -> bool {
+    matches!(view.body, Body::Text(_))
+        && (raw
+            || (matches!(filtered, Filtered::Off | Filtered::Failed(_))
+                && (shown.truncated || shown.syntax == Syntax::Plain)))
 }
 
 /// The "Pretty" (or "Preview") and "Raw" switch, if the body has a raw view (R-HTTP-18).
@@ -897,8 +917,8 @@ pub fn tests_details(ui: &mut Ui, t: &TestsView) {
     }
 }
 
-/// The view switch, the filter (for JSON and XML bodies), the search field and "Wrap", above
-/// the body.
+/// The view switch, the filter (for JSON and XML bodies), the search field, "Wrap" and "Copy"
+/// (which puts `copy()` on the clipboard, R-HTTP-28), above the body.
 /// Returns the new wrapping choice if it was changed (R-SET-7).
 fn toolbar(
     ui: &mut Ui,
@@ -907,6 +927,7 @@ fn toolbar(
     filter: Option<(&mut String, Syntax)>,
     folds: &[Fold],
     wrap: bool,
+    copy: impl FnOnce() -> String,
 ) -> Option<bool> {
     let p = theme::palette(ui);
     let mut wrap_changed = None;
@@ -926,6 +947,13 @@ fn toolbar(
             }
         },
         |ui| {
+            if ui
+                .add(theme::icon_button(ui, "📋"))
+                .on_hover_text(t!("response-copy-hint"))
+                .clicked()
+            {
+                ui.ctx().copy_text(copy());
+            }
             if !folds.is_empty() {
                 let any = st.folded.any();
                 let (label, hint) = if any {
@@ -1404,6 +1432,51 @@ mod tests {
         assert!(err.starts_with("Expected a name"), "{err}");
         let err = filter_body(&view, "//none").expect_err("no match");
         assert_eq!(err, "Nothing in the response matches");
+    }
+
+    /// What the copy icon put on the clipboard, if anything.
+    fn copied(h: &mut Harness<'static>) -> Option<String> {
+        h.get_by_label("📋").click();
+        // The press and the release take a frame each; the copy is in one of them.
+        (0..3).find_map(|_| {
+            h.step();
+            h.output()
+                .platform_output
+                .commands
+                .iter()
+                .find_map(|c| match c {
+                    egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                    _ => None,
+                })
+        })
+    }
+
+    /// R-HTTP-28: the copy icon copies the formatted body in Pretty and the body as it
+    /// came in Raw.
+    #[test]
+    fn copy_takes_the_pretty_or_the_raw_body() {
+        let body = r#"<orders><order id="1"><name>Grüße 😀</name></order></orders>"#;
+        let mut h = render(Some(Outcome::from_result(Ok(xml_response(body)))));
+        assert_eq!(
+            copied(&mut h).as_deref(),
+            Some("<orders>\n  <order id=\"1\">\n    <name>Grüße 😀</name>\n  </order>\n</orders>")
+        );
+        h.get_by_label("Raw").click();
+        h.run();
+        assert_eq!(copied(&mut h).as_deref(), Some(body));
+    }
+
+    /// R-HTTP-28: a body too big to show whole is still copied whole.
+    #[test]
+    fn copy_takes_all_of_a_truncated_body() {
+        let body = "ü".repeat(format::MAX_DISPLAY_BYTES);
+        let response = Response {
+            headers: vec![KeyValue::new("content-type", "text/plain")],
+            body: body.clone().into_bytes(),
+            ..json_response()
+        };
+        let mut h = render(Some(Outcome::from_result(Ok(response))));
+        assert_eq!(copied(&mut h).map(|t| t.len()), Some(body.len()));
     }
 
     /// R-HTTP-19: a big XML body is cut for showing, but the filter reads all of it.

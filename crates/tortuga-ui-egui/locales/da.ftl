@@ -669,6 +669,7 @@ response-folded-lines = { $count ->
     [one] 1 linje skjult. Klik for at folde ud.
    *[other] { $count } linjer skjult. Klik for at folde ud.
 }
+response-copy-hint = Kopiér body, som den vises: formateret under Formateret, som den kom under Rå
 response-wrap = Ombryd
 response-wrap-hint = Ombryd lange linjer (også under Indstillinger → Udseende)
 response-next-match = Næste fund (Enter)

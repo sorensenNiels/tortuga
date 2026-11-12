@@ -663,6 +663,7 @@ response-folded-lines = { $count ->
     [one] 1 line hidden. Click to unfold.
    *[other] { $count } lines hidden. Click to unfold.
 }
+response-copy-hint = Copy the body as shown: formatted in Pretty, as it came in Raw
 response-wrap = Wrap
 response-wrap-hint = Wrap long lines (also in Settings → Appearance)
 response-next-match = Next match (Enter)
