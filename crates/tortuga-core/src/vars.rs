@@ -12,6 +12,7 @@ use crate::workspace::WorkspaceDefaults;
 use crate::{Error, Result, query};
 
 pub mod dynamic;
+pub mod set_by;
 
 /// Everything needed to turn a stored request into one that can be sent.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

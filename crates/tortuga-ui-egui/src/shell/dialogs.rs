@@ -15,10 +15,23 @@ impl TortugaUi {
         };
         let keep = match &mut modal {
             Modal::Settings(d) => self.show_settings(ctx, d),
-            Modal::Environments(d) => match d.show(ctx, &self.state) {
-                DialogResult::Done(saved) => !self.save_environments(d, saved),
-                result => result == DialogResult::Open,
-            },
+            Modal::Environments(d) => {
+                let result = d.show(ctx, &self.state);
+                if let Some(root) = d.take_clear() {
+                    self.state.clear_runtime(Some(&root));
+                }
+                match result {
+                    DialogResult::Done(saved) => {
+                        let saved = self.save_environments(d, saved);
+                        // A request clicked in "Set by scripts and captures" (R-VAR-11).
+                        if saved && let Some(key) = d.take_go_to() {
+                            self.select(Some(key));
+                        }
+                        !saved
+                    }
+                    result => result == DialogResult::Open,
+                }
+            }
             Modal::Defaults(d) => match d.show(ctx, &self.state) {
                 DialogResult::Done(defaults) => {
                     let saved = self.save_defaults(&d.target.clone(), defaults);

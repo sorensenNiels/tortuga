@@ -219,54 +219,15 @@ fn undefined_variables(
     }
 }
 
-/// Names that captures and scripts set while the project runs.
+/// Names that captures and scripts set while the project runs (R-VAR-11);
+/// `workspace.name` also as `name` (R-WS-8).
 fn set_by_project(collection: &Collection) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    let mut scripts: Vec<&str> = Vec::new();
-    walk(&collection.items, &mut |item| {
-        if let Item::Request(r) = item {
-            names.extend(r.request.capture.keys().cloned());
-            scripts.push(&r.request.scripts.pre_request);
-            scripts.push(&r.request.scripts.tests);
+    for name in vars::set_by::set_by(collection).into_keys() {
+        if let (true, own) = crate::runner::target(&name) {
+            names.insert(own.to_owned());
         }
-    });
-    for step in collection.workflows.iter().flat_map(|w| &w.steps) {
-        names.extend(step.capture.keys().cloned());
-        scripts.push(&step.tests);
-    }
-    for script in scripts {
-        names.extend(names_set_in(script));
-    }
-    names
-}
-
-/// The quoted names of `vars.set("name", …)` in `script`; `workspace.name` also as `name`
-/// (R-WS-8).
-fn names_set_in(script: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    for (at, call) in script.match_indices("vars.set(") {
-        let Some(rest) = script.get(at + call.len()..) else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        let Some(quote) = rest
-            .chars()
-            .next()
-            .filter(|c| matches!(c, '"' | '\'' | '`'))
-        else {
-            continue;
-        };
-        let Some(name) = rest
-            .get(quote.len_utf8()..)
-            .and_then(|r| r.split(quote).next())
-            .filter(|n| !n.is_empty())
-        else {
-            continue;
-        };
-        if let Some(own) = name.strip_prefix("workspace.") {
-            names.push(own.to_owned());
-        }
-        names.push(name.to_owned());
+        names.insert(name);
     }
     names
 }
@@ -414,21 +375,4 @@ fn folder_file(folder: &Folder) -> String {
 
 fn workflow_file(id: &str) -> String {
     format!("{}/{id}.toml", crate::workflow::WORKFLOWS_DIR)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn names_set_by_scripts_are_found() {
-        // R-CLI-5
-        let script = r#"vars.set("token", x); vars.set( 'ü😀', 1); vars.set(`a`, 2);
-            vars.set("workspace.shared", 3); vars.set(name, 4); vars.set("#;
-        assert_eq!(
-            names_set_in(script),
-            ["token", "ü😀", "a", "shared", "workspace.shared"]
-        );
-        assert_eq!(names_set_in(""), Vec::<String>::new());
-    }
 }

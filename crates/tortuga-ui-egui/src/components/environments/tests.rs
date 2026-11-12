@@ -484,3 +484,90 @@ fn a_credential_in_a_variable_can_be_made_a_secret() {
     );
     std::fs::remove_dir_all(dir).expect("clean up");
 }
+
+/// R-VAR-11: what a project's scripts set is listed on its page with this session's
+/// value; "Add a default" adds a project variable, "Clear values" asks to forget the
+/// values, and a click on the request saves the dialog and asks to open it.
+#[test]
+fn variables_set_by_scripts_are_listed_on_the_projects_page() {
+    let dir = temp("env-dialog-script-vars");
+    let (roots, _) = open(&dir, &[("A", &["Dev"])]);
+    let root = &roots[0];
+    let c = Collection::open(&FsStorage, root).expect("open");
+    let mut request = tortuga_core::Request {
+        name: "Create batch".into(),
+        ..tortuga_core::Request::default()
+    };
+    request.scripts.pre_request = "vars.set('batchId', 'b-4711');".into();
+    request.scripts.tests = "vars.set('ü😀', 1);".into();
+    let path = c
+        .new_request(&FsStorage, Path::new(""), &request)
+        .expect("request");
+    let mut state = AppState::new(Box::new(crate::test_host::TestHost {
+        open: roots.clone(),
+        ..crate::test_host::TestHost::default()
+    }));
+    state.apply_runtime(
+        Some(root),
+        &[("batchId".to_owned(), Some("b-4711".to_owned()))].into(),
+    );
+    let mut dialog = EnvironmentsDialog::new(&state, root.clone());
+    dialog.shown = Shown::Project(0);
+    let result = std::cell::RefCell::new(None);
+    {
+        let mut h = harness(&mut dialog, &state, &result);
+        h.run();
+        h.get_by_label("b-4711");
+        h.get_by_label(&t!("env-script-vars-not-set"));
+        for _ in 0..2 {
+            h.query_all_by_label(&t!("env-script-vars-add-default"))
+                .next()
+                .expect("add a default")
+                .click();
+            h.run();
+        }
+        assert!(
+            h.query_by_label(&t!("env-script-vars-add-default"))
+                .is_none()
+        );
+        h.get_by_label(&t!("env-script-vars-clear")).scroll_to_me();
+        h.run();
+        h.get_by_label(&t!("env-script-vars-clear")).click();
+        h.run();
+    }
+    let names: Vec<&str> = dialog.projects[0]
+        .draft
+        .variables
+        .iter()
+        .map(|v| v.name.as_str())
+        .collect();
+    assert_eq!(names, ["batchId", "ü😀"]);
+    // Typed into the new row's default, as a user would.
+    dialog.projects[0].draft.variables[0].default = "none".into();
+    assert_eq!(dialog.take_clear().as_ref(), Some(root));
+    assert!(result.borrow().is_none());
+    {
+        let mut h = harness(&mut dialog, &state, &result);
+        h.run();
+        h.query_all_by_label("Create batch")
+            .next()
+            .expect("link")
+            .scroll_to_me();
+        h.run();
+        h.query_all_by_label("Create batch")
+            .next()
+            .expect("link")
+            .click();
+        h.run();
+    }
+    let saved = result.borrow_mut().take().expect("saved before opening");
+    assert!(
+        saved.projects[0]
+            .1
+            .manifest
+            .variables
+            .contains_key("batchId")
+    );
+    assert_eq!(dialog.take_go_to(), Some(ItemKey::new(root, path)));
+    let _ = std::fs::remove_dir_all(&dir);
+}

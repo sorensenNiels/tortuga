@@ -6,12 +6,15 @@
 //! themselves (names, secret flags, defaults) are edited under its name in the list.
 
 mod draft;
+mod script_vars;
 mod views;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use egui::{CentralPanel, CollapsingHeader, Context, Frame, Panel, ScrollArea, TextEdit, Ui};
 use tortuga_core::format::names_match;
+use tortuga_core::vars::set_by::SetBy;
 use tortuga_core::workspace::WorkspaceEnvironment;
 
 pub use draft::{Draft, EnvDraft, SavedConfig};
@@ -20,7 +23,7 @@ use views::{EnvDrag, Inherited};
 
 use super::{DialogResult, resizable_dialog};
 use crate::environments::SecretsByEnvironment;
-use crate::state::AppState;
+use crate::state::{AppState, ItemKey};
 use crate::theme;
 
 /// What saving the dialog writes.
@@ -46,6 +49,8 @@ struct ProjectDraft {
     new_variable: String,
     /// Its values are unfolded in an environment's view (R-WS-10).
     expanded: bool,
+    /// The names its captures and scripts set, and where (R-VAR-11).
+    set_by: BTreeMap<String, Vec<SetBy>>,
 }
 
 /// What the right side shows.
@@ -68,6 +73,10 @@ pub struct EnvironmentsDialog {
     new_variable: String,
     /// Shown when the environments cannot be saved.
     pub error: Option<String>,
+    /// A request to open once the dialog has saved (R-VAR-11).
+    go_to: Option<ItemKey>,
+    /// A project whose values from this session are to be forgotten (R-VAR-11).
+    clear: Option<PathBuf>,
 }
 
 /// Width of the list on the left.
@@ -111,6 +120,7 @@ impl EnvironmentsDialog {
                     new_server: String::new(),
                     new_variable: String::new(),
                     expanded,
+                    set_by: tortuga_core::vars::set_by::set_by(c),
                 }
             })
             .collect();
@@ -127,6 +137,8 @@ impl EnvironmentsDialog {
             new_server: String::new(),
             new_variable: String::new(),
             error: None,
+            go_to: None,
+            clear: None,
         }
     }
 
@@ -191,14 +203,18 @@ impl EnvironmentsDialog {
                             .auto_shrink([false, false])
                             .show(ui, |ui| match self.shown {
                                 Shown::Environment(i) => self.environment_view(ui, i, &servers),
-                                Shown::Project(p) => self.project_view(ui, p),
+                                Shown::Project(p) => self.project_view(ui, p, state),
                             });
                     });
                 });
-                if save {
+                // Opening a request saves first, so no edit is lost (R-VAR-11).
+                if save || self.go_to.is_some() {
                     match self.to_saved(state) {
                         Ok(saved) => return DialogResult::Done(saved),
-                        Err(e) => self.error = Some(e),
+                        Err(e) => {
+                            self.error = Some(e);
+                            self.go_to = None;
+                        }
                     }
                 }
                 if cancel {
@@ -381,8 +397,19 @@ impl EnvironmentsDialog {
         }
     }
 
-    /// Project `p`'s servers and variables, secret flags and defaults (R-VAR-7).
-    fn project_view(&mut self, ui: &mut Ui, p: usize) {
+    /// The request to open, once the dialog has saved (R-VAR-11).
+    pub fn take_go_to(&mut self) -> Option<ItemKey> {
+        self.go_to.take()
+    }
+
+    /// The project whose values from this session to forget (R-VAR-11).
+    pub fn take_clear(&mut self) -> Option<PathBuf> {
+        self.clear.take()
+    }
+
+    /// Project `p`'s servers and variables, secret flags and defaults (R-VAR-7), and
+    /// what its captures and scripts set (R-VAR-11).
+    fn project_view(&mut self, ui: &mut Ui, p: usize, state: &AppState) {
         let Some(project) = self.projects.get_mut(p) else {
             return;
         };
@@ -401,6 +428,36 @@ impl EnvironmentsDialog {
                 );
             });
         });
+        ui.add_space(16.0);
+        let runtime = state.runtime_vars(Some(&project.root));
+        let workspace = state.workspace_runtime_vars();
+        let rows = script_vars::rows(
+            &project.set_by,
+            |name| match tortuga_core::runner::target(name) {
+                (true, own) => workspace.and_then(|v| v.get(own)).map(String::as_str),
+                (false, _) => runtime.and_then(|v| v.get(name)).map(String::as_str),
+            },
+            |name| {
+                project
+                    .draft
+                    .variables
+                    .iter()
+                    .any(|v| names_match(&v.name, name))
+            },
+        );
+        let action = ui
+            .push_id(("script-vars", p), |ui| {
+                script_vars::section(ui, &rows, !project.read_only, runtime.is_some())
+            })
+            .inner;
+        match action {
+            Some(script_vars::Action::Open(path)) => {
+                self.go_to = Some(ItemKey::new(&project.root, path));
+            }
+            Some(script_vars::Action::AddDefault(name)) => project.draft.add_variable(name),
+            Some(script_vars::Action::Clear) => self.clear = Some(project.root.clone()),
+            None => {}
+        }
     }
 
     /// What Save writes, or why it can't.
