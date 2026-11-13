@@ -4,6 +4,8 @@ What changes in each release of Tortuga, for the people who use it. The newest r
 
 ## Unreleased
 
+## 0.22.0 — 2026-11-13
+
 ### Added
 
 - **WFS features on a map.** In the Features tab, features are shown on an OpenStreetMap background, or on a tile server you add by name and URL in the Background list, zoomed to their extent with the bounding box drawn. Features in longitude/latitude, Web Mercator and UTM are placed. Scroll to zoom, drag to pan, and "Fit" goes back.
