@@ -154,22 +154,44 @@ impl AppState {
         }
     }
 
+    /// Work the add-ons do each frame that needs the context: fetching the map tiles
+    /// the Features tab drew (R-GEO-3).
+    pub(crate) fn addon_frame(&self, ctx: &Context) {
+        geoserver::tiles::fetch(self, ctx);
+    }
+
     /// The add-ons that can add a tab to a response (D80), and how.
     pub(crate) fn response_tabs(&self) -> ResponseTabs {
+        let settings = &self.settings.geoserver;
         ResponseTabs {
-            geoserver: self
-                .addons
-                .geoserver
-                .as_ref()
-                .map(|_| self.settings.geoserver.features_layout),
+            geoserver: self.addons.geoserver.as_ref().map(|g| {
+                let chosen = settings.chosen_basemap();
+                FeaturesTab {
+                    layout: settings.features_layout,
+                    backgrounds: geoserver::features_tab::Backgrounds {
+                        names: settings.backgrounds().into_iter().map(|b| b.name).collect(),
+                        map: geoserver::map_view::MapTiles {
+                            name: chosen.name,
+                            template: chosen.url,
+                            tiles: std::sync::Arc::clone(&g.tiles),
+                        },
+                    },
+                }
+            }),
         }
     }
 
     /// Does what an add-on's response tab asked.
     pub(crate) fn apply_response_tab_action(&mut self, action: ResponseTabAction) {
         match action {
-            ResponseTabAction::GeoServer(geoserver::features_tab::TabAction::SetLayout(l)) => {
-                self.update_settings(|s| s.geoserver.features_layout = l);
+            ResponseTabAction::GeoServer(action) => {
+                use geoserver::features_tab::TabAction;
+                self.update_settings(|s| match action {
+                    TabAction::SetLayout(l) => s.geoserver.features_layout = l,
+                    TabAction::ChooseBackground(name) => s.geoserver.basemap = name,
+                    TabAction::AddBackground(b) => s.geoserver.add_basemap(&b),
+                    TabAction::RemoveBackground(name) => s.geoserver.remove_basemap(&name),
+                });
             }
         }
     }
@@ -291,10 +313,17 @@ pub enum ResponseTab {
 }
 
 /// The add-ons that can add response tabs, and what they need to draw them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct ResponseTabs {
-    /// The Features tab's layout while the GeoServer add-on is on.
-    geoserver: Option<FeaturesLayout>,
+    /// The Features tab, while the GeoServer add-on is on.
+    geoserver: Option<FeaturesTab>,
+}
+
+/// What the Features tab needs: its layout, and the backgrounds to choose from.
+#[derive(Debug, Clone)]
+struct FeaturesTab {
+    layout: FeaturesLayout,
+    backgrounds: geoserver::features_tab::Backgrounds,
 }
 
 impl ResponseTabs {
@@ -302,12 +331,22 @@ impl ResponseTabs {
     #[cfg(test)]
     pub(crate) fn with_geoserver(layout: FeaturesLayout) -> Self {
         Self {
-            geoserver: Some(layout),
+            geoserver: Some(FeaturesTab {
+                layout,
+                backgrounds: geoserver::features_tab::Backgrounds {
+                    names: vec![tortuga_core::settings::OPENSTREETMAP.0.to_owned()],
+                    map: geoserver::map_view::MapTiles {
+                        name: tortuga_core::settings::OPENSTREETMAP.0.to_owned(),
+                        template: tortuga_core::settings::OPENSTREETMAP.1.to_owned(),
+                        tiles: geoserver::tiles::SharedTiles::default(),
+                    },
+                },
+            }),
         }
     }
 
     /// The add-on tabs a response with `body` gets, with their labels.
-    pub(crate) fn offered(self, body: &[u8]) -> Vec<(ResponseTab, String)> {
+    pub(crate) fn offered(&self, body: &[u8]) -> Vec<(ResponseTab, String)> {
         let mut tabs = Vec::new();
         if self.geoserver.is_some() && geoserver::features_tab::offered(body) {
             tabs.push((ResponseTab::Features, t!("features-tab")));
@@ -323,7 +362,7 @@ pub struct ResponseTabState {
 }
 
 /// What an add-on's response tab asked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseTabAction {
     GeoServer(geoserver::features_tab::TabAction),
 }
@@ -332,15 +371,21 @@ pub enum ResponseTabAction {
 pub(crate) fn response_tab(
     ui: &mut Ui,
     tab: ResponseTab,
-    tabs: ResponseTabs,
+    tabs: &ResponseTabs,
     view: &ResponseView,
     st: &mut ResponseTabState,
 ) -> Option<ResponseTabAction> {
     match tab {
         ResponseTab::Features => {
-            let layout = tabs.geoserver?;
-            geoserver::features_tab::features_tab(ui, view, &mut st.features, layout)
-                .map(ResponseTabAction::GeoServer)
+            let tab = tabs.geoserver.as_ref()?;
+            geoserver::features_tab::features_tab(
+                ui,
+                view,
+                &mut st.features,
+                tab.layout,
+                &tab.backgrounds,
+            )
+            .map(ResponseTabAction::GeoServer)
         }
     }
 }

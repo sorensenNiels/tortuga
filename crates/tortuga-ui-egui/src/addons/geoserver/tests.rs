@@ -4,7 +4,7 @@ use std::time::Duration;
 use egui_kittest::kittest::{NodeT as _, Queryable};
 use futures_util::future::AbortHandle;
 use tortuga_core::geoserver::{Capabilities, FeatureType, Version};
-use tortuga_core::settings::FeaturesLayout;
+use tortuga_core::settings::{FeaturesLayout, OPENSTREETMAP};
 use tortuga_core::storage::FsStorage;
 use tortuga_core::{Auth, Collection, KeyValue, Response};
 
@@ -80,7 +80,7 @@ fn the_geoserver_addon_is_off_and_absent_by_default() {
     assert!(state.addons.geoserver.is_none());
     assert!(folder_menu(state.menu_addons(), &root, Path::new("")).is_empty());
     assert_eq!(run_addon(&mut state, new_service(&root)), None);
-    assert_eq!(state.response_tabs(), ResponseTabs::default());
+    assert!(state.response_tabs().geoserver.is_none());
     assert_eq!(state.response_tabs().offered(GEOJSON.as_bytes()), []);
 }
 
@@ -487,4 +487,236 @@ fn the_server_line_says_what_create_changes() {
     d.new_server = "Kort ü😀".into();
     assert_eq!(d.server_name(), "Kort ü😀");
     show(&mut d, true, None, &["In Staging, Kort ü😀 will be"], &[]);
+}
+
+/// A GeoJSON response with one polygon in `crs`.
+fn polygon_response(crs: &str, ring: &str) -> Response {
+    let body = format!(
+        r#"{{"type":"FeatureCollection","crs":{{"type":"name","properties":{{"name":"{crs}"}}}},
+"features":[{{"type":"Feature","id":"area.1","geometry":{{"type":"Polygon","coordinates":[{ring}]}},"properties":{{"navn":"Kø ü😀"}}}}]}}"#
+    );
+    Response {
+        body: body.into_bytes(),
+        ..geojson_response()
+    }
+}
+
+/// Shows the Features tab of `response` with `tabs`, runs `steps`, and returns what the
+/// panel asked last.
+fn features_panel(
+    response: Response,
+    tabs: &ResponseTabs,
+    steps: impl FnOnce(&mut egui_kittest::Harness<'_>),
+) -> Option<ResponseAction> {
+    let outcome = Some(Outcome::from_result(Ok(response)));
+    let mut st = ResponseState::default();
+    let mut filter = String::new();
+    let mut asked = None;
+    {
+        let mut h = crate::test_host::harness(|ui| {
+            let cx = PanelContext {
+                sending: false,
+                can_save: false,
+                filter: &mut filter,
+                filtered: Filtered::Off,
+                tests: None,
+                wrap: false,
+                example: SaveExample::Hidden,
+                trend: Trend::default(),
+                changes: None,
+                cookies: CookiesTab::Hidden,
+                addon_tabs: tabs.clone(),
+            };
+            if let Some(a) = response_panel(ui, outcome.as_ref(), &mut st, cx) {
+                asked = Some(a);
+            }
+        });
+        h.run();
+        h.get_by_label("Features").click();
+        h.run();
+        steps(&mut h);
+    }
+    asked
+}
+
+const UTM_RING: &str =
+    "[[724000,6175000],[725000,6175000],[725000,6176000],[724000,6176000],[724000,6175000]]";
+
+/// Opens the Background list and clicks `entry`.
+fn pick_background(h: &mut egui_kittest::Harness<'_>, entry: &str) {
+    h.get_by_label("Background").click();
+    h.run();
+    h.get_by_label(entry).click();
+    h.run();
+}
+
+/// R-GEO-3, D83: the map is on OpenStreetMap until another background is chosen;
+/// adding one asks for a name and a tile URL and chooses it, and the list goes back to
+/// OpenStreetMap. What is asked is kept in the settings.
+#[test]
+fn backgrounds_are_added_and_chosen_from_the_tab() {
+    let response = || polygon_response("urn:ogc:def:crs:EPSG::25832", UTM_RING);
+    let (_dir, _root, mut state) = app(true);
+    let apply = |state: &mut AppState, asked: Option<ResponseAction>| {
+        let Some(ResponseAction::AddOn(action)) = asked else {
+            panic!("asked: {asked:?}");
+        };
+        state.apply_response_tab_action(action);
+    };
+    let tab = state.response_tabs().geoserver.expect("on");
+    assert_eq!(tab.backgrounds.map.template, OPENSTREETMAP.1, "the default");
+
+    let added = features_panel(response(), &state.response_tabs(), |h| {
+        assert!(h.query_by_label("None").is_none(), "always a background");
+        pick_background(h, "Add background…");
+        // The row's two fields, name then URL.
+        for (i, text) in ["Ortofoto ü😀", "https://tiles.test/{z}/{x}/{-y}.jpeg"]
+            .into_iter()
+            .enumerate()
+        {
+            let field = h
+                .get_all_by_role(egui::accesskit::Role::TextInput)
+                .nth(i)
+                .expect("field");
+            field.focus();
+            field.type_text(text);
+            h.run();
+        }
+        h.get_by_label("Add").click();
+        h.run();
+    });
+    apply(&mut state, added);
+    let tab = state.response_tabs().geoserver.expect("on");
+    assert_eq!(tab.backgrounds.names, ["OpenStreetMap", "Ortofoto ü😀"]);
+    assert_eq!(tab.backgrounds.map.name, "Ortofoto ü😀");
+    assert_eq!(
+        tab.backgrounds.map.template,
+        "https://tiles.test/{z}/{x}/{-y}.jpeg"
+    );
+
+    let back = features_panel(response(), &state.response_tabs(), |h| {
+        pick_background(h, "OpenStreetMap");
+    });
+    apply(&mut state, back);
+    let tab = state.response_tabs().geoserver.expect("on");
+    assert_eq!(tab.backgrounds.map.name, OPENSTREETMAP.0);
+}
+
+/// R-GEO-3, D83: a background the user added can be removed, and the map goes back to
+/// OpenStreetMap, which can't be removed.
+#[test]
+fn an_added_background_can_be_removed() {
+    let (_dir, _root, mut state) = app(true);
+    assert!(
+        features_panel(
+            polygon_response("urn:ogc:def:crs:EPSG::25832", UTM_RING),
+            &state.response_tabs(),
+            |h| assert!(h.query_by_label("🗙").is_none()),
+        )
+        .is_none()
+    );
+    state.update_settings(|s| {
+        s.geoserver.add_basemap(&tortuga_core::settings::Basemap {
+            name: "Ortho".into(),
+            url: "https://tiles.test/{z}/{x}/{y}".into(),
+        });
+    });
+    let tabs = state.response_tabs();
+    let asked = features_panel(
+        polygon_response("urn:ogc:def:crs:EPSG::25832", UTM_RING),
+        &tabs,
+        |h| {
+            h.get_by_label("🗙").click();
+            h.run();
+        },
+    );
+    let Some(ResponseAction::AddOn(action)) = asked else {
+        panic!("asked: {asked:?}");
+    };
+    state.apply_response_tab_action(action);
+    assert_eq!(state.settings.geoserver.basemaps, []);
+    let tab = state.response_tabs().geoserver.expect("on");
+    assert_eq!(tab.backgrounds.map.name, OPENSTREETMAP.0);
+}
+
+/// R-GEO-3, D83: UTM features are placed on the map, whose tiles are fetched from the
+/// chosen background; a CRS the map can't place keeps the plain preview and says how to fix it.
+#[test]
+fn the_map_fetches_the_tiles_it_draws() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut settings = tortuga_core::AppSettings::default();
+    settings.addons.set_enabled(AddOn::GeoServer, true);
+    settings
+        .geoserver
+        .add_basemap(&tortuga_core::settings::Basemap {
+            name: "Tiles".into(),
+            url: "https://tiles.test/{z}/{x}/{y}.png".into(),
+        });
+    let host = TestHost {
+        settings,
+        ..TestHost::default()
+    };
+    let spawned = std::rc::Rc::clone(&host.spawned);
+    let state = AppState::new(Box::new(host));
+    let tabs = state.response_tabs();
+
+    features_panel(
+        polygon_response("urn:ogc:def:crs:EPSG::25832", UTM_RING),
+        &tabs,
+        |h| {
+            assert!(h.query_by_label_contains("can't place").is_none());
+            h.get_by_label("Kø ü😀");
+        },
+    );
+    let before = spawned.get();
+    state.addon_frame(&egui::Context::default());
+    let fetched = spawned.get() - before;
+    assert!(fetched > 0, "tiles are fetched");
+    assert!(fetched <= 6, "a few at a time: {fetched}");
+
+    features_panel(polygon_response("EPSG:2154", UTM_RING), &tabs, |h| {
+        assert!(h.query_by_label_contains("can't place EPSG:2154").is_some());
+    });
+    drop(dir);
+}
+
+/// R-GEO-2: zooming the preview with the wheel, above the table, leaves the table where
+/// it is (the Fit button that zooming shows took part in the layout and pulled the table
+/// up into the preview).
+#[test]
+fn zooming_the_preview_leaves_the_table_where_it_is() {
+    features_panel(
+        polygon_response("urn:ogc:def:crs:EPSG::25832", UTM_RING),
+        &ResponseTabs::with_geoserver(FeaturesLayout::Above),
+        |h| {
+            let summary = h.get_by_label("1 feature").rect();
+            let header = h.get_by_label("navn").rect();
+            let over_map = egui::pos2(
+                header.center().x,
+                f32::midpoint(summary.max.y, header.min.y),
+            );
+            h.hover_at(over_map);
+            h.run();
+            for _ in 0..5 {
+                h.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 40.0),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Unknown,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.step();
+            }
+            h.run_steps(20);
+            let summary_after = h.get_by_label("1 feature").rect();
+            let header_after = h.get_by_label("navn").rect();
+            assert_eq!(summary_after, summary, "the summary stays");
+            assert_eq!(header_after, header, "the table stays");
+            // Zoomed: Fit is offered, and goes back.
+            h.get_by_label("Fit").click();
+            h.run();
+            assert!(h.query_by_label("Fit").is_none());
+            assert_eq!(h.get_by_label("navn").rect(), header);
+        },
+    );
 }

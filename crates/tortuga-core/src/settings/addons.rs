@@ -6,6 +6,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::format::names_match;
+
 /// An add-on of the app. The one list of them: the UI reaches an add-on only through
 /// this enum (R-ADD-2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,15 +108,87 @@ pub enum FeaturesLayout {
 }
 
 /// The GeoServer add-on's settings (R-ADD-6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GeoServerSettings {
     pub features_layout: FeaturesLayout,
+    /// The name of the chosen map background (R-GEO-3, D83). Empty, or a name no longer
+    /// listed: OpenStreetMap.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub basemap: String,
+    /// The backgrounds the user added, besides [`OPENSTREETMAP`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub basemaps: Vec<Basemap>,
 }
+
+/// A map background: tiles from a URL with `{z}`, `{x}` and `{y}` (R-GEO-3).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Basemap {
+    pub name: String,
+    pub url: String,
+}
+
+/// The background every list offers; its tiles are fetched only once it is chosen (D82).
+pub const OPENSTREETMAP: (&str, &str) = (
+    "OpenStreetMap",
+    "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+);
 
 impl GeoServerSettings {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Every background to choose from: OpenStreetMap, then the user's.
+    pub fn backgrounds(&self) -> Vec<Basemap> {
+        let (name, url) = OPENSTREETMAP;
+        let mut all = vec![Basemap {
+            name: name.to_owned(),
+            url: url.to_owned(),
+        }];
+        all.extend(self.basemaps.iter().cloned());
+        all
+    }
+
+    /// The chosen background: OpenStreetMap unless another is chosen (D83).
+    pub fn chosen_basemap(&self) -> Basemap {
+        let mut all = self.backgrounds();
+        let i = all
+            .iter()
+            .position(|b| names_match(&b.name, &self.basemap))
+            .unwrap_or(0);
+        all.swap_remove(i)
+    }
+
+    /// Whether a background is called `name` already.
+    pub fn has_basemap(&self, name: &str) -> bool {
+        self.backgrounds()
+            .iter()
+            .any(|b| names_match(&b.name, name))
+    }
+
+    /// Adds `basemap` and chooses it; one of the same name is replaced, except
+    /// OpenStreetMap's.
+    pub fn add_basemap(&mut self, basemap: &Basemap) {
+        let basemap = Basemap {
+            name: basemap.name.trim().to_owned(),
+            url: basemap.url.trim().to_owned(),
+        };
+        if basemap.name.is_empty() || names_match(&basemap.name, OPENSTREETMAP.0) {
+            return;
+        }
+        self.basemaps
+            .retain(|b| !names_match(&b.name, &basemap.name));
+        self.basemap.clone_from(&basemap.name);
+        self.basemaps.push(basemap);
+    }
+
+    /// Removes the user's background `name`; if it was chosen, OpenStreetMap is.
+    pub fn remove_basemap(&mut self, name: &str) {
+        self.basemaps.retain(|b| !names_match(&b.name, name));
+        if names_match(&self.basemap, name) {
+            self.basemap.clear();
+        }
     }
 }
 
@@ -140,6 +214,55 @@ mod tests {
         );
         let back: AppSettings = toml::from_str(&text).expect("parse");
         assert_eq!(back.geoserver.features_layout, FeaturesLayout::Beside);
+    }
+
+    /// R-GEO-3: backgrounds are written once added or chosen, and read back.
+    #[test]
+    fn backgrounds_round_trip() {
+        let mut settings = AppSettings::default();
+        settings.geoserver.add_basemap(&Basemap {
+            name: " Ortofoto ü😀 ".into(),
+            url: "https://tiles.test/ü😀/{z}/{x}/{y}.png".into(),
+        });
+        let text = toml::to_string(&settings).expect("serialize");
+        assert!(text.contains("basemap = \"Ortofoto ü😀\""), "{text}");
+        let back: AppSettings = toml::from_str(&text).expect("parse");
+        assert_eq!(back.geoserver, settings.geoserver);
+        // Older settings without them still load, with none chosen.
+        let old: AppSettings =
+            toml::from_str("[geoserver]\nfeatures_layout = \"beside\"\n").expect("parse");
+        assert_eq!(old.geoserver.chosen_basemap().name, OPENSTREETMAP.0);
+    }
+
+    /// R-GEO-3, D83: OpenStreetMap is always offered, and chosen unless another is; added
+    /// backgrounds are chosen, replace one of the same name, and go when removed.
+    #[test]
+    fn backgrounds_are_chosen_added_and_removed() {
+        let mut g = GeoServerSettings::default();
+        assert_eq!(g.chosen_basemap().url, OPENSTREETMAP.1, "the default");
+        assert_eq!(g.backgrounds().len(), 1);
+        g.basemap = "gone".into();
+        assert_eq!(g.chosen_basemap().name, OPENSTREETMAP.0, "a removed one");
+
+        let ortho = |url: &str| Basemap {
+            name: "Ortho".into(),
+            url: url.into(),
+        };
+        g.add_basemap(&ortho("https://a.test/{z}/{x}/{y}"));
+        g.add_basemap(&ortho("https://b.test/{z}/{x}/{y}"));
+        assert_eq!(g.basemaps.len(), 1, "replaced");
+        assert_eq!(g.chosen_basemap(), ortho("https://b.test/{z}/{x}/{y}"));
+        assert!(g.has_basemap(" ORTHO "));
+
+        g.add_basemap(&Basemap {
+            name: "OpenStreetMap".into(),
+            url: "https://evil.test/{z}/{x}/{y}".into(),
+        });
+        assert_eq!(g.basemaps.len(), 1, "the built-in one isn't replaced");
+
+        g.remove_basemap("ortho");
+        assert_eq!(g.chosen_basemap().name, OPENSTREETMAP.0);
+        assert_eq!(g.basemaps, []);
     }
 
     /// R-ADD-1: add-ons have their own default (the mock server on, the rest off); only a

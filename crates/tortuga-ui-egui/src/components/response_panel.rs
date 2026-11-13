@@ -16,6 +16,7 @@ mod filter;
 mod folding;
 mod json_menu;
 mod picture;
+pub(crate) use picture::decode_image;
 mod rows;
 mod timing;
 mod trend;
@@ -27,7 +28,7 @@ pub use filter::{Filtered, filter_body};
 use folding::{Fold, Folded};
 #[cfg(test)]
 use picture::MAX_IMAGE_SIDE;
-use picture::{ImageBody, ImageTexture, decode_image, image_view};
+use picture::{ImageBody, ImageTexture, image_view};
 use rows::{RowMenus, text_rows};
 pub use trend::{TREND_LENGTH, Trend, TrendPoint};
 
@@ -519,7 +520,7 @@ fn response_tabs(
     view: &ResponseView,
     tests: Option<&TestsView>,
     cookies: CookiesTab,
-    addon_tabs: crate::addons::ResponseTabs,
+    addon_tabs: &crate::addons::ResponseTabs,
     st: &mut ResponseState,
 ) {
     let header_count = view.response.headers.len().to_string();
@@ -707,7 +708,7 @@ fn details(
         st.tab = Tab::Body;
     }
     ogc_callout(ui, view.ogc.as_deref());
-    response_tabs(ui, view, tests, cookies, addon_tabs, st);
+    response_tabs(ui, view, tests, cookies, &addon_tabs, st);
     let console = tests.map(|t| t.console.as_slice()).unwrap_or_default();
 
     theme::card(ui).show(ui, |ui| match st.tab {
@@ -731,7 +732,7 @@ fn details(
         Tab::Headers => headers_tab(ui, response),
         Tab::AddOn(tab) => {
             if let Some(asked) =
-                crate::addons::response_tab(ui, tab, addon_tabs, view, &mut st.addon)
+                crate::addons::response_tab(ui, tab, &addon_tabs, view, &mut st.addon)
             {
                 action = Some(ResponseAction::AddOn(asked));
             }

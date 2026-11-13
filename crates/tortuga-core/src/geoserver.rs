@@ -6,6 +6,7 @@
 
 pub mod capabilities;
 pub mod features;
+pub mod map;
 pub mod requests;
 
 use crate::collection::Collection;

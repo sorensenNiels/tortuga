@@ -372,6 +372,7 @@ impl TortugaUi {
             self.on_disk_change(&root);
         }
         self.state.poll_addons();
+        self.state.addon_frame(ui.ctx());
         // A script field's own keys win over the app's (R-TEST-17).
         if self.modal.is_none() && !script_keys::field_takes_keys(ui.ctx()) {
             self.shortcuts(ui);

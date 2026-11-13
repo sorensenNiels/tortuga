@@ -4,6 +4,8 @@
 
 mod dialog;
 pub(crate) mod features_tab;
+pub(crate) mod map_view;
+pub(crate) mod tiles;
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +37,8 @@ pub struct GeoServer {
     dialog: Option<WfsDialog>,
     fetched: Inbox<Fetched>,
     next_id: u64,
+    /// The Features tab's map tiles (R-GEO-3); dropped with the add-on.
+    pub(crate) tiles: tiles::SharedTiles,
 }
 
 impl Default for GeoServer {
@@ -43,6 +47,7 @@ impl Default for GeoServer {
             dialog: None,
             fetched: Inbox::new(),
             next_id: 0,
+            tiles: tiles::SharedTiles::default(),
         }
     }
 }

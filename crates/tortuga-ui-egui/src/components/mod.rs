@@ -20,6 +20,7 @@ mod request_examples;
 pub(crate) mod request_preview;
 mod request_scripts;
 mod response_panel;
+pub(crate) use response_panel::decode_image;
 mod script_editing;
 pub(crate) mod script_editor;
 pub(crate) mod script_keys;

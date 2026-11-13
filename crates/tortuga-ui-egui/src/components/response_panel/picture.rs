@@ -20,7 +20,7 @@ const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
 /// A decoded image, ready to upload as a texture.
 pub struct ImageBody {
     /// Scaled down to at most [`MAX_IMAGE_SIDE`].
-    pub(super) pixels: Arc<egui::ColorImage>,
+    pub(crate) pixels: Arc<egui::ColorImage>,
     /// Width and height of the image as sent.
     pub(super) size: [u32; 2],
     /// "PNG", "JPEG", …
@@ -38,7 +38,7 @@ impl std::fmt::Debug for ImageBody {
 
 /// The body as an image, if it is one in a format Tortuga can decode (R-HTTP-17).
 /// Decoding is slow for big images: call it off the UI thread.
-pub(super) fn decode_image(response: &Response) -> Option<ImageBody> {
+pub(crate) fn decode_image(response: &Response) -> Option<ImageBody> {
     let said_image = response
         .content_type()
         .is_some_and(|ct| ct.trim_start().to_ascii_lowercase().starts_with("image/"));

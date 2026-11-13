@@ -1,14 +1,21 @@
 //! The Features tab of a GeoJSON response (R-GEO-2): a line about the features, a shape
-//! preview with no map underneath (P5), and a table of their properties. Hovering or
-//! clicking a feature in one shows it in the other.
+//! preview that zooms and pans, and a table of their properties. Hovering or clicking a
+//! feature in one shows it in the other. The preview is a map on the chosen background
+//! (R-GEO-3, D83).
 
 use std::sync::Arc;
 
-use egui::{Color32, Label, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui, Vec2, pos2, vec2};
+use egui::{Color32, Label, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, Ui, Vec2, vec2};
+use tortuga_core::format::names_match;
 use tortuga_core::geoserver::features::{self, Point};
+use tortuga_core::geoserver::map;
 use tortuga_core::geoserver::{Bounds, Features, Shape};
-use tortuga_core::settings::FeaturesLayout;
+use tortuga_core::settings::{Basemap, FeaturesLayout, OPENSTREETMAP};
 
+use super::map_view::{
+    BackgroundEdit, MapTiles, NewBackground, Projection, View, attribution, background_row, padded,
+    paint_bounds, paint_tiles,
+};
 use crate::components::ResponseView;
 use crate::theme;
 
@@ -36,6 +43,28 @@ pub(crate) struct FeaturesState {
     scroll_to_selected: bool,
     /// Swap x and y; `None` follows the CRS ([`Features::lat_lon`]).
     swap: Option<bool>,
+    /// Zoom and pan over the fitted preview.
+    view: View,
+    /// The features placed on the map, for the swap they were placed with.
+    placed: Option<(bool, Option<Arc<Placed>>)>,
+    /// A background being added, while its row is open.
+    adding: Option<NewBackground>,
+}
+
+/// The features in map units (R-GEO-3).
+#[derive(Debug)]
+struct Placed {
+    shapes: Vec<Vec<Shape>>,
+    bounds: Option<Bounds>,
+}
+
+/// What the preview draws: each feature's shapes, their bounds, how to read them, and the
+/// map under them.
+struct Scene<'a> {
+    shapes: Vec<&'a [Shape]>,
+    bounds: Option<Bounds>,
+    swap: bool,
+    map: Option<&'a MapTiles>,
 }
 
 /// The features read from the body at `key` (address, length); `None` when the body is
@@ -47,9 +76,24 @@ struct ReadBody {
 }
 
 /// What the tab asks of the app.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TabAction {
     SetLayout(FeaturesLayout),
+    /// Choose the background of this name; empty: none (R-GEO-3).
+    ChooseBackground(String),
+    /// Add a background and choose it.
+    AddBackground(Basemap),
+    /// Remove the user's background of this name.
+    RemoveBackground(String),
+}
+
+/// The backgrounds to choose from, and the chosen one (R-GEO-3, D83).
+#[derive(Debug, Clone)]
+pub(crate) struct Backgrounds {
+    /// Their names: OpenStreetMap, then the user's.
+    pub names: Vec<String>,
+    /// The chosen one, with its tiles.
+    pub map: MapTiles,
 }
 
 /// Whether a response gets the tab: its body starts like GeoJSON features.
@@ -62,7 +106,9 @@ pub(crate) fn features_tab(
     view: &ResponseView,
     st: &mut FeaturesState,
     layout: FeaturesLayout,
+    backgrounds: &Backgrounds,
 ) -> Option<TabAction> {
+    let map = &backgrounds.map;
     let body = &view.response.body;
     if body.len() > MAX_BYTES {
         theme::hint(
@@ -77,6 +123,7 @@ pub(crate) fn features_tab(
         *st = FeaturesState {
             read: Some(ReadBody { key, features }),
             swap: st.swap,
+            adding: st.adding.take(),
             ..FeaturesState::default()
         };
     }
@@ -85,16 +132,50 @@ pub(crate) fn features_tab(
         return None;
     };
     let swap = st.swap.unwrap_or_else(|| found.lat_lon());
-    let action = summary(ui, &found, st, swap, layout);
+    let mut action = summary(ui, &found, st, swap, layout, backgrounds);
+    if let Some(new) = &mut st.adding {
+        let taken = |name: &str| backgrounds.names.iter().any(|n| names_match(n, name));
+        match background_row(ui, new, taken) {
+            Some(BackgroundEdit::Add) => {
+                action = Some(TabAction::AddBackground(Basemap {
+                    name: new.name.trim().to_owned(),
+                    url: new.url.trim().to_owned(),
+                }));
+                st.adding = None;
+                st.view = View::default();
+            }
+            Some(BackgroundEdit::Cancel) => st.adding = None,
+            None => {}
+        }
+    }
     if found.features.is_empty() {
         theme::hint(ui, t!("features-empty"));
         return action;
     }
+    let placed = st.placed(&found, swap);
+    let scene = if let Some(placed) = &placed {
+        Scene {
+            shapes: placed.shapes.iter().map(Vec::as_slice).collect(),
+            bounds: placed.bounds,
+            swap: false,
+            map: Some(map),
+        }
+    } else {
+        // A CRS the map can't place: drawn as the body has it, on no background.
+        let crs = found.crs.as_deref().unwrap_or_default();
+        theme::hint(ui, t!("features-map-crs", crs = crs));
+        Scene {
+            shapes: found.features.iter().map(|f| f.shapes.as_slice()).collect(),
+            bounds: found.bounds,
+            swap,
+            map: None,
+        }
+    };
     ui.add_space(6.0);
     match layout {
         FeaturesLayout::Above => {
-            let height = (ui.available_height() * 0.4).clamp(140.0, 360.0);
-            preview(ui, &found, st, swap, vec2(ui.available_width(), height));
+            let height = (ui.available_height() * 0.45).clamp(160.0, 420.0);
+            preview(ui, &found, &scene, st, vec2(ui.available_width(), height));
             ui.add_space(6.0);
             table(ui, &found, st);
         }
@@ -107,7 +188,7 @@ pub(crate) fn features_tab(
                     table(ui, &found, st);
                 });
                 let rest = ui.available_size();
-                preview(ui, &found, st, swap, vec2(rest.x, rest.y.min(size.y)));
+                preview(ui, &found, &scene, st, vec2(rest.x, rest.y.min(size.y)));
             });
         }
     }
@@ -121,6 +202,7 @@ fn summary(
     st: &mut FeaturesState,
     swap: bool,
     layout: FeaturesLayout,
+    backgrounds: &Backgrounds,
 ) -> Option<TabAction> {
     let p = theme::palette(ui);
     let mut action = None;
@@ -134,13 +216,16 @@ fn summary(
                 _ => t!("features-count", count = f.features.len()),
             };
             ui.label(theme::semibold(count));
+            // Long names give way to the buttons on the right.
             if let Some(crs) = &f.crs {
                 ui.label(RichText::new("·").color(p.muted));
-                ui.label(RichText::new(crs).monospace().small().color(p.muted));
+                ui.add(
+                    Label::new(RichText::new(crs).monospace().small().color(p.muted)).truncate(),
+                );
             }
             if let Some(b) = f.bounds {
                 ui.label(RichText::new("·").color(p.muted));
-                ui.label(RichText::new(bounds_text(b)).small().color(p.muted))
+                ui.add(Label::new(RichText::new(bounds_text(b)).small().color(p.muted)).truncate())
                     .on_hover_text(t!("features-bounds-hint"));
             }
         },
@@ -158,6 +243,10 @@ fn summary(
                 {
                     action = Some(TabAction::SetLayout(value));
                 }
+            }
+            ui.add_space(10.0);
+            if let Some(asked) = background_picker(ui, st, backgrounds) {
+                action = Some(asked);
             }
             ui.add_space(10.0);
             let mut on = swap;
@@ -180,63 +269,68 @@ fn bounds_text(b: Bounds) -> String {
     )
 }
 
-/// Maps the body's coordinates into a rectangle, north up, keeping the aspect ratio.
-#[derive(Debug, Clone, Copy)]
-struct Projection {
-    min: Point,
-    scale: f32,
-    origin: Pos2,
-    swap: bool,
+/// The background drop-down (OpenStreetMap, the user's, "Add background…"), and 🗙
+/// to remove the chosen one if the user added it (R-GEO-3).
+fn background_picker(
+    ui: &mut Ui,
+    st: &mut FeaturesState,
+    backgrounds: &Backgrounds,
+) -> Option<TabAction> {
+    let mut asked = None;
+    let chosen = backgrounds.map.name.as_str();
+    // Right to left, as the summary's right side is laid out: 🗙, the list, its label.
+    if !names_match(chosen, OPENSTREETMAP.0)
+        && ui
+            .add(theme::icon_button(ui, "🗙"))
+            .on_hover_text(t!("features-background-remove", name = chosen))
+            .clicked()
+    {
+        asked = Some(TabAction::RemoveBackground(chosen.to_owned()));
+    }
+    let list = egui::ComboBox::from_id_salt("features-background")
+        .selected_text(chosen)
+        .show_ui(ui, |ui| {
+            for name in &backgrounds.names {
+                let on = names_match(chosen, name);
+                if ui.selectable_label(on, name.as_str()).clicked() && !on {
+                    asked = Some(TabAction::ChooseBackground(name.clone()));
+                }
+            }
+            ui.separator();
+            if ui
+                .selectable_label(false, t!("features-background-add"))
+                .clicked()
+            {
+                st.adding = Some(NewBackground::default());
+            }
+        })
+        .response
+        .on_hover_text(t!("features-background-hint"));
+    let label = ui.label(RichText::new(t!("features-background")).color(theme::palette(ui).muted));
+    list.labelled_by(label.id);
+    if asked.is_some() {
+        st.view = View::default();
+    }
+    asked
 }
 
-impl Projection {
-    /// For `bounds` (as the body has them) drawn in `rect` with a margin.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "screen positions need no more than f32"
-    )]
-    fn new(bounds: Bounds, rect: Rect, swap: bool) -> Self {
-        let (min, max) = if swap {
-            (
-                [bounds.min[1], bounds.min[0]],
-                [bounds.max[1], bounds.max[0]],
-            )
-        } else {
-            (bounds.min, bounds.max)
-        };
-        let inner = rect.shrink(12.0);
-        let (w, h) = ((max[0] - min[0]) as f32, (max[1] - min[1]) as f32);
-        // A single point, or features on one line, still get a scale.
-        let scale = match (w > 0.0, h > 0.0) {
-            (true, true) => (inner.width() / w).min(inner.height() / h),
-            (true, false) => inner.width() / w,
-            (false, true) => inner.height() / h,
-            (false, false) => 1.0,
-        };
-        // Centre what is drawn.
-        let used = vec2(w * scale, h * scale);
-        let origin = pos2(
-            inner.center().x - used.x / 2.0,
-            inner.center().y + used.y / 2.0,
-        );
-        Self {
-            min,
-            scale,
-            origin,
-            swap,
+impl FeaturesState {
+    /// The features in map units for `swap`, worked out once; `None` inside when their
+    /// CRS can't be placed (R-GEO-3).
+    fn placed(&mut self, f: &Features, swap: bool) -> Option<Arc<Placed>> {
+        if let Some((for_swap, placed)) = &self.placed
+            && *for_swap == swap
+        {
+            return placed.clone();
         }
-    }
-
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "screen positions need no more than f32"
-    )]
-    fn to_screen(self, p: Point) -> Pos2 {
-        let [x, y] = if self.swap { [p[1], p[0]] } else { p };
-        pos2(
-            self.origin.x + (x - self.min[0]) as f32 * self.scale,
-            self.origin.y - (y - self.min[1]) as f32 * self.scale,
-        )
+        let placed = map::on_map(f, swap).map(|(shapes, bounds)| {
+            Arc::new(Placed {
+                shapes,
+                bounds: bounds.map(padded),
+            })
+        });
+        self.placed = Some((swap, placed.clone()));
+        placed
     }
 }
 
@@ -298,18 +392,13 @@ fn inside(ring: &[Pos2], p: Pos2) -> bool {
     odd
 }
 
-fn preview(ui: &mut Ui, f: &Features, st: &mut FeaturesState, swap: bool, size: Vec2) {
+/// The shapes, zoomed by the wheel and panned by dragging, on the map when there is one.
+fn preview(ui: &mut Ui, f: &Features, scene: &Scene<'_>, st: &mut FeaturesState, size: Vec2) {
     let p = theme::palette(ui);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 6.0, p.surface);
-    painter.rect_stroke(
-        rect,
-        6.0,
-        Stroke::new(1.0, p.border),
-        egui::StrokeKind::Inside,
-    );
-    let Some(bounds) = f.bounds else {
+    let Some(bounds) = scene.bounds else {
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -319,12 +408,18 @@ fn preview(ui: &mut Ui, f: &Features, st: &mut FeaturesState, swap: bool, size: 
         );
         return;
     };
-    let proj = Projection::new(bounds, rect, swap);
+    zoom_and_pan(ui, &response, rect, &mut st.view);
+    let proj = Projection::new(bounds, rect, scene.swap).viewed(st.view, rect);
+    if let Some(m) = scene.map {
+        paint_tiles(ui, rect, proj, m);
+    }
+    paint_bounds(&painter, bounds, proj, p.muted);
+    let width = if scene.map.is_some() { 1.6 } else { 1.0 };
     let hover_at = response.hover_pos();
     let mut under_pointer = None;
     let mut highlighted = Vec::new();
-    for (i, feature) in f.features.iter().enumerate() {
-        let drawn: Vec<Drawn> = feature.shapes.iter().map(|s| project(s, proj)).collect();
+    for (i, shapes) in scene.shapes.iter().enumerate() {
+        let drawn: Vec<Drawn> = shapes.iter().map(|s| project(s, proj)).collect();
         if hover_at.is_some_and(|at| drawn.iter().any(|d| hits(d, at))) {
             under_pointer = Some(i);
         }
@@ -332,7 +427,7 @@ fn preview(ui: &mut Ui, f: &Features, st: &mut FeaturesState, swap: bool, size: 
             // Drawn last, on top.
             highlighted.push(drawn);
         } else {
-            paint(&painter, &drawn, Stroke::new(1.0, p.blue));
+            paint(&painter, &drawn, Stroke::new(width, p.blue));
         }
     }
     for drawn in &highlighted {
@@ -340,22 +435,59 @@ fn preview(ui: &mut Ui, f: &Features, st: &mut FeaturesState, swap: bool, size: 
     }
     if let Some(i) = under_pointer {
         if Some(i) != st.selected && Some(i) != st.hovered_row {
-            let drawn: Vec<Drawn> = f.features[i]
-                .shapes
-                .iter()
-                .map(|s| project(s, proj))
-                .collect();
+            let drawn: Vec<Drawn> = scene.shapes[i].iter().map(|s| project(s, proj)).collect();
             paint(&painter, &drawn, Stroke::new(2.0, p.accent));
         }
-        let label = f.features[i]
-            .id
-            .clone()
+        let label = f
+            .features
+            .get(i)
+            .and_then(|feature| feature.id.clone())
             .unwrap_or_else(|| format!("#{}", i + 1));
         response.clone().on_hover_text_at_pointer(label);
     }
     if response.clicked() {
         st.selected = under_pointer;
         st.scroll_to_selected = under_pointer.is_some();
+    }
+    painter.rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(1.0, p.border),
+        egui::StrokeKind::Inside,
+    );
+    if let Some(m) = scene.map {
+        attribution(ui, rect, &m.template);
+    }
+    if !st.view.is_fitted() {
+        let at = Rect::from_min_size(rect.right_top() + vec2(-58.0, 6.0), vec2(52.0, 20.0));
+        // On top of the preview, outside the layout: `put` would move what follows up
+        // under the button.
+        let mut over = ui.new_child(egui::UiBuilder::new().max_rect(at));
+        if over
+            .add(egui::Button::new(t!("features-fit")).small())
+            .on_hover_text(t!("features-fit-hint"))
+            .clicked()
+        {
+            st.view = View::default();
+        }
+    }
+}
+
+/// The wheel zooms about the pointer, dragging pans, a double click zooms in.
+fn zoom_and_pan(ui: &Ui, response: &egui::Response, rect: Rect, view: &mut View) {
+    if response.dragged() {
+        view.pan_by(response.drag_delta());
+    }
+    if let Some(at) = response.hover_pos() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            view.zoom_at(f64::from(scroll / 200.0).exp(), at, rect);
+            // The wheel zooms the preview, not what it is in.
+            ui.ctx().input_mut(|i| i.smooth_scroll_delta.y = 0.0);
+        }
+        if response.double_clicked() {
+            view.zoom_at(2.0, at, rect);
+        }
     }
 }
 
@@ -479,6 +611,8 @@ fn row(ui: &mut Ui, color: Color32, cells: impl FnOnce(&mut dyn FnMut(f32, Strin
 
 #[cfg(test)]
 mod tests {
+    use egui::pos2;
+
     use super::*;
 
     fn square() -> Vec<Pos2> {
@@ -527,42 +661,5 @@ mod tests {
         assert!(hits(&Drawn::Point(pos2(5.0, 5.0)), pos2(9.0, 5.0)));
         assert!(!hits(&Drawn::Line(Vec::new()), pos2(0.0, 0.0)));
         assert!(!hits(&Drawn::Polygon(Vec::new()), pos2(0.0, 0.0)));
-    }
-
-    /// R-GEO-2: north is up, the aspect ratio is kept, and swapping reads lat/lon.
-    #[test]
-    fn the_projection_puts_north_up() {
-        let bounds = Bounds {
-            min: [0.0, 0.0],
-            max: [10.0, 5.0],
-        };
-        let rect = Rect::from_min_size(Pos2::ZERO, vec2(224.0, 224.0));
-        let proj = Projection::new(bounds, rect, false);
-        let sw = proj.to_screen([0.0, 0.0]);
-        let ne = proj.to_screen([10.0, 5.0]);
-        assert!(ne.y < sw.y, "north is up");
-        assert!(ne.x > sw.x, "east is right");
-        assert!(
-            (ne.x - sw.x - 2.0 * (sw.y - ne.y)).abs() < 0.01,
-            "aspect kept"
-        );
-        assert!(rect.contains(sw) && rect.contains(ne));
-
-        let swapped = Projection::new(bounds, rect, true);
-        // [lat, lon]: the body's first number goes up.
-        let a = swapped.to_screen([0.0, 0.0]);
-        let b = swapped.to_screen([10.0, 0.0]);
-        assert!(b.y < a.y && (b.x - a.x).abs() < 0.01);
-    }
-
-    #[test]
-    fn a_single_point_still_projects() {
-        let bounds = Bounds {
-            min: [3.0, 4.0],
-            max: [3.0, 4.0],
-        };
-        let rect = Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0));
-        let at = Projection::new(bounds, rect, false).to_screen([3.0, 4.0]);
-        assert!((at - rect.center()).length() < 0.01);
     }
 }

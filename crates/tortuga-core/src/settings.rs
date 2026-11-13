@@ -17,7 +17,7 @@ use crate::import::ImportKind;
 
 mod addons;
 mod script_editor;
-pub use addons::{AddOn, AddOnSettings, FeaturesLayout, GeoServerSettings};
+pub use addons::{AddOn, AddOnSettings, Basemap, FeaturesLayout, GeoServerSettings, OPENSTREETMAP};
 pub use script_editor::{KeyScheme, ScriptCommand, ScriptEditorSettings};
 
 /// Everything in the app's settings file.
