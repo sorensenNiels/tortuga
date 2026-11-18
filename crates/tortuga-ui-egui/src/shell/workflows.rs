@@ -64,15 +64,15 @@ enum EventKind {
     Started {
         iteration: usize,
         step: usize,
+        /// The try of a repeating step, from 1 (R-FLOW-10).
+        attempt: u32,
     },
     Step {
         iteration: usize,
         view: Box<StepView>,
     },
     /// Per iteration: steps skipped after a failure, and how a script ended it.
-    Done {
-        ends: Vec<(usize, Option<FlowEnd>)>,
-    },
+    Done { ends: Vec<(usize, Option<FlowEnd>)> },
 }
 
 /// Workflow state of the shell.
@@ -662,8 +662,16 @@ impl TortugaUi {
                 repaint.request_repaint();
             };
             let result = workflow::run(&client, &collection, &draft, &options, |p| match p {
-                Progress::Started { iteration, step } => {
-                    send(EventKind::Started { iteration, step });
+                Progress::Started {
+                    iteration,
+                    step,
+                    attempt,
+                } => {
+                    send(EventKind::Started {
+                        iteration,
+                        step,
+                        attempt,
+                    });
                 }
                 Progress::Finished { iteration, step } => send(EventKind::Step {
                     iteration,
@@ -715,11 +723,15 @@ impl TortugaUi {
                 continue;
             };
             match event.kind {
-                EventKind::Started { iteration, step } => {
+                EventKind::Started {
+                    iteration,
+                    step,
+                    attempt,
+                } => {
                     while run.iterations.len() <= iteration {
                         run.iterations.push(IterationView::default());
                     }
-                    run.current = Some((iteration, step));
+                    run.current = Some((iteration, step, attempt));
                 }
                 EventKind::Step { iteration, view } => {
                     if open.keeps_variables && !view.tests.vars.is_empty() {
@@ -1130,12 +1142,14 @@ mod tests {
                     .into(),
                     ..Default::default()
                 },
+                tries: None,
             };
             let events = ui.workflow_events.sender();
             for kind in [
                 EventKind::Started {
                     iteration: 0,
                     step: 0,
+                    attempt: 1,
                 },
                 EventKind::Step {
                     iteration: 0,

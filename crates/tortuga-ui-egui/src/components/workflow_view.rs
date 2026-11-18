@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use egui::{ComboBox, DragValue, Label, RichText, ScrollArea, TextEdit, Ui};
-use tortuga_core::workflow::{FlowEnd, Step, StepResult, Workflow};
+use tortuga_core::workflow::{FlowEnd, Repeat, Step, StepResult, Tries, Workflow};
 use tortuga_core::{HttpMethod, KeyValue};
 
 use super::{TestsView, VarHelp, key_value_table, tests_details};
@@ -65,6 +65,8 @@ pub struct StepView {
     pub sent: Option<String>,
     /// The start of the response body, as text.
     pub body: Option<String>,
+    /// How often a repeating step was sent (R-FLOW-10).
+    pub tries: Option<Tries>,
 }
 
 impl StepView {
@@ -99,6 +101,7 @@ impl StepView {
                 let head = &r.body[..r.body.len().min(BODY_PREVIEW_BYTES)];
                 String::from_utf8_lossy(head).into_owned()
             }),
+            tries: result.tries,
         }
     }
 }
@@ -126,8 +129,8 @@ impl IterationView {
 pub struct RunView {
     pub iterations: Vec<IterationView>,
     pub running: bool,
-    /// The step running now: (iteration, step).
-    pub current: Option<(usize, usize)>,
+    /// The step running now: (iteration, step, try from 1).
+    pub current: Option<(usize, usize, u32)>,
     pub steps_per_iteration: usize,
     pub iterations_planned: usize,
     /// The iterations are a data file's rows (R-FLOW-4), not repeats (R-FLOW-8).
@@ -428,13 +431,7 @@ fn step_row(
                         );
                     }
                 }
-                let mut extras = Vec::new();
-                if !step.capture.is_empty() {
-                    extras.push(t!("workflow-captures", count = step.capture.len()));
-                }
-                if !step.tests.trim().is_empty() {
-                    extras.push(t!("workflow-step-has-tests"));
-                }
+                let extras = step_extras(&step);
                 if !extras.is_empty() {
                     ui.label(RichText::new(extras.join(" · ")).small().color(p.muted));
                 }
@@ -496,6 +493,21 @@ fn step_row(
         }
     });
     action
+}
+
+/// What a step adds to its request, for its row: captures, tests, repeating.
+fn step_extras(step: &Step) -> Vec<String> {
+    let mut extras = Vec::new();
+    if !step.capture.is_empty() {
+        extras.push(t!("workflow-captures", count = step.capture.len()));
+    }
+    if !step.tests.trim().is_empty() {
+        extras.push(t!("workflow-step-has-tests"));
+    }
+    if let Some(repeat) = step.repeat {
+        extras.push(t!("workflow-step-repeats", count = repeat.times));
+    }
+    extras
 }
 
 fn step_details(
@@ -560,8 +572,51 @@ fn step_details(
                     &std::collections::BTreeMap::new(),
                 );
                 theme::hint(ui, t!("workflow-step-tests-hint"));
+                ui.add_space(4.0);
+                repeat_options(ui, step);
             });
         });
+}
+
+/// "Repeat until it passes", with its tries and wait (R-FLOW-10).
+fn repeat_options(ui: &mut Ui, step: &mut Step) {
+    ui.horizontal_wrapped(|ui| {
+        let mut on = step.repeat.is_some();
+        if ui
+            .checkbox(&mut on, t!("workflow-step-repeat"))
+            .on_hover_text(t!("workflow-step-repeat-hint"))
+            .changed()
+        {
+            step.repeat = on.then(Repeat::default);
+        }
+        let Some(repeat) = step.repeat.as_mut() else {
+            return;
+        };
+        ui.add_space(12.0);
+        let label = ui.label(t!("workflow-step-tries"));
+        ui.add(DragValue::new(&mut repeat.times).range(2..=10_000))
+            .labelled_by(label.id)
+            .on_hover_text(t!("workflow-step-tries-hint"));
+        ui.add_space(12.0);
+        let label = ui.label(t!("workflow-step-wait"));
+        ui.add(
+            DragValue::new(&mut repeat.wait_ms)
+                .range(0..=3_600_000)
+                .speed(10.0)
+                .suffix(" ms"),
+        )
+        .labelled_by(label.id)
+        .on_hover_text(t!("workflow-step-wait-hint"));
+    });
+}
+
+/// "after 7 tries (12.4 s)" (R-FLOW-10).
+fn tries_text(tries: Tries) -> String {
+    t!(
+        "workflow-step-tries-done",
+        count = tries.count,
+        seconds = crate::i18n::decimal(tries.elapsed.as_secs_f64(), 1)
+    )
 }
 
 fn add_step(
@@ -659,7 +714,7 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                     None => {}
                 }
             }
-            if let Some((n, i)) = run.current {
+            if let Some((n, i, attempt)) = run.current {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     let of = run.steps_per_iteration;
@@ -679,6 +734,11 @@ pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEdi
                         )
                     } else {
                         t!("workflow-running-step", step = i + 1, of = of)
+                    };
+                    let label = if attempt > 1 {
+                        format!("{label} {}", t!("workflow-running-try", attempt = attempt))
+                    } else {
+                        label
                     };
                     ui.label(RichText::new(label).color(p.muted));
                 });
@@ -745,6 +805,9 @@ fn step_result_row(ui: &mut Ui, step: &StepView, i: usize, selected: bool, inden
     }
     if let Some(ms) = step.elapsed_ms {
         detail.push(format!("{ms} ms"));
+    }
+    if let Some(tries) = step.tries {
+        detail.push(tries_text(tries));
     }
     if !step.tests.tests.is_empty() {
         let passed = step.tests.tests.iter().filter(|t| t.passed).count();
@@ -934,6 +997,10 @@ mod tests {
                     tests,
                     sent: Some("GET https://api.test/users/bob".into()),
                     body: Some(String::new()),
+                    tries: Some(Tries {
+                        count: 7,
+                        elapsed: std::time::Duration::from_millis(12_400),
+                    }),
                 }],
                 skipped: 1,
             }],
@@ -946,6 +1013,8 @@ mod tests {
         h.run();
         h.get_by_label("Failed");
         h.get_by_label_contains("1 later step skipped");
+        // R-FLOW-10: a step that repeated says how often it was sent.
+        h.get_by_label_contains("after 7 tries (12.4 s)");
         h.get_by_label_contains("1. Get user").click();
         h.run();
         h.get_by_label("GET https://api.test/users/bob");
@@ -970,6 +1039,7 @@ mod tests {
                         tests: TestsView::default(),
                         sent: None,
                         body: None,
+                        tries: None,
                     }],
                     ended: Some(end),
                     ..IterationView::default()
@@ -984,5 +1054,26 @@ mod tests {
             h.get_by_label(verdict);
             h.get_by_label(&end.message());
         }
+    }
+
+    /// R-FLOW-10: "Repeat until it passes" turns on with 10 tries a second apart, and the
+    /// step's row says so; turning it off removes it from the step.
+    #[test]
+    fn a_step_can_repeat_until_it_passes() {
+        let mut step = Step::new(Path::new("jobs/status.toml"));
+        let mut h = crate::test_host::harness(|ui| repeat_options(ui, &mut step));
+        h.run();
+        h.get_by_label("Repeat until it passes").click();
+        h.run();
+        h.get_by_label("Tries");
+        drop(h);
+        assert_eq!(step.repeat, Some(Repeat::default()));
+        assert_eq!(step_extras(&step), ["up to 10 tries"]);
+        let mut h = crate::test_host::harness(|ui| repeat_options(ui, &mut step));
+        h.run();
+        h.get_by_label("Repeat until it passes").click();
+        h.run();
+        drop(h);
+        assert_eq!(step.repeat, None);
     }
 }

@@ -312,6 +312,19 @@ workflow-step-name = Step name
 captures = Captures
 workflow-captures-hint = $.json.path, xpath://xml/path, header:Name or status; available as {"{{"}variable{"}}"} in later steps.
 workflow-step-tests-hint = Runs after the request's own tests.
+workflow-step-repeat = Repeat until it passes
+workflow-step-repeat-hint = Sends this step again until its tests pass, with no error and no 4xx/5xx answer: for polling a job until it is done. The step fails when no try passes.
+workflow-step-tries = Tries
+workflow-step-tries-hint = How often to send it at most, the first time included
+workflow-step-wait = Wait
+workflow-step-wait-hint = Wait between tries, in milliseconds
+workflow-step-repeats = up to {$count} tries
+workflow-step-tries-done =
+    { $count ->
+        [one] after 1 try
+       *[other] after {$count} tries
+    } ({$seconds} s)
+workflow-running-try = try {$attempt}
 workflow-add-step = + Add step…
 workflow-no-requests = This project has no requests yet.
 workflow-add-step-hint = Add a request of this project as the next step

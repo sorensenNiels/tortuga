@@ -4,12 +4,14 @@
 //! Scripts may change the order with `workflow.next(name)` and `workflow.stop()`
 //! (R-FLOW-6, D50). Like Postman's runner, a workflow can run its steps several times,
 //! wait between them, and keep the variables its scripts set (R-FLOW-8, R-FLOW-9, D66).
+//! A step can repeat until it passes, to poll an asynchronous API (R-FLOW-10, D84).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use web_time::Instant;
 
 use crate::collection::{Collection, Item};
 use crate::cookies::CookieJar;
@@ -69,6 +71,29 @@ pub struct Step {
     /// A test script for this step, after the request's own.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tests: String,
+    /// Send again until a try passes (R-FLOW-10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Repeat>,
+}
+
+/// How a step repeats until it passes (R-FLOW-10, D84).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Repeat {
+    /// Tries at most, the first one included; 0 and 1 are a single try.
+    pub times: u32,
+    /// Milliseconds to wait between tries.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wait_ms: u64,
+}
+
+impl Default for Repeat {
+    /// What the option starts with when turned on: 10 tries, a second apart.
+    fn default() -> Self {
+        Self {
+            times: 10,
+            wait_ms: 1000,
+        }
+    }
 }
 
 impl Step {
@@ -215,7 +240,30 @@ pub struct StepResult {
     /// The step's name, or its request's.
     pub name: String,
     pub request: String,
+    /// The outcome of the last try.
     pub outcome: StepOutcome,
+    /// How often a repeating step was sent (R-FLOW-10); `None` for other steps.
+    pub tries: Option<Tries>,
+}
+
+/// The tries of a step that repeats until it passes (R-FLOW-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tries {
+    pub count: u32,
+    /// From the start of the first try to the end of the last.
+    pub elapsed: Duration,
+}
+
+impl Tries {
+    /// "after 7 tries (12.4 s)", for the command line; the app has its own text.
+    pub fn summary(self) -> String {
+        format!(
+            "after {} {} ({:.1} s)",
+            self.count,
+            if self.count == 1 { "try" } else { "tries" },
+            self.elapsed.as_secs_f64()
+        )
+    }
 }
 
 /// One pass through the steps.
@@ -299,6 +347,8 @@ pub enum Progress<'a> {
     Started {
         iteration: usize,
         step: usize,
+        /// Which try of a repeating step this is, from 1 (R-FLOW-10); 1 for other steps.
+        attempt: u32,
     },
     Finished {
         iteration: usize,
@@ -310,7 +360,7 @@ pub enum Progress<'a> {
 /// (R-FLOW-8); each iteration starts with no captured values and an empty cookie jar,
 /// apart from the variables a workflow keeps (R-FLOW-9); a failed step ends the
 /// iteration unless the workflow continues after failures. `delay_ms` passes between
-/// steps.
+/// steps. A step that repeats is sent until a try passes (R-FLOW-10).
 pub async fn run(
     client: &Client,
     collection: &Collection,
@@ -348,34 +398,51 @@ pub async fn run(
             if !delay.is_zero() && (n, iteration.steps.len()) != (0, 0) {
                 pause(delay).await;
             }
-            progress(Progress::Started {
-                iteration: n,
-                step: i,
-            });
-            // Kept values are below the data row; this iteration's own are above it.
-            let mut variables = kept.clone();
-            variables.extend(options.overrides.clone());
-            variables.extend(row.cloned().unwrap_or_default());
-            variables.extend(captured.clone());
-            let at = StepRun {
-                variables,
-                jar: &jar,
-                info: ScriptInfo {
+            let mut changes = BTreeMap::new();
+            let started = Instant::now();
+            let repeat = step.repeat.filter(|r| r.times > 1);
+            let mut attempt = 1;
+            let mut outcome = loop {
+                progress(Progress::Started {
                     iteration: n,
-                    iterations,
-                },
+                    step: i,
+                    attempt,
+                });
+                let at = StepRun {
+                    variables: step_variables(&kept, &options.overrides, row, &captured),
+                    jar: &jar,
+                    info: ScriptInfo {
+                        iteration: n,
+                        iterations,
+                    },
+                };
+                let mut outcome = run_one(client, collection, step, options, at).await;
+                runner::apply_changes(&mut captured, &outcome.vars);
+                if workflow.keep_variables {
+                    runner::apply_changes(&mut kept, &outcome.vars);
+                }
+                changes.extend(outcome.vars.clone());
+                if !another_try(repeat, attempt, &mut outcome) {
+                    break outcome;
+                }
+                attempt += 1;
+                if let Some(wait) = repeat.map(|r| r.wait_ms).filter(|ms| *ms > 0) {
+                    pause(Duration::from_millis(wait)).await;
+                }
             };
-            let mut outcome = run_one(client, collection, step, options, at).await;
-            runner::apply_changes(&mut captured, &outcome.vars);
-            if workflow.keep_variables {
-                runner::apply_changes(&mut kept, &outcome.vars);
-            }
+            // Every try's changes, so a run that keeps variables loses none (R-FLOW-9).
+            outcome.vars = changes;
+            let tries = repeat.map(|_| Tries {
+                count: attempt,
+                elapsed: started.elapsed(),
+            });
             let next = next_step(&mut outcome, &names, i);
             let done = StepResult {
                 index: i,
                 name: names[i].clone(),
                 request: step.request.clone(),
                 outcome,
+                tries,
             };
             progress(Progress::Finished {
                 iteration: n,
@@ -400,7 +467,41 @@ pub async fn run(
     result
 }
 
-/// Waits between steps (R-FLOW-8).
+/// A step's variables on top of the project's: values kept from earlier iterations
+/// (R-FLOW-9) below the data row; this iteration's own above it.
+fn step_variables(
+    kept: &BTreeMap<String, String>,
+    overrides: &BTreeMap<String, String>,
+    row: Option<&BTreeMap<String, String>>,
+    captured: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut variables = kept.clone();
+    variables.extend(overrides.clone());
+    variables.extend(row.cloned().unwrap_or_default());
+    variables.extend(captured.clone());
+    variables
+}
+
+/// Whether a repeating step is sent again after a try with `outcome` (R-FLOW-10): not
+/// once a try passed or a script chose what runs next. When the last try fails, its
+/// outcome says that no try passed.
+fn another_try(repeat: Option<Repeat>, attempt: u32, outcome: &mut StepOutcome) -> bool {
+    let Some(repeat) = repeat else {
+        return false;
+    };
+    if !outcome.failed() || outcome.flow.is_some() {
+        return false;
+    }
+    if attempt >= repeat.times {
+        outcome
+            .errors
+            .push(format!("No try passed in {} tries.", repeat.times));
+        return false;
+    }
+    true
+}
+
+/// Waits between steps (R-FLOW-8) and between a repeating step's tries (R-FLOW-10).
 #[cfg(not(target_arch = "wasm32"))]
 async fn pause(delay: Duration) {
     tokio::time::sleep(delay).await;
@@ -519,6 +620,16 @@ mod tests {
                     tests: "test(\"created\", () => expect(res.status).toBe(201));\n".into(),
                     ..Step::default()
                 },
+                Step {
+                    request: "jobs/status.toml".into(),
+                    capture: [("state".to_owned(), "$.state".to_owned())].into(),
+                    tests: "test(\"done\", () => true);\n".into(),
+                    repeat: Some(Repeat {
+                        times: 30,
+                        wait_ms: 2000,
+                    }),
+                    ..Step::default()
+                },
             ],
         };
         let text = crate::format::write_workflow(&wf);
@@ -543,6 +654,19 @@ name = "Create"
 tests = """
 test("created", () => expect(res.status).toBe(201));
 """
+
+[[steps]]
+request = "jobs/status.toml"
+tests = """
+test("done", () => true);
+"""
+
+[steps.capture]
+state = "$.state"
+
+[steps.repeat]
+times = 30
+wait_ms = 2000
 "#
         );
         let back = crate::format::parse_workflow(&text, "lifecycle").expect("parse");

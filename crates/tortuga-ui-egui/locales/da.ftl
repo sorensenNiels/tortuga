@@ -318,6 +318,19 @@ workflow-step-name = Trinnets navn
 captures = Opsamlinger
 workflow-captures-hint = $.json.path, xpath://xml/path, header:Navn eller status; kan bruges som {"{{"}variabel{"}}"} i senere trin.
 workflow-step-tests-hint = Køres efter anmodningens egne tests.
+workflow-step-repeat = Gentag, indtil trinnet består
+workflow-step-repeat-hint = Sender trinnet igen, indtil dets tests består uden fejl og uden 4xx/5xx-svar: til at vente på, at et job bliver færdigt. Trinnet fejler, når intet forsøg består.
+workflow-step-tries = Forsøg
+workflow-step-tries-hint = Højst så mange gange sendes det, den første gang medregnet
+workflow-step-wait = Vent
+workflow-step-wait-hint = Vent mellem forsøg, i millisekunder
+workflow-step-repeats = op til {$count} forsøg
+workflow-step-tries-done =
+    { $count ->
+        [one] efter 1 forsøg
+       *[other] efter {$count} forsøg
+    } ({$seconds} s)
+workflow-running-try = forsøg {$attempt}
 workflow-add-step = + Tilføj trin…
 workflow-no-requests = Dette projekt har ingen anmodninger endnu.
 workflow-add-step-hint = Tilføj en anmodning fra dette projekt som næste trin

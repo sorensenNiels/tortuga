@@ -144,6 +144,9 @@ struct JsonIteration<'a> {
 struct JsonStep<'a> {
     name: &'a str,
     request: &'a str,
+    /// How often a repeating step was sent (R-FLOW-10).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tries: Option<u32>,
     #[serde(flatten)]
     summary: StepSummary,
 }
@@ -167,6 +170,7 @@ pub fn json(workflow: &Workflow, result: &RunResult) -> String {
                     .map(|s| JsonStep {
                         name: &s.name,
                         request: &s.request,
+                        tries: s.tries.map(|t| t.count),
                         summary: StepSummary::from(&s.outcome),
                     })
                     .collect(),
@@ -184,7 +188,7 @@ mod tests {
     use crate::model::Response;
     use crate::runner::StepOutcome;
     use crate::script::TestResult;
-    use crate::workflow::{Step, StepResult};
+    use crate::workflow::{Step, StepResult, Tries};
 
     fn outcome(status: u16, tests: &[(&str, bool)]) -> StepOutcome {
         StepOutcome {
@@ -227,12 +231,17 @@ mod tests {
                         name: "Log in".into(),
                         request: "a.toml".into(),
                         outcome: outcome(200, &[]),
+                        tries: None,
                     },
                     StepResult {
                         index: 1,
                         name: "Get".into(),
                         request: "b.toml".into(),
                         outcome: outcome(200, &[("ok", true), ("name", false)]),
+                        tries: Some(Tries {
+                            count: 3,
+                            elapsed: Duration::from_millis(2500),
+                        }),
                     },
                 ],
                 skipped: 1,
@@ -272,6 +281,9 @@ mod tests {
         assert_eq!(value["iterations"][0]["row"]["user"], "ann");
         assert_eq!(value["iterations"][0]["skipped"], 1);
         assert_eq!(value["iterations"][0]["steps"][1]["status"], 200);
+        // R-FLOW-10: only a step that repeats says how often it was sent.
+        assert_eq!(value["iterations"][0]["steps"][1]["tries"], 3);
+        assert!(value["iterations"][0]["steps"][0].get("tries").is_none());
         assert_eq!(
             value["iterations"][0]["steps"][1]["tests"][1]["passed"],
             false
@@ -288,6 +300,7 @@ mod tests {
             name: name.into(),
             request: format!("{name}.toml"),
             outcome: outcome(status, &[]),
+            tries: None,
         };
         let result = RunResult {
             iterations: vec![

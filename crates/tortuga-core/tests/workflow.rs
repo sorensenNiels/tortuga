@@ -1,11 +1,13 @@
 //! Workflows on disk, run against a mock server (R-FLOW-1, R-FLOW-3, R-FLOW-4,
-//! R-FLOW-6).
+//! R-FLOW-6, R-FLOW-10).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use tortuga_core::storage::FsStorage;
-use tortuga_core::workflow::{self, FlowEnd, Progress, RunOptions, RunResult, Step, Workflow};
+use tortuga_core::workflow::{
+    self, FlowEnd, Progress, Repeat, RunOptions, RunResult, Step, Workflow,
+};
 use tortuga_core::{Client, Collection, HttpMethod, Request};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -110,7 +112,9 @@ async fn data_driven_run_with_captures() {
     let mut events = Vec::new();
     let result = workflow::run(&Client::default(), &col, wf, &options, |p| {
         events.push(match p {
-            Progress::Started { iteration, step } => format!("start {iteration}.{step}"),
+            Progress::Started {
+                iteration, step, ..
+            } => format!("start {iteration}.{step}"),
             Progress::Finished { iteration, step } => format!("done {iteration} {}", step.name),
         });
     })
@@ -480,4 +484,163 @@ async fn workspace_secrets_are_hidden_in_step_results() {
         "{}",
         url(get.shown())
     );
+}
+
+/// A project with "job-status.toml" (`GET /job`) and "next.toml" (`GET /next`), and a
+/// workflow that polls the first until its state is "done", then sends the second.
+async fn polling(server: &MockServer, dir: &Path, repeat: Repeat, tests: &str) -> Workflow {
+    Mock::given(method("GET"))
+        .and(path("/next"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(server)
+        .await;
+    Collection::create(&FS, dir, "Jobs").expect("create");
+    for (name, at) in [("Job status", "/job"), ("Next", "/next")] {
+        let mut request = Request::new(HttpMethod::Get, format!("{}{at}", server.uri()));
+        request.name = name.into();
+        Collection::open(&FS, dir)
+            .expect("open")
+            .new_request(&FS, Path::new(""), &request)
+            .expect("request");
+    }
+    Workflow {
+        name: "Poll".into(),
+        steps: vec![
+            Step {
+                tests: tests.into(),
+                repeat: Some(repeat),
+                ..Step::new(Path::new("job-status.toml"))
+            },
+            Step::new(Path::new("next.toml")),
+        ],
+        ..Workflow::default()
+    }
+}
+
+fn job_state(state: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "state": state }))
+}
+
+const UNTIL_DONE: &str = r#"vars.set("polls", String(Number(vars.get("polls") || 0) + 1));
+test("done", () => expect(res.json().state).toBe("done"));"#;
+
+/// R-FLOW-10: a repeating step is sent until a try passes; each try sees what the
+/// tries before it set, and the result is the last try with the count.
+#[tokio::test]
+async fn a_step_repeats_until_it_passes() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/job"))
+        .respond_with(job_state("running"))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/job"))
+        .respond_with(job_state("done"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repeat = Repeat {
+        times: 5,
+        wait_ms: 10,
+    };
+    let wf = polling(&server, dir.path(), repeat, UNTIL_DONE).await;
+    let col = Collection::open(&FS, dir.path()).expect("open");
+    let mut attempts = Vec::new();
+    let result = workflow::run(&Client::default(), &col, &wf, &RunOptions::default(), |p| {
+        if let Progress::Started { step, attempt, .. } = p {
+            attempts.push((step, attempt));
+        }
+    })
+    .await;
+    assert!(
+        result.passed(),
+        "{:?}",
+        result.iterations[0].steps[0].outcome.failure()
+    );
+    assert_eq!(attempts, [(0, 1), (0, 2), (0, 3), (1, 1)]);
+    let steps = &result.iterations[0].steps;
+    assert_eq!(steps.len(), 2, "one result per step, not per try");
+    assert_eq!(steps[0].tries.map(|t| t.count), Some(3));
+    assert_eq!(steps[1].tries, None);
+    assert_eq!(
+        steps[0].outcome.vars.get("polls"),
+        Some(&Some("3".to_owned()))
+    );
+}
+
+/// R-FLOW-10: when no try passes, the step fails after the last one, having waited
+/// between tries, and the run stops as after any failed step (R-FLOW-3).
+#[tokio::test]
+async fn a_step_that_never_passes_fails_after_its_tries() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/job"))
+        .respond_with(job_state("running"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repeat = Repeat {
+        times: 3,
+        wait_ms: 120,
+    };
+    let wf = polling(&server, dir.path(), repeat, UNTIL_DONE).await;
+    let col = Collection::open(&FS, dir.path()).expect("open");
+    let start = std::time::Instant::now();
+    let result = workflow::run(
+        &Client::default(),
+        &col,
+        &wf,
+        &RunOptions::default(),
+        |_| {},
+    )
+    .await;
+    let took = start.elapsed();
+    let iteration = &result.iterations[0];
+    let polled = &iteration.steps[0];
+    assert!(polled.outcome.failed());
+    assert_eq!(polled.tries.map(|t| t.count), Some(3));
+    assert!(
+        polled
+            .outcome
+            .errors
+            .iter()
+            .any(|e| e == "No try passed in 3 tries."),
+        "{:?}",
+        polled.outcome.errors
+    );
+    assert_eq!(iteration.skipped, 1);
+    // Three tries, two waits.
+    assert!(took >= std::time::Duration::from_millis(240), "{took:?}");
+    let requests = server.received_requests().await.expect("recorded");
+    assert_eq!(requests.len(), 3);
+}
+
+/// R-FLOW-10, R-FLOW-6: a try whose script says what runs next ends the repeating.
+#[tokio::test]
+async fn a_script_choosing_the_next_step_ends_the_repeating() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/job"))
+        .respond_with(job_state("failed"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let tests = r#"if (res.json().state === "failed") workflow.stop();
+test("done", () => expect(res.json().state).toBe("done"));"#;
+    let wf = polling(&server, dir.path(), Repeat::default(), tests).await;
+    let col = Collection::open(&FS, dir.path()).expect("open");
+    let result = workflow::run(
+        &Client::default(),
+        &col,
+        &wf,
+        &RunOptions::default(),
+        |_| {},
+    )
+    .await;
+    let steps = &result.iterations[0].steps;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].tries.map(|t| t.count), Some(1));
+    assert!(steps[0].outcome.failed(), "its test still failed");
 }

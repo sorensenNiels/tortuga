@@ -586,6 +586,11 @@ fn print_progress(
                 ),
                 Some(Err(_)) | None => "no response".to_owned(),
             };
+            // R-FLOW-10: a step that repeated says how often it was sent.
+            let detail = match step.tries {
+                Some(tries) => format!("{detail}, {}", tries.summary()),
+                None => detail,
+            };
             println!(
                 "  {} {} ({detail})",
                 if o.failed() { "FAIL" } else { "ok  " },

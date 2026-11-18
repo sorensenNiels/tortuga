@@ -1,13 +1,36 @@
 # Tortuga 🐢
 
-A fast, local-first API client written in Rust. Projects are plain files that teams share through git.
-Runs on Windows, Linux and macOS (web support planned).
+**A fast, git-friendly API client for developers.** Your requests live as plain files in your repository, next to the
+code they call, and your team shares them with the git workflow it already has. No account, no cloud, no sync service.
 
-**Status:** milestones M1–M8 and the v1 extras are implemented: sending requests, projects on disk, environments with servers and
-variables, auth and secrets, cookies, live git status, workspaces, kept unsaved edits, copy as curl, installers for
-Windows, macOS and Linux, and the first daily-driver features: paste curl, quick open and command palette, search and
-filter responses, history, request preview, folder defaults, multipart uploads, custom CA certificates and drag and drop. See [docs/FEATURES.md](docs/FEATURES.md) for what
-works today and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
+[![CI](https://github.com/sorensenNiels/tortuga/actions/workflows/ci.yml/badge.svg)](https://github.com/sorensenNiels/tortuga/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/sorensenNiels/tortuga?include_prereleases&label=release)](https://github.com/sorensenNiels/tortuga/releases)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/screenshot-dark.png">
+  <img alt="Tortuga showing a project from a git repository: requests in folders with git change markers, a workflow, and a JSON response with all four tests passed" src="docs/images/screenshot-light.png">
+</picture>
+
+## Why Tortuga
+
+- **Requests are code.** A project is a folder of small TOML files, one per request. Pull requests show exactly which
+  request changed and how, and a `git pull` brings in your teammates' changes without an import step.
+- **Nothing leaves your machine.** No sign-in, no telemetry, works offline. Secret values (tokens, passwords) stay on
+  your computer; only their names go into the files you commit.
+- **Fast and native.** Written in Rust, for Windows, Linux and macOS. It starts in a moment and stays quick with large
+  responses.
+- **Bring what you have.** Import OpenAPI 3, Postman collections (with their scripts translated), Insomnia, Bruno and
+  `.http` files, or paste a `curl` command.
+- **Test it, then run it in CI.** Tests, captures and scripts in JavaScript; workflows that chain requests, run per
+  row of a data file, and poll until a job is done. `tortuga-cli` runs the same files in your pipeline and writes
+  JUnit or JSON reports.
+- **Mock the API before it exists.** Saved example responses become a local mock server, and responses are checked
+  against them.
+- **Catch mistakes before you push.** `tortuga-cli check` finds missing variables, broken workflow steps and
+  credentials typed into request files. `tortuga-cli diff` summarises API changes in a pull request.
+- **Works with your tools.** A VS Code extension, and an MCP server so AI coding agents can read and send your
+  requests.
 
 ## Install
 
@@ -20,7 +43,39 @@ Download the installer for your OS from the [releases page](https://github.com/s
 | **Linux** (Debian, Ubuntu) | `.deb` | `sudo apt install ./tortuga_*.deb` |
 | **Linux** (other) | `.AppImage` | `chmod +x tortuga_*.AppImage`, then run it. |
 
-Tortuga needs no account and works offline. To build installers yourself, see [docs/RELEASING.md](docs/RELEASING.md).
+The same page has `tortuga-cli`, the command-line runner for CI, as a `tortuga-cli-<version>-<os>` archive.
+
+## Getting started
+
+This takes about five minutes and ends with a request your teammates can use.
+
+1. **Send a request.** The *scratch request* at the top of the sidebar is for quick calls. Type a URL, or paste a
+   `curl` command (from API docs or the browser's "Copy as cURL") and the method, headers and body are filled in.
+   Press **Ctrl+Enter** to send.
+2. **Create a project in your repository.** Choose **+ Add → New project…** in the sidebar and pick a folder in your
+   API's git repository, such as `api-requests/`. If you have an OpenAPI description or a Postman, Insomnia, Bruno or
+   `.http` collection, use the matching **+ Add → Import…** instead: it creates the project with its requests,
+   environments and auth.
+3. **Add environments and servers.** In the project's **…** menu, open **Environments…**. Add your environments (for
+   example *Local* and *Staging*), a server with a base URL for each, and the variables your requests need. Mark
+   credentials as **secret** (🔒): only the name is saved in the files, the value stays on your machine.
+4. **Save requests to the project.** **Save to project…** keeps the scratch request; **Ctrl+S** saves later edits. Pick
+   the server in front of the URL field and type only the path, so one request works in every environment.
+5. **Add a test.** In the request's **Scripts** tab:
+
+   ```js
+   test("status is 200", () => expect(res.status).toBe(200));
+   ```
+
+   Send again and the response's **Tests** tab shows the result.
+6. **Commit and push** the project folder like any other change. Colleagues open it with **+ Add → Add existing
+   projects…**, and CI can run it:
+
+   ```sh
+   tortuga-cli run api-requests --env Staging --report junit --out results.xml
+   ```
+
+Press **Ctrl+K** at any time for every command, and **Ctrl+P** to find a request by name or URL.
 
 ## Working as a team
 
@@ -39,6 +94,20 @@ my-api/                          your API's git repository
     │   └── create-user.toml
     └── workflows/               chained requests with checks
         └── user-lifecycle.toml
+```
+
+A request file is short and readable in a diff:
+
+```toml
+name = "Get user"
+method = "GET"
+server = "api"
+url = "/users/{{user_id}}"
+
+[scripts]
+tests = """
+test("found", () => expect(res.status).toBe(200));
+"""
 ```
 
 ### What is shared and what stays on your computer
@@ -96,45 +165,14 @@ Tortuga writes nothing local into the project folder, so you don't need a `.giti
 - **Hand something over quickly.** **Copy as curl** (next to Save) gives a teammate a command they can run anywhere.
   You choose whether to mask secret values.
 - **Run the same checks in CI.** `tortuga-cli` runs the committed workflows and requests without a window. Pass
-  secrets as `TORTUGA_VAR_<name>` environment variables (see [In CI](#using-tortuga) below).
+  secrets as `TORTUGA_VAR_<name>` environment variables (see [In CI](#in-ci) below).
 
 Keep everything a request needs inside the project, such as files to upload in a `fixtures/` folder and data files
 for workflows. Then the request works on every teammate's machine.
 
-## Getting started (development)
+## Feature guide
 
-### 1. Install the prerequisites (once per machine)
-
-You need `git` and `make`. Then run the setup for your OS. It installs the system libraries the desktop
-app needs, the Rust toolchain (version pinned in `rust-toolchain.toml`), and the cargo tools
-`cargo-deny` and `cargo-nextest`.
-
-| OS | Command | What it installs |
-|---|---|---|
-| **Linux** (Ubuntu/Debian, Fedora, Arch) | `make setup` | GTK 3 dev package, `libxkbcommon-x11` and OpenGL libraries (asks for your sudo password), Rust, cargo tools |
-| **WSL2** | `make setup` | Same as Linux. The app window opens through WSLg (Windows 11, or Windows 10 with WSLg). |
-| **macOS** | `make setup` | Xcode Command Line Tools (if missing), Rust, cargo tools |
-| **Windows** | `powershell -ExecutionPolicy Bypass -File scripts\setup-windows.ps1` | MSVC Build Tools, GNU make, Rust, cargo tools |
-
-On Windows the first run installs `make`, so call the script directly; afterwards `make setup` works too.
-Open a new terminal after setup so the updated `PATH` is picked up.
-
-### 2. Run the app
-
-```sh
-make run          # desktop app
-```
-
-The first build takes a few minutes; later builds are incremental.
-In VS Code, press F5 to debug ("Debug Tortuga (desktop)").
-
-### 3. Check your changes
-
-```sh
-make verify       # formatting, lints, all tests, dependency checks: the same as CI
-```
-
-## Using Tortuga
+### Workspaces, environments and variables
 
 **Workspaces and projects.** A *project* is a folder with a `tortuga.toml`, typically inside your API's git
 repository. Requests are saved as one `.toml` file each and folders are directories, so you share them with
@@ -172,6 +210,18 @@ sent until they are. An environment a project brings along (one you open or pull
 `{{$timestamp}}` (seconds), `{{$isoTimestamp}}`, `{{$randomInt}}` (0–1000), and `{{$randomInt 1 10}}` or
 `{{$random.integer(1, 10)}}` (1 to 9). They work in the mock's example responses too.
 
+**Settings for a workspace or a project.** Timeout, following redirects and cookies come from Settings, but a
+workspace (**Defaults…** in the workspace menu) or a project (**Defaults (headers, auth, requests)…** in its menu) can set
+its own on the **Requests** tab; the nearest wins, and every field shows what it inherits and from where. A workspace's
+**Defaults…** also has headers and auth that every project inherits below its own, such as one `X-Tenant` header or one
+bearer token for all your services. Project settings are saved in `tortuga.toml`, workspace ones in the workspace file,
+so the team shares them. Turning off TLS verification stays a setting of your own machine.
+
+**Folder defaults.** A folder's **…** menu has **Folder defaults…**: headers, auth and variables for every request in
+that folder. They are saved in the folder's `_folder.toml`, so they are shared through git like the requests.
+
+### Requests and responses
+
 The scratch request (top of the sidebar) is for quick one-off calls; **Save to project…** keeps it.
 
 **Moving around.** **Ctrl+P** (or **Go to request…**) finds any request in the workspace by typing part of its name,
@@ -182,6 +232,32 @@ doesn't pile up tabs. Double-click the tab or the request, or edit it, and the t
 projects open, each project's tabs are grouped behind a coloured chip; click the chip to fold the group away.
 **Ctrl+Tab** goes back to the previous tab, **Ctrl+PageDown/PageUp** to the next/previous one, **Ctrl+W** closes it
 (unsaved edits are kept).
+
+**From curl to request.** Paste a `curl` command (e.g. from API docs or the browser's "Copy as cURL") into the URL
+field: method, URL, headers, body and auth are filled in. In a saved request this is an unsaved change; **Revert**
+undoes it.
+
+**Responses.** **Ctrl+F** searches the body. Above a JSON body, **Filter** takes a JSONPath expression such as
+`$.items[*].id` or `$..users[?(@.active == true)].email`; above an XML body, an XPath expression such as
+`//order[@status='paid']/@id` (a name without a prefix matches any prefix, so `//Body` finds `soap:Body`). The **Preview** tab of the request shows exactly what will be
+sent, with secret values masked.
+
+**History.** The **History** tab in the sidebar lists what you sent, per day. Click an entry to see that response;
+**Restore request** brings back the request as it was then. History stays on your computer; **Clear** removes it.
+
+**Uploads.** Choose the **Multipart** body type to send form fields and files. Keep files to upload inside the project
+(e.g. a `fixtures/` folder) and they are saved with a path relative to it, so the request works for teammates too.
+
+**Descriptions.** A request's **Docs** tab, and **Description…** in a project's or folder's **…** menu, hold a
+description in Markdown, shown rendered; **Edit** switches to the text. It is saved in the file it describes, so it is
+reviewed in git with the requests. Imported Postman collections and OpenAPI descriptions bring theirs along.
+Unsaved edits are kept when you close Tortuga. **Copy as curl** (next to Save) copies the request with variables
+filled in; if it uses secret values, you choose whether to mask them.
+
+**Reordering.** Drag requests and folders in the sidebar to reorder them or move them into a folder. In the
+environments dialog, drag the ☰ handle of an environment or server to change their order.
+
+### Importing
 
 **From an OpenAPI description.** **+ Add → Import OpenAPI…** turns an OpenAPI 3 file (JSON or YAML) into a new
 project: a folder per tag, a request per operation with its parameters and an example body, the spec's servers as
@@ -202,49 +278,10 @@ a request per `###` block, named by its `###` title, with `@variables` as projec
 server. Credentials in `Authorization` headers become secret variables kept on your machine, and request variables such
 as `{{login.response.body.$.token}}` become a capture in the `login` request, so chained requests keep working.
 
-**From curl to request.** Paste a `curl` command (e.g. from API docs or the browser's "Copy as cURL") into the URL
-field: method, URL, headers, body and auth are filled in. In a saved request this is an unsaved change; **Revert**
-undoes it.
+Insomnia and Bruno collections import the same way, from **+ Add**. **Settings → Importers** chooses which importers
+it offers.
 
-**Responses.** **Ctrl+F** searches the body. Above a JSON body, **Filter** takes a JSONPath expression such as
-`$.items[*].id` or `$..users[?(@.active == true)].email`; above an XML body, an XPath expression such as
-`//order[@status='paid']/@id` (a name without a prefix matches any prefix, so `//Body` finds `soap:Body`). The **Preview** tab of the request shows exactly what will be
-sent, with secret values masked.
-
-**History.** The **History** tab in the sidebar lists what you sent, per day. Click an entry to see that response;
-**Restore request** brings back the request as it was then. History stays on your computer; **Clear** removes it.
-
-**Uploads.** Choose the **Multipart** body type to send form fields and files. Keep files to upload inside the project
-(e.g. a `fixtures/` folder) and they are saved with a path relative to it, so the request works for teammates too.
-
-**Company certificates.** If your internal APIs use certificates from your company's own CA, add its PEM file under
-**Settings → CA certificates**.
-
-**Reordering.** Drag requests and folders in the sidebar to reorder them or move them into a folder. In the
-environments dialog, drag the ☰ handle of an environment or server to change their order.
-
-**Settings.** Settings (top right) has four tabs. **Requests**: redirects, cookies, the default timeout, CA
-certificates, and hosts whose certificates aren't checked, for test servers with self-signed certificates (only on your
-machine). **Appearance**: light, dark or system theme, the language (English or Danish; by default the
-system's), text size (also **Ctrl+=**, **Ctrl+-**, **Ctrl+0**) and wrapping
-long lines in responses (also the **Wrap** switch above a response). **History**: how many sent requests are kept per
-project, or none. **Importers**: which importers "+ Add" offers.
-
-**Settings for a workspace or a project.** Timeout, following redirects and cookies come from Settings, but a
-workspace (**Defaults…** in the workspace menu) or a project (**Defaults (headers, auth, requests)…** in its menu) can set
-its own on the **Requests** tab; the nearest wins, and every field shows what it inherits and from where. A workspace's
-**Defaults…** also has headers and auth that every project inherits below its own, such as one `X-Tenant` header or one
-bearer token for all your services. Project settings are saved in `tortuga.toml`, workspace ones in the workspace file,
-so the team shares them. Turning off TLS verification stays a setting of your own machine.
-
-**Folder defaults.** A folder's **…** menu has **Folder defaults…**: headers, auth and variables for every request in
-that folder. They are saved in the folder's `_folder.toml`, so they are shared through git like the requests.
-
-**Descriptions.** A request's **Docs** tab, and **Description…** in a project's or folder's **…** menu, hold a
-description in Markdown, shown rendered; **Edit** switches to the text. It is saved in the file it describes, so it is
-reviewed in git with the requests. Imported Postman collections and OpenAPI descriptions bring theirs along.
-Unsaved edits are kept when you close Tortuga. **Copy as curl** (next to Save) copies the request with variables
-filled in; if it uses secret values, you choose whether to mask them.
+### Tests, scripts and workflows
 
 **Tests and scripts.** A request's **Scripts** tab holds JavaScript that is saved in the request file and reviewed in
 git like code:
@@ -276,11 +313,27 @@ every project `{{token}}`. The workspace menu's **Variables…** lists these val
 run in order, each step with optional extra captures and tests. Values captured by a step are available to the next
 ones as `{{variables}}`. Choose a CSV or JSON **data file** to run the workflow once per row. Workflows are saved in
 the project's `workflows/` folder, so they are shared through git too. **Run** (or **Ctrl+Enter**) shows each step's
-result; click a step for its tests and response. A step's script can change what runs next:
-`workflow.next("Check status")` runs that step after this one (to poll until a job is done), `workflow.stop()` ends the
-iteration. An iteration stops after 1000 steps, so a loop that never ends can't hang a run.
+result; click a step for its tests and response.
 
-**In CI.** `tortuga-cli` runs the same files from a terminal, without a window:
+To **poll** an asynchronous API (`202 Accepted`, then a status URL until the job is done), open a step's **Checks…**
+and turn on **Repeat until it passes**: the step is sent again, up to the number of **Tries**, with a **Wait** between
+them, until its tests pass. The results show how many tries it took. For other loops, a step's script can choose what
+runs next: `workflow.next("Check status")` runs that step after this one, `workflow.stop()` ends the iteration. An
+iteration stops after 1000 steps, so a loop that never ends can't hang a run.
+
+### Mock servers
+
+The **mock server** answers with the saved examples of a project's requests (the **Examples** tab, or **Save as
+example** on a response), so you can build against an API before it exists. Start it from the project's **…** menu;
+it can match examples on headers, query and body. When a request has examples, a response that doesn't match their
+status, content type or JSON shape shows as a failed test. `tortuga-cli mock` serves the same mock from a terminal,
+and `tortuga-cli run … --mock` runs a workflow against it.
+
+### Command line and CI
+
+#### In CI
+
+`tortuga-cli` runs the same files from a terminal, without a window:
 
 ```sh
 tortuga-cli run path/to/project user-lifecycle --env Staging --report junit --out results.xml
@@ -292,9 +345,11 @@ It prints each step with its tests and exits with 0 when everything passed, 1 wh
 usage errors. Pass secrets with `--var name=value` or `TORTUGA_VAR_<name>` environment variables. `--data FILE`
 runs once per row; `--report json` writes JSON instead of JUnit XML; `--workspace FILE` also uses the variables and
 environments of a `.tortuga-workspace.toml` (the project's own values win), so `--env Staging` finds the workspace's
-*Staging*. Download it from a release (`tortuga-cli-<version>-<os>` archive, R-CLI-4) or build it with `make cli`.
+*Staging*. Download it from a release (`tortuga-cli-<version>-<os>` archive) or build it with `make cli`.
 
-**Before a push.** `tortuga-cli check` reads a project without sending anything and reports what would fail later
+#### Before a push
+
+`tortuga-cli check` reads a project without sending anything and reports what would fail later
 or leak: files that don't read, workflow steps naming a request that is gone, `{{variables}}` with no value in some
 environment, and values that look like credentials (JWTs, Bearer tokens, AWS, GitHub, Stripe or Slack keys, private
 keys, a typed-in Basic password) in the files you commit. It exits with 1 when it finds something, so it fits CI and a
@@ -308,7 +363,9 @@ A finding names its place, never the value (`login.toml: header Authorization: l
 as a fake token in a test request, list its place in the project's `tortuga.toml`:
 `[check]` `allow = ["login.toml: header Authorization"]`. Examples are not scanned.
 
-**In a pull request.** `tortuga-cli diff` prints, as Markdown, what a change does to a project's API: requests added,
+#### In a pull request
+
+`tortuga-cli diff` prints, as Markdown, what a change does to a project's API: requests added,
 removed, moved and changed (method, path, params, headers, auth type, body shape and examples, never values), one row
 each, with the details folded away. Changes that may break clients (anything removed, renamed or of another type) are
 marked ⚠, and `--fail-on-breaking` makes them fail the build. Revisions read as in git: `main` (against your working
@@ -321,6 +378,8 @@ shows it). In GitHub Actions, after `actions/checkout` with `fetch-depth: 0`:
   env:
     GH_TOKEN: ${{ github.token }}
 ```
+
+### Editors and AI agents
 
 **In VS Code.** The extension in [editors/vscode](editors/vscode/README.md) lists your projects in the Testing view and
 runs them with `tortuga-cli`, with an environment picker and "Open in Tortuga". `make vscode` builds it.
@@ -341,7 +400,61 @@ In the app, the MCP server is an add-on: turn it on in **Settings → Add-ons** 
 workspace at `http://127.0.0.1:4040/mcp` with the environment and secrets chosen in the app; its dialog copies the
 configuration for Claude Code, Cursor or VS Code (with a token that changes each start) and logs what agents did.
 
-## Make targets
+### Settings
+
+Settings (top right) has these tabs. **Requests**: redirects, cookies, the default timeout, CA certificates (add your
+company's CA if your internal APIs use certificates from it), and hosts whose certificates aren't checked, for test
+servers with self-signed certificates (only on your machine). **Appearance**: light, dark or system theme, the language
+(English or Danish; by default the system's), text size (also **Ctrl+=**, **Ctrl+-**, **Ctrl+0**) and wrapping long
+lines in responses (also the **Wrap** switch above a response). **History**: how many sent requests are kept per
+project, or none. **Importers**: which importers "+ Add" offers. **Add-ons**: workflows, the mock server, the MCP
+server and GeoServer tools, each on or off.
+
+## Status
+
+Tortuga is before 1.0 and is released often (see the [changelog](CHANGELOG.md)). It is built and
+tested on Linux and Windows; the macOS builds are made by CI but have not been tried on a Mac yet. A web version may
+follow. [docs/FEATURES.md](docs/FEATURES.md) lists what works and how it was checked, and
+[docs/ROADMAP.md](docs/ROADMAP.md) has the plan. Ideas and bug reports are welcome as
+[issues](https://github.com/sorensenNiels/tortuga/issues).
+
+## Development
+
+### 1. Install the prerequisites (once per machine)
+
+You need `git` and `make`. Then run the setup for your OS. It installs the system libraries the desktop
+app needs, the Rust toolchain (version pinned in `rust-toolchain.toml`), and the cargo tools
+`cargo-deny` and `cargo-nextest`.
+
+| OS | Command | What it installs |
+|---|---|---|
+| **Linux** (Ubuntu/Debian, Fedora, Arch) | `make setup` | GTK 3 dev package, `libxkbcommon-x11` and OpenGL libraries (asks for your sudo password), Rust, cargo tools |
+| **WSL2** | `make setup` | Same as Linux. The app window opens through WSLg (Windows 11, or Windows 10 with WSLg). |
+| **macOS** | `make setup` | Xcode Command Line Tools (if missing), Rust, cargo tools |
+| **Windows** | `powershell -ExecutionPolicy Bypass -File scripts\setup-windows.ps1` | MSVC Build Tools, GNU make, Rust, cargo tools |
+
+On Windows the first run installs `make`, so call the script directly; afterwards `make setup` works too.
+Open a new terminal after setup so the updated `PATH` is picked up.
+
+### 2. Run the app
+
+```sh
+make run          # desktop app
+```
+
+The first build takes a few minutes; later builds are incremental.
+In VS Code, press F5 to debug ("Debug Tortuga (desktop)").
+
+### 3. Check your changes
+
+```sh
+make verify       # formatting, lints, all tests, dependency checks: the same as CI
+```
+
+[CLAUDE.md](CLAUDE.md) describes the coding conventions, and [docs/RELEASING.md](docs/RELEASING.md) how installers
+and releases are built.
+
+### Make targets
 
 | Target | What it does |
 |---|---|
@@ -365,7 +478,7 @@ configuration for Claude Code, Cursor or VS Code (with a token that changes each
 On Linux without the GTK 3 headers installed, `make test` and `make lint` still check everything that can be built
 (engine, UI and its tests, CLI, web target) and tell you what was skipped; `make run` asks you to run `make setup`.
 
-## Project layout
+### Project layout
 
 ```
 crates/
@@ -376,16 +489,15 @@ crates/
                    Builds the `tortuga` binary.
   tortuga-cli/     The command-line runner for workflows and tests in CI (`tortuga-cli` binary). No GUI libraries.
 editors/vscode/    The VS Code extension over `tortuga-cli` (TypeScript).
+selftest/          Tortuga testing itself: workflows that run against their projects' mocks in `cargo test`.
 docs/
-  ROADMAP.md       The plan: vision, milestones and phases, requirements, ideas and decisions.
+  ROADMAP.md       The plan: vision, phases, requirements, ideas and decisions.
   FEATURES.md      What is implemented and verified, per requirement.
   REQUIREMENTS.md  The agreed text of every implemented requirement.
 scripts/           One-time setup per OS (used by `make setup`).
 ```
 
-[CLAUDE.md](CLAUDE.md) describes the coding conventions.
-
-## Troubleshooting
+### Troubleshooting
 
 | Problem | Fix |
 |---|---|
@@ -398,4 +510,4 @@ scripts/           One-time setup per OS (used by `make setup`).
 
 ## License
 
-MIT OR Apache-2.0
+Tortuga is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
