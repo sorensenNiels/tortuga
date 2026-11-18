@@ -4,7 +4,12 @@ all-features = true
 
 [advisories]
 # RUSTSEC advisories fail the build; add `ignore = ["RUSTSEC-..."]` entries with a justification.
-ignore = []
+ignore = [
+    # chrono is unmaintained. Kept by choice (2026-11-18): Tortuga uses it for ISO
+    # timestamps and the local UTC offset, and rmcp (the MCP server) requires it
+    # anyway. Revisit when rmcp drops chrono.
+    { id = "RUSTSEC-2026-0543", reason = "chrono kept by choice; rmcp requires it too" },
+]
 # Only fail on unmaintained crates we depend on directly; transitive ones come from
 # eframe/winit/GTK and are tracked upstream.
 unmaintained = "workspace"
