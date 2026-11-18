@@ -117,6 +117,20 @@ pub fn history_dir(root: Option<&Path>) -> Option<PathBuf> {
     dirs().map(|d| d.data_dir().join("history").join(name))
 }
 
+/// The kept runs of the workflow `id` of the project at `root` (R-FLOW-14): in the
+/// project's history folder, so clearing that history removes them. `None` for an id
+/// that is not a plain file stem.
+pub fn workflow_runs_path(root: &Path, id: &str) -> Option<PathBuf> {
+    let plain = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+    if !plain {
+        return None;
+    }
+    history_dir(Some(root)).map(|d| d.join("workflows").join(format!("{id}.json")))
+}
+
 /// Folder with all history (R-HIST-3).
 pub fn all_history_dir() -> Option<PathBuf> {
     dirs().map(|d| d.data_dir().join("history"))
@@ -388,5 +402,17 @@ mod tests {
         assert_eq!(old.workspaces.len(), 1);
         assert_eq!(old.workspaces[0].projects, [ProjectRef::new("/repo/api")]);
         assert_eq!(old.open_collections, Vec::<PathBuf>::new());
+    }
+
+    /// R-FLOW-14: kept runs live in the project's history folder, by a plain id only.
+    #[test]
+    fn workflow_runs_are_kept_in_the_history_folder() {
+        let root = Path::new("/repo/api");
+        let path = workflow_runs_path(root, "nightly-run_2").expect("plain id");
+        assert!(path.starts_with(history_dir(Some(root)).expect("dir")));
+        assert!(path.ends_with("workflows/nightly-run_2.json"));
+        for bad in ["", "..", "../x", "a/b", "a\\b"] {
+            assert_eq!(workflow_runs_path(root, bad), None, "{bad}");
+        }
     }
 }

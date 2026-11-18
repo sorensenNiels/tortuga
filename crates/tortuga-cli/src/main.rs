@@ -14,6 +14,7 @@ use std::process::ExitCode;
 mod check;
 mod diff;
 mod list;
+mod load;
 mod mcp;
 mod mock;
 
@@ -29,6 +30,8 @@ Usage: tortuga-cli run <project> [<workflow, folder or request>] [options]
        tortuga-cli mcp [<project>] [--env NAME] [--workspace FILE]
        tortuga-cli check [<project>] [--workspace FILE] [--report json --out FILE]
        tortuga-cli diff <project> [<revisions>] [--fail-on-breaking] [--report json --out FILE]
+       tortuga-cli load <project> <workflow> --users N (--duration S | --iterations N)
+                        [--ramp-up S] [run options]
 
 run:  Runs a workflow (by name or id), the requests of a folder, or one request of
       the Tortuga project in <project>. Without a target, every request runs.
@@ -52,6 +55,12 @@ diff: Prints, as Markdown for a pull request comment, how the project's API chan
       Changes that may break clients are marked; with --fail-on-breaking they make
       it exit with 1.
 
+load: Load-tests a workflow: N virtual users run its steps again and again at once,
+      each with its own cookies and values, for S seconds or N iterations each,
+      and it prints each step's sends, failures, median, p95 and max time. Not
+      against a protected environment when a step may change data. Exits with 1
+      when a send failed.
+
 Options:
   --env NAME            Use this environment (by name or id): the project's, or with
                         --workspace the workspace's, the project's values winning
@@ -68,6 +77,10 @@ Options:
                         against an environment marked protected
   --insecure            Do not verify TLS certificates
   --cacert FILE         Also trust the CA certificates in this PEM file (repeatable)
+  --users N             load: virtual users at once (1 to 100)
+  --duration S          load: run for S seconds
+  --iterations N        load: or run the steps N times per user
+  --ramp-up S           load: start the users evenly over S seconds
   --report junit|json   Write a report ...
   --out FILE            ... to this file
   -h, --help            Show this help
@@ -103,6 +116,8 @@ struct Args {
     check_examples: bool,
     /// Whether `diff` fails on a change that may break clients (R-CLI-7).
     breaking: BreakingChanges,
+    /// `--users`, `--duration`, `--iterations` and `--ramp-up` of `load` (R-FLOW-15).
+    load: load::LoadArgs,
 }
 
 /// What `diff` does with a change that may break clients (R-CLI-7).
@@ -135,6 +150,8 @@ enum Command {
     Check(Box<Args>),
     /// Summarize the API changes between two revisions (R-CLI-7).
     Diff(Box<Args>),
+    /// Load-test a workflow (R-FLOW-15).
+    Load(Box<Args>),
     Help,
     Version,
 }
@@ -199,25 +216,35 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Command::Load(args) => {
+            let mut args = *args;
+            args.vars = with_env_vars(std::mem::take(&mut args.vars));
+            on_big_stack(move || load::load(&args))
+        }
         Command::Run(args) => {
             let mut args = *args;
             args.vars = with_env_vars(std::mem::take(&mut args.vars));
-            // Scripts run in the JS engine, which needs more stack than the 1 MB main
-            // thread Windows gives (debug builds overflow it), so run on a bigger one.
-            let outcome = std::thread::Builder::new()
-                .name("run".into())
-                .stack_size(RUN_STACK)
-                .spawn(move || run(&args))
-                .map_err(|e| e.to_string())
-                .and_then(|h| h.join().map_err(|_| "the run panicked".to_owned())?);
-            match outcome {
-                Ok(true) => ExitCode::SUCCESS,
-                Ok(false) => ExitCode::from(1),
-                Err(e) => {
-                    eprintln!("tortuga-cli: {e}");
-                    ExitCode::from(2)
-                }
-            }
+            on_big_stack(move || run(&args))
+        }
+    }
+}
+
+/// Runs `work` and gives its exit code: 0 when it passed, 1 when not, 2 for errors.
+/// Scripts run in the JS engine, which needs more stack than the 1 MB main thread
+/// Windows gives (debug builds overflow it), so it runs on a bigger one.
+fn on_big_stack(work: impl FnOnce() -> Result<bool, String> + Send + 'static) -> ExitCode {
+    let outcome = std::thread::Builder::new()
+        .name("run".into())
+        .stack_size(RUN_STACK)
+        .spawn(work)
+        .map_err(|e| e.to_string())
+        .and_then(|h| h.join().map_err(|_| "the run panicked".to_owned())?);
+    match outcome {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::from(1),
+        Err(e) => {
+            eprintln!("tortuga-cli: {e}");
+            ExitCode::from(2)
         }
     }
 }
@@ -239,6 +266,7 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
         Some("check") => (Command::Check, Some("check reads")),
         // The target is the revisions.
         Some("diff") => (Command::Diff, None),
+        Some("load") => (Command::Load, None),
         Some(other) => return Err(format!("unknown command '{other}'")),
     };
     let mut args = Args::default();
@@ -272,6 +300,10 @@ fn parse(input: Vec<String>) -> Result<Command, String> {
             "--mock" => args.mock = true,
             "--check-examples" => args.check_examples = true,
             "--fail-on-breaking" => args.breaking = BreakingChanges::Fail,
+            "--users" | "--duration" | "--iterations" | "--ramp-up" => {
+                let v = value(&arg)?;
+                args.load.set(&arg, &v)?;
+            }
             "--port" => {
                 let v = value("--port")?;
                 args.port = Some(
@@ -393,17 +425,26 @@ fn open_project(args: &Args) -> Result<(Collection, Option<String>, WorkspaceFil
     )
 }
 
-/// Runs what `args` asks for. `Ok(passed)`, or an error in the command or the project.
-fn run(args: &Args) -> Result<bool, String> {
+/// What `run` and `load` work on: the project (pointing at its mock with `--mock`),
+/// the target as a workflow, the options and the runtime to run it in.
+struct Prepared {
+    collection: Collection,
+    workflow: Workflow,
+    options: RunOptions,
+    client: Client,
+    runtime: tokio::runtime::Runtime,
+    /// Keeps the mock serving until the run is over (R-MOCK-5).
+    mock: Option<tortuga_core::mock::server::RunningMock>,
+}
+
+/// Opens the project, finds the target, refuses a run that may change data in a
+/// protected environment (`writes`, R-SRV-9), reads the data file and starts the mock
+/// with `--mock`. Prints the run's heading.
+fn prepare(args: &Args, writes: ProtectedRuns) -> Result<Prepared, String> {
     let (collection, environment, workspace) = open_project(args)?;
     let workflow = find_target(&collection, args.target.as_deref())?;
     if !args.mock {
-        check_protected(
-            &collection,
-            &workflow,
-            environment.as_deref(),
-            args.protected,
-        )?;
+        check_protected(&collection, &workflow, environment.as_deref(), writes)?;
     }
     let data_file = args
         .data
@@ -430,6 +471,8 @@ fn run(args: &Args) -> Result<bool, String> {
         workspace_defaults: workspace.defaults,
         rows,
         check_examples: args.check_examples,
+        // Starting at a step needs the app's last run (R-FLOW-13).
+        ..RunOptions::default()
     };
 
     let env_name = options
@@ -445,7 +488,7 @@ fn run(args: &Args) -> Result<bool, String> {
         .build()
         .map_err(|e| e.to_string())?;
     // Requests go to the mock through its environment (R-MOCK-4, R-MOCK-5).
-    let (_mock, collection) = if args.mock {
+    let (mock, collection) = if args.mock {
         let (running, with_mock) = runtime.block_on(mock::start_for_run(
             collection,
             options.environment.as_deref(),
@@ -463,6 +506,26 @@ fn run(args: &Args) -> Result<bool, String> {
         println!("{} — {} ({env_name})", collection.name(), workflow.name);
         (None, collection)
     };
+    Ok(Prepared {
+        collection,
+        workflow,
+        options,
+        client,
+        runtime,
+        mock,
+    })
+}
+
+/// Runs what `args` asks for. `Ok(passed)`, or an error in the command or the project.
+fn run(args: &Args) -> Result<bool, String> {
+    let Prepared {
+        collection,
+        workflow,
+        options,
+        client,
+        runtime,
+        mock: _mock,
+    } = prepare(args, args.protected)?;
     let multi = options.rows.len() > 1;
     let mut row_shown = None;
     let result = runtime.block_on(workflow::run(
@@ -576,6 +639,11 @@ fn print_progress(
             }
         }
         Progress::Finished { step, .. } => {
+            // R-FLOW-12: not sent, so no response, tests or log to print.
+            if let Some(condition) = &step.skipped_by {
+                println!("  skip {} (skip when: {condition})", step.name);
+                return;
+            }
             let o = &step.outcome;
             let detail = match &o.response {
                 Some(Ok(r)) => format!(
@@ -593,7 +661,7 @@ fn print_progress(
             };
             println!(
                 "  {} {} ({detail})",
-                if o.failed() { "FAIL" } else { "ok  " },
+                if step.failed() { "FAIL" } else { "ok  " },
                 step.name
             );
             for t in &o.tests {
@@ -624,7 +692,7 @@ fn count(n: usize, noun: &str) -> String {
 
 fn print_summary(workflow: &Workflow, result: &RunResult) {
     let (passed, failed, failed_steps) = result.counts();
-    let skipped: usize = result.iterations.iter().map(|i| i.skipped).sum();
+    let skipped: usize = result.iterations.iter().map(|i| i.skipped.len()).sum();
     let mut parts = vec![
         format!("{} passed", count(passed, "test")),
         format!("{failed} failed"),

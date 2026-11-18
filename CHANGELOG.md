@@ -6,6 +6,11 @@ What changes in each release of Tortuga, for the people who use it. The newest r
 
 ### Added
 
+- **Always run** for workflow steps, so clean-up steps run even after a failure.
+- **Skip when** for workflow steps: a JavaScript condition that leaves a step out of a run.
+- **Run from here** and **Run this step** in a workflow, starting with the values the last run had at that step.
+- **Runs** above a workflow's results: its last 10 runs are kept on this computer to compare with.
+- **Load test** add-on and `tortuga-cli load`: run a workflow with many virtual users and see each step's median, p95 and max response time.
 - **Repeat a workflow step until it passes.** Turn on "Repeat until it passes" in a step's checks to poll an API: the step is sent again, up to the number of tries you set and with a wait between them, until its tests pass. The results show how many tries it took; `tortuga-cli` does the same.
 
 ## 0.22.0 — 2026-11-13

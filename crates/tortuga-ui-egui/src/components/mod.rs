@@ -72,7 +72,8 @@ pub use sidebar::{Marks, SidebarAction, SidebarState, sidebar};
 pub use tab_strip::{GroupChip, TabAction, TabGroup, TabStripState, TabView, tab_strip};
 pub use var_help::{DefineIn, FieldWidth, Lines, VarHelp, VarInfo, var_edit};
 pub use workflow_view::{
-    IterationView, RequestChoice, RunView, StepView, WorkflowAction, WorkflowContext,
-    WorkflowEditorState, WorkflowFile, workflow_editor, workflow_results,
+    EditorAddOns, IterationView, KEPT_RUNS, RequestChoice, RunChoice, RunRecord, RunView, StepView,
+    WorkflowAction, WorkflowContext, WorkflowEditorState, WorkflowFile, runs_picker,
+    workflow_editor, workflow_results,
 };
 pub use workspace_vars::{WorkspaceVarsAction, WorkspaceVarsDialog};

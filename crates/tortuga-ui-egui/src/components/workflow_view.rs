@@ -6,11 +6,17 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use egui::{ComboBox, DragValue, Label, RichText, ScrollArea, TextEdit, Ui};
-use tortuga_core::workflow::{FlowEnd, Repeat, Step, StepResult, Tries, Workflow};
+use tortuga_core::workflow::{FlowEnd, Repeat, Start, Step, StepResult, Tries, Workflow};
 use tortuga_core::{HttpMethod, KeyValue};
 
 use super::{TestsView, VarHelp, key_value_table, tests_details};
 use crate::theme;
+
+mod history;
+mod results;
+
+pub use history::{KEPT_RUNS, RunChoice, RunRecord, runs_picker};
+pub use results::workflow_results;
 
 /// Most of a response body shown in the results.
 const BODY_PREVIEW_BYTES: usize = 64 * 1024;
@@ -56,6 +62,8 @@ impl WorkflowEditorState {
 /// One step of a run, ready to show.
 #[derive(Debug, Clone)]
 pub struct StepView {
+    /// Its place in the workflow's steps (a step may run more than once, R-FLOW-6).
+    pub index: usize,
     pub name: String,
     pub failure: Option<String>,
     pub status: Option<(u16, String)>,
@@ -67,6 +75,8 @@ pub struct StepView {
     pub body: Option<String>,
     /// How often a repeating step was sent (R-FLOW-10).
     pub tries: Option<Tries>,
+    /// The skip condition that held: not sent (R-FLOW-12).
+    pub skipped_by: Option<String>,
 }
 
 impl StepView {
@@ -78,8 +88,9 @@ impl StepView {
             errors.push(e.clone());
         }
         Self {
+            index: result.index,
             name: result.name.clone(),
-            failure: o.failure(),
+            failure: if result.failed() { o.failure() } else { None },
             status: response.map(|r| (r.status, r.status_text.clone())),
             elapsed_ms: response.map(|r| u64::try_from(r.elapsed.as_millis()).unwrap_or(u64::MAX)),
             tests: TestsView {
@@ -102,6 +113,7 @@ impl StepView {
                 String::from_utf8_lossy(head).into_owned()
             }),
             tries: result.tries,
+            skipped_by: result.skipped_by.clone(),
         }
     }
 }
@@ -136,6 +148,35 @@ pub struct RunView {
     /// The iterations are a data file's rows (R-FLOW-4), not repeats (R-FLOW-8).
     pub by_rows: bool,
     pub cancelled: bool,
+    /// Where it started (R-FLOW-13).
+    pub start: Start,
+    /// What it started from, per iteration (R-FLOW-13, D86).
+    pub start_values: Vec<BTreeMap<String, String>>,
+}
+
+impl RunView {
+    /// What a run that starts at step `k` begins with (R-FLOW-13, D86): per
+    /// iteration of this run that reached step `k`, the values it started with and
+    /// what the steps before `k` set, up to the first iteration that didn't reach it.
+    pub fn values_at(&self, k: usize) -> Vec<BTreeMap<String, String>> {
+        let mut out = Vec::new();
+        for (n, iteration) in self.iterations.iter().enumerate() {
+            let Some(at) = iteration.steps.iter().position(|s| s.index == k) else {
+                break;
+            };
+            let mut values = self
+                .start_values
+                .get(n)
+                .or_else(|| self.start_values.first())
+                .cloned()
+                .unwrap_or_default();
+            for step in &iteration.steps[..at] {
+                tortuga_core::runner::apply_changes(&mut values, &step.tests.vars);
+            }
+            out.push(values);
+        }
+        out
+    }
 }
 
 impl RunView {
@@ -176,6 +217,14 @@ pub struct WorkflowContext<'a> {
     pub file: WorkflowFile,
     pub running: bool,
     pub can_pick_files: bool,
+    pub addons: EditorAddOns,
+}
+
+/// Add-ons that add to the workflow editor.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EditorAddOns {
+    /// "Load test…" (R-ADD-7, R-FLOW-15).
+    pub load_test: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +239,10 @@ pub enum WorkflowAction {
     ChooseData,
     /// Go to a step's request.
     OpenRequest(PathBuf),
+    /// Run from a step, or only that step (R-FLOW-13).
+    RunFrom(Start),
+    /// Open the load test of this workflow (R-FLOW-15).
+    LoadTest,
 }
 
 /// Name, options and steps of a workflow (R-FLOW-2).
@@ -359,6 +412,17 @@ fn header(ui: &mut Ui, workflow: &mut Workflow, cx: WorkflowContext<'_>) -> Opti
             {
                 action = Some(WorkflowAction::Run);
             }
+            if cx.addons.load_test
+                && ui
+                    .add_enabled(
+                        !workflow.steps.is_empty(),
+                        egui::Button::new(t!("load-test-open")),
+                    )
+                    .on_hover_text(t!("load-test-open-hint"))
+                    .clicked()
+            {
+                action = Some(WorkflowAction::LoadTest);
+            }
             match cx.file {
                 WorkflowFile::Saved | WorkflowFile::Edited => {
                     let edited = cx.file == WorkflowFile::Edited;
@@ -460,6 +524,9 @@ fn step_row(
                         *change = Some(StepChange::Up(i));
                     }
                 }
+                if let Some(run) = run_menu(ui, i, cx.running) {
+                    action = Some(run);
+                }
                 if request.is_some()
                     && ui
                         .small_button(t!("open"))
@@ -495,6 +562,24 @@ fn step_row(
     action
 }
 
+/// "▶" on a step's row: run from it, or only it (R-FLOW-13).
+fn run_menu(ui: &mut Ui, i: usize, running: bool) -> Option<WorkflowAction> {
+    let mut action = None;
+    ui.add_enabled_ui(!running, |ui| {
+        ui.menu_button("▶", |ui| {
+            if ui.button(t!("workflow-run-from-here")).clicked() {
+                action = Some(WorkflowAction::RunFrom(Start::From(i)));
+            }
+            if ui.button(t!("workflow-run-this-step")).clicked() {
+                action = Some(WorkflowAction::RunFrom(Start::Only(i)));
+            }
+        })
+        .response
+        .on_hover_text(t!("workflow-run-from-hint"));
+    });
+    action
+}
+
 /// What a step adds to its request, for its row: captures, tests, repeating.
 fn step_extras(step: &Step) -> Vec<String> {
     let mut extras = Vec::new();
@@ -506,6 +591,12 @@ fn step_extras(step: &Step) -> Vec<String> {
     }
     if let Some(repeat) = step.repeat {
         extras.push(t!("workflow-step-repeats", count = repeat.times));
+    }
+    if step.always {
+        extras.push(t!("workflow-step-always-runs"));
+    }
+    if !step.skip_when.trim().is_empty() {
+        extras.push(t!("workflow-step-has-skip-when"));
     }
     extras
 }
@@ -574,6 +665,7 @@ fn step_details(
                 theme::hint(ui, t!("workflow-step-tests-hint"));
                 ui.add_space(4.0);
                 repeat_options(ui, step);
+                flow_options(ui, step);
             });
         });
 }
@@ -610,13 +702,22 @@ fn repeat_options(ui: &mut Ui, step: &mut Step) {
     });
 }
 
-/// "after 7 tries (12.4 s)" (R-FLOW-10).
-fn tries_text(tries: Tries) -> String {
-    t!(
-        "workflow-step-tries-done",
-        count = tries.count,
-        seconds = crate::i18n::decimal(tries.elapsed.as_secs_f64(), 1)
-    )
+/// "Always run" (R-FLOW-11) and "Skip when" (R-FLOW-12).
+fn flow_options(ui: &mut Ui, step: &mut Step) {
+    ui.checkbox(&mut step.always, t!("workflow-step-always"))
+        .on_hover_text(t!("workflow-step-always-hint"));
+    ui.horizontal(|ui| {
+        let label = ui.label(t!("workflow-step-skip-when"));
+        ui.add(
+            TextEdit::singleline(&mut step.skip_when)
+                .id_salt("step-skip-when")
+                .code_editor()
+                .hint_text("vars.get(\"role\") !== \"admin\"")
+                .desired_width(360.0),
+        )
+        .labelled_by(label.id)
+        .on_hover_text(t!("workflow-step-skip-when-hint"));
+    });
 }
 
 fn add_step(
@@ -648,236 +749,6 @@ fn add_step(
         workflow.steps.push(Step::new(path));
         st.sync(workflow);
     }
-}
-
-/// The last run: per iteration and step, with details of the chosen step (R-FLOW-3).
-pub fn workflow_results(ui: &mut Ui, run: Option<&RunView>, st: &mut WorkflowEditorState) {
-    let p = theme::palette(ui);
-    let Some(run) = run else {
-        ui.vertical_centered(|ui| {
-            ui.add_space(30.0);
-            ui.label(RichText::new("⏵").size(28.0).color(p.border));
-            ui.label(theme::semibold(t!("workflow-not-run")).color(p.muted));
-            theme::hint(ui, t!("workflow-not-run-hint"));
-        });
-        return;
-    };
-    summary(ui, run);
-    ui.add_space(6.0);
-    let multi = run.iterations_planned > 1;
-    // The list takes the whole page until a step is chosen; then it shares it.
-    let has_chosen = st
-        .selected_result
-        .is_some_and(|(n, i)| run.iterations.get(n).is_some_and(|it| i < it.steps.len()));
-    let share = if has_chosen { 0.45 } else { 1.0 };
-    ScrollArea::vertical()
-        .id_salt("workflow-results")
-        .max_height(ui.available_height() * share)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for (n, iteration) in run.iterations.iter().enumerate() {
-                if multi {
-                    let failed = iteration.failed();
-                    let row = iteration
-                        .row
-                        .as_ref()
-                        .map(|r| {
-                            r.iter()
-                                .map(|(k, v)| format!("{k}={v}"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default();
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        mark(ui, !failed);
-                        let label = if run.by_rows {
-                            t!("workflow-row", row = n + 1)
-                        } else {
-                            t!("workflow-iteration", n = n + 1)
-                        };
-                        ui.label(theme::semibold(label));
-                        ui.add(Label::new(RichText::new(row).small().color(p.muted)).truncate());
-                    });
-                }
-                for (i, step) in iteration.steps.iter().enumerate() {
-                    if step_result_row(ui, step, i, st.selected_result == Some((n, i)), multi) {
-                        st.selected_result = Some((n, i));
-                    }
-                }
-                if iteration.skipped > 0 {
-                    theme::hint(ui, t!("workflow-skipped", count = iteration.skipped));
-                }
-                match iteration.ended {
-                    Some(end @ FlowEnd::Stopped) => theme::hint(ui, end.message()),
-                    Some(end @ FlowEnd::TooManySteps) => theme::error(ui, end.message()),
-                    None => {}
-                }
-            }
-            if let Some((n, i, attempt)) = run.current {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    let of = run.steps_per_iteration;
-                    let label = if multi && run.by_rows {
-                        t!(
-                            "workflow-running-row-step",
-                            row = n + 1,
-                            step = i + 1,
-                            of = of
-                        )
-                    } else if multi {
-                        t!(
-                            "workflow-running-iteration-step",
-                            n = n + 1,
-                            step = i + 1,
-                            of = of
-                        )
-                    } else {
-                        t!("workflow-running-step", step = i + 1, of = of)
-                    };
-                    let label = if attempt > 1 {
-                        format!("{label} {}", t!("workflow-running-try", attempt = attempt))
-                    } else {
-                        label
-                    };
-                    ui.label(RichText::new(label).color(p.muted));
-                });
-            }
-        });
-    let chosen = st
-        .selected_result
-        .and_then(|(n, i)| run.iterations.get(n)?.steps.get(i));
-    if let Some(step) = chosen {
-        ui.separator();
-        step_detail(ui, step);
-    }
-}
-
-fn summary(ui: &mut Ui, run: &RunView) {
-    let p = theme::palette(ui);
-    let (passed, failed, failed_steps) = run.counts();
-    ui.horizontal_wrapped(|ui| {
-        if run.running {
-            ui.spinner();
-            ui.label(theme::semibold(t!("running")));
-        } else if run.cancelled {
-            theme::badge(ui, t!("cancelled"), p.muted);
-        } else if run.passed() {
-            theme::badge(ui, t!("passed"), p.ok);
-        } else {
-            theme::badge(ui, t!("failed"), p.fail);
-        }
-        let mut parts = vec![
-            t!("workflow-tests-passed", count = passed),
-            t!("workflow-tests-failed", count = failed),
-        ];
-        if failed_steps > 0 {
-            parts.push(t!("workflow-steps-failed", count = failed_steps));
-        }
-        if run.iterations_planned > 1 {
-            let done = run.iterations.len();
-            let planned = run.iterations_planned;
-            parts.push(if run.by_rows {
-                t!("workflow-rows-done", done = done, planned = planned)
-            } else {
-                t!("workflow-iterations-done", done = done, planned = planned)
-            });
-        }
-        ui.label(RichText::new(parts.join(" · ")).color(p.muted));
-    });
-}
-
-fn mark(ui: &mut Ui, ok: bool) {
-    let p = theme::palette(ui);
-    if ok {
-        ui.label(RichText::new("✓").color(p.ok));
-    } else {
-        ui.label(RichText::new("✗").color(p.fail));
-    }
-}
-
-/// A step's line in the results. Returns whether it was clicked.
-fn step_result_row(ui: &mut Ui, step: &StepView, i: usize, selected: bool, indent: bool) -> bool {
-    let p = theme::palette(ui);
-    let mut detail = Vec::new();
-    if let Some((code, text)) = &step.status {
-        detail.push(format!("{code} {text}"));
-    }
-    if let Some(ms) = step.elapsed_ms {
-        detail.push(format!("{ms} ms"));
-    }
-    if let Some(tries) = step.tries {
-        detail.push(tries_text(tries));
-    }
-    if !step.tests.tests.is_empty() {
-        let passed = step.tests.tests.iter().filter(|t| t.passed).count();
-        detail.push(t!(
-            "workflow-step-tests",
-            passed = passed,
-            total = step.tests.tests.len()
-        ));
-    }
-    let (glyph, color) = if step.failure.is_some() {
-        ("✗", p.fail)
-    } else {
-        ("✓", p.ok)
-    };
-    let atoms = [
-        egui::Atom::from(RichText::new(glyph).color(color)),
-        egui::Atom::from(format!("{}. {}", i + 1, step.name)),
-        egui::Atom::grow(),
-        egui::Atom::from(RichText::new(detail.join(" · ")).small().color(p.muted)),
-    ];
-    let atoms: egui::Atoms<'_> = atoms.into_iter().collect();
-    let response = ui
-        .horizontal(|ui| {
-            if indent {
-                ui.add_space(18.0);
-            }
-            ui.add(
-                egui::Button::selectable(selected, atoms)
-                    .frame_when_inactive(selected)
-                    .truncate()
-                    .min_size(egui::vec2(ui.available_width(), 26.0)),
-            )
-        })
-        .inner;
-    if let Some(why) = &step.failure {
-        ui.horizontal(|ui| {
-            ui.add_space(if indent { 46.0 } else { 28.0 });
-            ui.add(Label::new(RichText::new(why).small().color(p.fail)).truncate());
-        });
-    }
-    response.clicked()
-}
-
-fn step_detail(ui: &mut Ui, step: &StepView) {
-    let p = theme::palette(ui);
-    ScrollArea::vertical()
-        .id_salt("workflow-step-detail")
-        .auto_shrink(false)
-        .show(ui, |ui| {
-            ui.label(theme::semibold(&step.name));
-            if let Some(sent) = &step.sent {
-                ui.add(Label::new(RichText::new(sent).monospace().color(p.muted)).wrap());
-            }
-            ui.add_space(4.0);
-            tests_details(ui, &step.tests);
-            if !step.tests.console.is_empty() {
-                ui.add_space(8.0);
-                theme::section_label(ui, &t!("console"));
-                super::console_view::console_view(ui, &step.tests.console);
-            }
-            if let Some(body) = &step.body {
-                ui.add_space(8.0);
-                theme::section_label(ui, &t!("response-body"));
-                if body.is_empty() {
-                    theme::hint(ui, t!("no-body"));
-                } else {
-                    ui.add(Label::new(RichText::new(body).monospace()).wrap());
-                }
-            }
-        });
 }
 
 #[cfg(test)]
@@ -924,6 +795,7 @@ mod tests {
                     file: WorkflowFile::Edited,
                     running: false,
                     can_pick_files: false,
+                    addons: EditorAddOns::default(),
                 };
                 workflow_editor(ui, &mut wf, &mut st, cx);
             });
@@ -963,6 +835,7 @@ mod tests {
                 file: WorkflowFile::Saved,
                 running: true,
                 can_pick_files: false,
+                addons: EditorAddOns::default(),
             };
             if let Some(a) = workflow_editor(ui, &mut wf, &mut st, cx) {
                 action.set(Some(a));
@@ -990,6 +863,8 @@ mod tests {
                 row: None,
                 ended: None,
                 steps: vec![StepView {
+                    index: 0,
+                    skipped_by: None,
                     name: "Get user".into(),
                     failure: Some("test “found” failed: Expected 404 to be 200".into()),
                     status: Some((404, "Not Found".into())),
@@ -1032,6 +907,8 @@ mod tests {
             let run = RunView {
                 iterations: vec![IterationView {
                     steps: vec![StepView {
+                        index: 0,
+                        skipped_by: None,
                         name: "Log in".into(),
                         failure: None,
                         status: Some((200, "OK".into())),
@@ -1075,5 +952,145 @@ mod tests {
         h.run();
         drop(h);
         assert_eq!(step.repeat, None);
+    }
+
+    fn step_view(index: usize, vars: &[(&str, Option<&str>)]) -> StepView {
+        StepView::new(&StepResult {
+            index,
+            name: format!("Step {index}"),
+            request: "r.toml".into(),
+            outcome: tortuga_core::runner::StepOutcome {
+                vars: vars
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), v.map(str::to_owned)))
+                    .collect(),
+                ..Default::default()
+            },
+            tries: None,
+            skipped_by: None,
+        })
+    }
+
+    /// R-FLOW-13, D86: a run from step k starts, per iteration that reached k, from
+    /// what that run started with and what the steps before k changed; iterations
+    /// from the first that didn't reach k on are left out.
+    #[test]
+    fn a_run_from_a_step_starts_with_the_last_runs_values() {
+        let run = RunView {
+            start_values: vec![[("base".to_owned(), "ü😀".to_owned())].into()],
+            iterations: vec![
+                IterationView {
+                    steps: vec![
+                        step_view(0, &[("token", Some("t-1")), ("base", None)]),
+                        step_view(1, &[("id", Some("7"))]),
+                        step_view(2, &[("late", Some("x"))]),
+                    ],
+                    ..IterationView::default()
+                },
+                IterationView {
+                    steps: vec![step_view(0, &[("token", Some("t-2"))])],
+                    ..IterationView::default()
+                },
+            ],
+            ..RunView::default()
+        };
+        let values = run.values_at(2);
+        assert_eq!(values.len(), 1, "the second iteration never reached step 3");
+        assert_eq!(
+            values[0],
+            BTreeMap::from([
+                ("id".to_owned(), "7".to_owned()),
+                ("token".to_owned(), "t-1".to_owned()),
+            ])
+        );
+        assert_eq!(run.values_at(0).len(), 2);
+        assert_eq!(run.values_at(0)[0]["base"], "ü😀");
+        assert_eq!(run.values_at(9), Vec::<BTreeMap<String, String>>::new());
+    }
+
+    /// R-FLOW-11, R-FLOW-12: the step's options and what its row says about them.
+    #[test]
+    fn steps_can_always_run_and_be_skipped() {
+        let mut step = Step::new(Path::new("users/delete.toml"));
+        let mut h = crate::test_host::harness(|ui| flow_options(ui, &mut step));
+        h.run();
+        h.get_by_label("Always run").click();
+        h.run();
+        h.get_by_label("Skip when");
+        drop(h);
+        assert!(step.always);
+        step.skip_when = "vars.get(\"keep\") === \"yes\"".into();
+        assert_eq!(step_extras(&step), ["always runs", "skip condition"]);
+    }
+
+    /// R-FLOW-12, R-FLOW-13: a skipped step says why and passes; a run that started
+    /// at a step says where and from what.
+    #[test]
+    fn results_show_skipped_steps_and_where_a_run_started() {
+        let skipped = StepView::new(&StepResult {
+            index: 1,
+            name: "Purge".into(),
+            request: "purge.toml".into(),
+            outcome: tortuga_core::runner::StepOutcome::default(),
+            tries: None,
+            skipped_by: Some("vars.get(\"role\") !== \"admin\"".into()),
+        });
+        let run = RunView {
+            iterations: vec![IterationView {
+                steps: vec![skipped],
+                ..IterationView::default()
+            }],
+            iterations_planned: 1,
+            steps_per_iteration: 3,
+            start: Start::From(1),
+            start_values: vec![BTreeMap::new()],
+            ..RunView::default()
+        };
+        let mut st = WorkflowEditorState::default();
+        let mut h = crate::test_host::harness(|ui| workflow_results(ui, Some(&run), &mut st));
+        h.run();
+        h.get_by_label("Passed");
+        h.get_by_label_contains("skipped: vars.get(\"role\") !== \"admin\"");
+        h.get_by_label("Started at step 2 with the values the last run had there.");
+    }
+
+    /// R-FLOW-14: a kept run reads back as the results showed it, without bodies.
+    #[test]
+    fn kept_runs_read_back_as_they_were_shown() {
+        let mut repeated = step_view(0, &[]);
+        repeated.status = Some((202, "Accepted ü😀".into()));
+        repeated.tries = Some(Tries {
+            count: 3,
+            elapsed: std::time::Duration::from_millis(2400),
+        });
+        repeated.body = Some("{\"big\": true}".into());
+        let mut skipped = step_view(1, &[]);
+        skipped.failure = None;
+        skipped.skipped_by = Some("vars.get(\"x\")".into());
+        let run = RunView {
+            iterations: vec![IterationView {
+                row: Some([("user".to_owned(), "ann".to_owned())].into()),
+                steps: vec![repeated, skipped],
+                skipped: 1,
+                ended: Some(FlowEnd::Stopped),
+            }],
+            iterations_planned: 2,
+            steps_per_iteration: 3,
+            by_rows: true,
+            ..RunView::default()
+        };
+        let record = RunRecord::new(&run, 1_700_000_000_000);
+        let json = serde_json::to_string(&record).expect("json");
+        let back: RunRecord = serde_json::from_str(&json).expect("read");
+        assert_eq!(back, record);
+        let view = back.view();
+        let it = &view.iterations[0];
+        assert_eq!((it.skipped, it.ended), (1, Some(FlowEnd::Stopped)));
+        assert_eq!(it.row, run.iterations[0].row);
+        assert_eq!(it.steps[0].status, run.iterations[0].steps[0].status);
+        assert_eq!(it.steps[0].tries, run.iterations[0].steps[0].tries);
+        assert_eq!(it.steps[0].body, None, "bodies are not kept");
+        assert_eq!(it.steps[1].skipped_by.as_deref(), Some("vars.get(\"x\")"));
+        assert!(view.by_rows && !view.running);
     }
 }

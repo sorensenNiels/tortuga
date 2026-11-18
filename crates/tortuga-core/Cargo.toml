@@ -31,6 +31,8 @@ boa_engine.workspace = true
 yaml-rust2.workspace = true
 # XML bodies and XPath (R-HTTP-19).
 quick-xml.workspace = true
+# Virtual users of a load test run side by side in one task (R-FLOW-15).
+futures-util.workspace = true
 
 # The mock server's listener (R-MOCK-2, D46); core logic stays runtime-free.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

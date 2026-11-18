@@ -321,6 +321,23 @@ them, until its tests pass. The results show how many tries it took. For other l
 runs next: `workflow.next("Check status")` runs that step after this one, `workflow.stop()` ends the iteration. An
 iteration stops after 1000 steps, so a loop that never ends can't hang a run.
 
+More in a step's **Checks…**: **Always run** runs the step even after an earlier step failed (for clean-up such as
+deleting test data), and **Skip when** takes a JavaScript expression, e.g. `vars.get("role") !== "admin"`, that
+leaves the step out when it is true. The **▶** on a step runs the workflow **from here** or **only this step**,
+starting with the values the last run had at that step, so a long workflow can be picked up where it failed. The
+**Runs** list above the results keeps the last 10 runs of each workflow on your computer, to compare a failing run
+with one that passed.
+
+**Load tests** are an add-on too (Settings → Add-ons → Load test, with Workflows on): **Load test…** next to Run
+runs the workflow with many virtual users at once, for a time or a number of iterations, and shows each step's sends,
+failures and median, p95 and max response time. From a terminal:
+
+```sh
+tortuga-cli load path/to/project checkout --users 20 --duration 60 --ramp-up 10 --env Staging
+```
+
+It refuses an environment marked protected when a step may change data. Load-test only servers you are allowed to.
+
 ### Mock servers
 
 The **mock server** answers with the saved examples of a project's requests (the **Examples** tab, or **Save as

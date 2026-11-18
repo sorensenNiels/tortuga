@@ -1,5 +1,5 @@
 //! Workflows on disk, run against a mock server (R-FLOW-1, R-FLOW-3, R-FLOW-4,
-//! R-FLOW-6, R-FLOW-10).
+//! R-FLOW-6, R-FLOW-10 to R-FLOW-12, R-FLOW-15).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -177,7 +177,7 @@ async fn failures_stop_unless_told_to_continue() {
     };
     let stopped = run(wf.clone()).await;
     assert_eq!(stopped.iterations[0].steps.len(), 1);
-    assert_eq!(stopped.iterations[0].skipped, 2);
+    assert_eq!(stopped.iterations[0].skipped.len(), 2);
     assert!(
         stopped.iterations[0].steps[0]
             .outcome
@@ -325,7 +325,7 @@ async fn scripts_stop_the_run_or_name_a_missing_step() {
     let stopped = run_with(dir.path().join("a").as_path(), "workflow.stop();", "").await;
     assert_eq!(names(&stopped), [(0, "Log in")]);
     assert_eq!(stopped.iterations[0].ended, Some(FlowEnd::Stopped));
-    assert_eq!(stopped.iterations[0].skipped, 0);
+    assert_eq!(stopped.iterations[0].skipped, Vec::<usize>::new());
     assert!(stopped.passed());
 
     let missing = run_with(
@@ -336,7 +336,7 @@ async fn scripts_stop_the_run_or_name_a_missing_step() {
     .await;
     let iteration = &missing.iterations[0];
     assert!(iteration.failed());
-    assert_eq!(iteration.skipped, 1);
+    assert_eq!(iteration.skipped.len(), 1);
     assert_eq!(
         iteration.steps[0].outcome.failure().as_deref(),
         Some("workflow.next(\"Nope ü\"): the workflow has no step called “Nope ü”.")
@@ -610,7 +610,7 @@ async fn a_step_that_never_passes_fails_after_its_tries() {
         "{:?}",
         polled.outcome.errors
     );
-    assert_eq!(iteration.skipped, 1);
+    assert_eq!(iteration.skipped.len(), 1);
     // Three tries, two waits.
     assert!(took >= std::time::Duration::from_millis(240), "{took:?}");
     let requests = server.received_requests().await.expect("recorded");
@@ -643,4 +643,174 @@ test("done", () => expect(res.json().state).toBe("done"));"#;
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0].tries.map(|t| t.count), Some(1));
     assert!(steps[0].outcome.failed(), "its test still failed");
+}
+
+/// The polling project's workflow with a third step, "Clean up" (`GET /next`, always
+/// run), after a status step whose test fails while the job is "running".
+async fn with_cleanup(server: &MockServer, dir: &Path, status_tests: &str) -> Workflow {
+    Mock::given(method("GET"))
+        .and(path("/job"))
+        .respond_with(job_state("running"))
+        .mount(server)
+        .await;
+    let mut wf = polling(server, dir, Repeat::default(), status_tests).await;
+    wf.steps[0].repeat = None;
+    wf.steps.push(Step {
+        name: Some("Clean up".into()),
+        always: true,
+        ..Step::new(Path::new("next.toml"))
+    });
+    wf
+}
+
+fn ran(result: &RunResult) -> Vec<&str> {
+    result.iterations[0]
+        .steps
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect()
+}
+
+/// R-FLOW-11: after a failed step, an always-run step still runs and the others are
+/// skipped; after `workflow.stop()` it runs too, and nothing counts as skipped.
+#[tokio::test]
+async fn always_run_steps_run_after_a_failure_or_a_stop() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let wf = with_cleanup(&server, &dir.path().join("a"), UNTIL_DONE).await;
+    let col = Collection::open(&FS, &dir.path().join("a")).expect("open");
+    let result = workflow::run(
+        &Client::default(),
+        &col,
+        &wf,
+        &RunOptions::default(),
+        |_| {},
+    )
+    .await;
+    assert_eq!(ran(&result), ["Job status", "Clean up"]);
+    assert_eq!(result.iterations[0].skipped, [1]);
+    assert!(!result.iterations[0].steps[1].failed());
+    assert!(!result.passed(), "the failed step still fails the run");
+
+    let stop = "workflow.stop();";
+    let wf = with_cleanup(&server, &dir.path().join("b"), stop).await;
+    let col = Collection::open(&FS, &dir.path().join("b")).expect("open");
+    let result = workflow::run(
+        &Client::default(),
+        &col,
+        &wf,
+        &RunOptions::default(),
+        |_| {},
+    )
+    .await;
+    assert_eq!(ran(&result), ["Job status", "Clean up"]);
+    assert_eq!(result.iterations[0].skipped, Vec::<usize>::new());
+    assert_eq!(result.iterations[0].ended, Some(FlowEnd::Stopped));
+    assert!(result.passed());
+}
+
+/// R-FLOW-12: a step whose condition holds is not sent and neither passes nor
+/// fails; one that doesn't hold is sent; a condition that throws fails the step.
+#[tokio::test]
+async fn steps_are_skipped_when_their_condition_holds() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/job"))
+        .respond_with(job_state("done"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut wf = polling(&server, dir.path(), Repeat::default(), "").await;
+    wf.steps[0].repeat = None;
+    let col = Collection::open(&FS, dir.path()).expect("open");
+    let options = RunOptions {
+        overrides: row(&[("role", "guest ü😀")]),
+        ..RunOptions::default()
+    };
+    let run = |wf: Workflow| {
+        let (col, options) = (&col, &options);
+        async move { workflow::run(&Client::default(), col, &wf, options, |_| {}).await }
+    };
+
+    wf.steps[0].skip_when = r#"vars.get("role") !== "admin" // only admins"#.into();
+    let result = run(wf.clone()).await;
+    let steps = &result.iterations[0].steps;
+    assert_eq!(
+        steps[0].skipped_by.as_deref(),
+        Some(wf.steps[0].skip_when.as_str())
+    );
+    assert!(!steps[0].failed());
+    assert!(steps[1].skipped_by.is_none());
+    assert!(result.passed());
+    let sent = server.received_requests().await.expect("recorded");
+    assert!(
+        sent.iter().all(|r| r.url.path() != "/job"),
+        "skipped: not sent"
+    );
+
+    wf.steps[0].skip_when = r#"vars.get("role") === "admin""#.into();
+    let result = run(wf.clone()).await;
+    assert!(result.iterations[0].steps[0].skipped_by.is_none());
+    assert!(result.passed());
+
+    wf.steps[0].skip_when = "vars.get(".into();
+    let result = run(wf.clone()).await;
+    let first = &result.iterations[0].steps[0];
+    assert!(first.failed());
+    assert!(
+        first
+            .outcome
+            .errors
+            .iter()
+            .any(|e| e.starts_with("Skip when: ")),
+        "{:?}",
+        first.outcome.errors
+    );
+}
+
+/// R-FLOW-15: users run the steps side by side, take the data rows in turn, and each
+/// step's sends, failures and times are counted.
+#[tokio::test]
+async fn a_load_test_counts_every_users_sends() {
+    use tortuga_core::workflow::{LoadLimit, LoadOptions};
+    let server = server().await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let col = project(dir.path(), &server.uri());
+    let wf = &col.workflows[0];
+    let options = RunOptions {
+        rows: vec![
+            row(&[("user", "ann"), ("name", "Ann")]),
+            row(&[("user", "bob"), ("name", "Bob")]),
+        ],
+        ..RunOptions::default()
+    };
+    let load = LoadOptions {
+        users: 2,
+        limit: LoadLimit::Iterations(2),
+        ramp_up: std::time::Duration::ZERO,
+    };
+    let mut updates = 0;
+    let report = workflow::load(&Client::default(), &col, wf, &options, load, |_| {
+        updates += 1;
+    })
+    .await;
+    assert_eq!(report.iterations, 4);
+    assert_eq!(updates, 4, "after every iteration of every user");
+    let names: Vec<&str> = report.steps.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Log in", "Get user"]);
+    assert_eq!((report.steps[0].sends, report.steps[0].failures), (4, 0));
+    // Bob's rows get a 404: half the users' iterations.
+    assert_eq!((report.steps[1].sends, report.steps[1].failures), (4, 2));
+    assert!(report.steps[0].median_ms().is_some());
+    assert_eq!(report.sends(), (8, 2));
+
+    let timed = LoadOptions {
+        users: 3,
+        limit: LoadLimit::Duration(std::time::Duration::from_millis(200)),
+        ramp_up: std::time::Duration::from_millis(60),
+    };
+    let report = workflow::load(&Client::default(), &col, wf, &options, timed, |_| {}).await;
+    assert!(report.iterations >= 3, "{}", report.iterations);
+    assert!(report.elapsed >= std::time::Duration::from_millis(200));
+    assert!(report.sends_per_second() > 0.0);
 }

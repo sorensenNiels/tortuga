@@ -23,12 +23,15 @@ pub enum AddOn {
     /// Creating WFS requests from a service's capabilities and the Features tab of
     /// GeoJSON responses (R-ADD-6, R-GEO-1, R-GEO-2).
     GeoServer,
+    /// Load tests of workflows (R-ADD-7, R-FLOW-15); works only with Workflows on.
+    LoadTest,
 }
 
 impl AddOn {
     /// Every add-on, in the order Settings lists them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Workflows,
+        Self::LoadTest,
         Self::MockServer,
         Self::McpServer,
         Self::GeoServer,
@@ -41,6 +44,7 @@ impl AddOn {
             Self::Workflows => "workflows",
             Self::MockServer => "mock-server",
             Self::GeoServer => "geoserver",
+            Self::LoadTest => "load-test",
         }
     }
 
@@ -48,7 +52,7 @@ impl AddOn {
     pub fn on_by_default(self) -> bool {
         match self {
             Self::MockServer => true,
-            Self::McpServer | Self::Workflows | Self::GeoServer => false,
+            Self::McpServer | Self::Workflows | Self::GeoServer | Self::LoadTest => false,
         }
     }
 }

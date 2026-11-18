@@ -26,6 +26,15 @@ fn seconds(ms: Option<u64>) -> String {
     format!("{s:.3}")
 }
 
+/// A step that was not sent, as a `JUnit` test case.
+fn skipped_case(step: &str, why: &str) -> String {
+    format!(
+        "    <testcase classname=\"{}\" name=\"request\">\n      <skipped message=\"{}\"/>\n    </testcase>\n",
+        escape(step),
+        escape(why)
+    )
+}
+
 /// `JUnit` XML: a test suite per iteration; a test case per test, or one per step when it
 /// has no tests; errors as `<error>`, skipped steps as `<skipped/>`.
 pub fn junit(workflow: &Workflow, result: &RunResult) -> String {
@@ -36,6 +45,14 @@ pub fn junit(workflow: &Workflow, result: &RunResult) -> String {
         let mut cases = String::new();
         let (mut tests, mut failures, mut errors) = (0, 0, 0);
         for step in &iteration.steps {
+            if let Some(condition) = &step.skipped_by {
+                tests += 1;
+                cases.push_str(&skipped_case(
+                    &step.name,
+                    &format!("Skip when: {condition}"),
+                ));
+                continue;
+            }
             let summary = StepSummary::from(&step.outcome);
             let time = seconds(summary.elapsed_ms);
             let class = escape(&step.name);
@@ -95,16 +112,15 @@ pub fn junit(workflow: &Workflow, result: &RunResult) -> String {
                 escape(&FlowEnd::TooManySteps.message())
             );
         }
-        // The steps after the one that failed (steps may have run out of order, R-FLOW-6).
-        let after = iteration.steps.last().map_or(0, |s| s.index + 1);
-        for step in workflow.steps.iter().skip(after).take(iteration.skipped) {
+        // The steps after the one that failed, but for always-run ones (R-FLOW-11).
+        for step in iteration
+            .skipped
+            .iter()
+            .filter_map(|i| workflow.steps.get(*i))
+        {
             tests += 1;
-            let name = step.name.clone().unwrap_or_else(|| step.request.clone());
-            let _ = writeln!(
-                cases,
-                "    <testcase classname=\"{}\" name=\"request\">\n      <skipped message=\"an earlier step failed\"/>\n    </testcase>",
-                escape(&name)
-            );
+            let name = step.name.as_deref().unwrap_or(&step.request);
+            cases.push_str(&skipped_case(name, "an earlier step failed"));
         }
         let _ = write!(
             suites,
@@ -147,6 +163,9 @@ struct JsonStep<'a> {
     /// How often a repeating step was sent (R-FLOW-10).
     #[serde(skip_serializing_if = "Option::is_none")]
     tries: Option<u32>,
+    /// The skip condition that held: the step was not sent (R-FLOW-12).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    skipped_by: Option<&'a str>,
     #[serde(flatten)]
     summary: StepSummary,
 }
@@ -162,7 +181,7 @@ pub fn json(workflow: &Workflow, result: &RunResult) -> String {
             .map(|i| JsonIteration {
                 row: i.row.as_ref(),
                 passed: !i.failed(),
-                skipped: i.skipped,
+                skipped: i.skipped.len(),
                 ended: i.ended.map(FlowEnd::id),
                 steps: i
                     .steps
@@ -171,6 +190,7 @@ pub fn json(workflow: &Workflow, result: &RunResult) -> String {
                         name: &s.name,
                         request: &s.request,
                         tries: s.tries.map(|t| t.count),
+                        skipped_by: s.skipped_by.as_deref(),
                         summary: StepSummary::from(&s.outcome),
                     })
                     .collect(),
@@ -232,6 +252,7 @@ mod tests {
                         request: "a.toml".into(),
                         outcome: outcome(200, &[]),
                         tries: None,
+                        skipped_by: None,
                     },
                     StepResult {
                         index: 1,
@@ -242,9 +263,10 @@ mod tests {
                             count: 3,
                             elapsed: Duration::from_millis(2500),
                         }),
+                        skipped_by: None,
                     },
                 ],
-                skipped: 1,
+                skipped: vec![2],
                 ended: None,
             }],
         };
@@ -301,12 +323,13 @@ mod tests {
             request: format!("{name}.toml"),
             outcome: outcome(status, &[]),
             tries: None,
+            skipped_by: None,
         };
         let result = RunResult {
             iterations: vec![
                 Iteration {
                     steps: vec![step(0, "a", 200), step(1, "b", 200), step(0, "a", 500)],
-                    skipped: 2,
+                    skipped: vec![1, 2],
                     ..Iteration::default()
                 },
                 Iteration {

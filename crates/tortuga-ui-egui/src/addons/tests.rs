@@ -72,6 +72,7 @@ fn addons_that_cannot_work_here_are_not_listed() {
         listed(&TestHost::default()),
         vec![
             AddOn::Workflows,
+            AddOn::LoadTest,
             AddOn::MockServer,
             AddOn::McpServer,
             AddOn::GeoServer
@@ -81,7 +82,10 @@ fn addons_that_cannot_work_here_are_not_listed() {
         no_servers: true,
         ..host(true)
     };
-    assert_eq!(listed(&web), vec![AddOn::Workflows, AddOn::GeoServer]);
+    assert_eq!(
+        listed(&web),
+        vec![AddOn::Workflows, AddOn::LoadTest, AddOn::GeoServer]
+    );
     let state = AppState::new(Box::new(web));
     assert!(state.addons.mcp.is_none());
     assert!(

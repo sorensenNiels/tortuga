@@ -8,15 +8,16 @@ use std::path::{Path, PathBuf};
 
 use egui::{Frame, Margin, Panel, Ui};
 use futures_util::future::{AbortHandle, abortable};
-use tortuga_core::workflow::{self, FlowEnd, Progress, RunOptions, Workflow};
+use tortuga_core::workflow::{self, FlowEnd, Progress, RunOptions, Start, Workflow};
 use tortuga_core::{Item, data};
 
 use super::{Guarded, Modal, TortugaUi, upload_path};
+use crate::addons::load_test::Update;
 use crate::components::SidebarAction;
 use crate::components::{
-    ConfirmDialog, DialogResult, IterationView, NameDialog, RequestChoice, RunView,
-    RuntimeVarsDialog, StepView, WorkflowAction, WorkflowContext, WorkflowEditorState,
-    WorkflowFile, workflow_editor, workflow_results,
+    ConfirmDialog, DialogResult, IterationView, KEPT_RUNS, NameDialog, RequestChoice, RunChoice,
+    RunRecord, RunView, RuntimeVarsDialog, StepView, WorkflowAction, WorkflowContext,
+    WorkflowEditorState, WorkflowFile, runs_picker, workflow_editor, workflow_results,
 };
 use crate::host::SavedWorkflowDraft;
 use crate::state::{ItemKey, WorkflowKey};
@@ -35,6 +36,14 @@ pub(super) struct OpenWorkflow {
     /// The run going on keeps variable values (R-FLOW-9): its steps' changes go to the
     /// project's runtime variables.
     keeps_variables: bool,
+    /// Where the next run starts (R-FLOW-13); taken when it starts, also after a
+    /// protected environment's question.
+    next_start: Start,
+    /// The kept runs, newest first, read when first shown (R-FLOW-14).
+    runs: Option<Vec<RunRecord>>,
+    /// Which run the results show, and a kept one as the results show it.
+    shown: RunChoice,
+    past: Option<RunView>,
 }
 
 impl OpenWorkflow {
@@ -47,6 +56,10 @@ impl OpenWorkflow {
             run_id: 0,
             abort: None,
             keeps_variables: false,
+            next_start: Start::First,
+            runs: None,
+            shown: RunChoice::Current,
+            past: None,
         }
     }
 }
@@ -257,6 +270,7 @@ impl TortugaUi {
             .is_some()
         {
             self.close_workflow(key);
+            self.state.host.save_workflow_runs(&key.root, &key.id, &[]);
         }
     }
 
@@ -470,6 +484,7 @@ impl TortugaUi {
             WorkflowFile::Saved
         };
         let can_pick_files = self.state.host.can_pick_folders();
+        let load_test = self.state.addon_on(crate::addons::AddOn::LoadTest);
         let Some(open) = self.workflows.editors.get_mut(&key) else {
             return;
         };
@@ -490,12 +505,26 @@ impl TortugaUi {
                     file,
                     running,
                     can_pick_files,
+                    addons: crate::components::EditorAddOns { load_test },
                 };
                 workflow_editor(ui, &mut open.draft, &mut open.st, cx)
             })
             .inner;
         ui.add_space(10.0);
-        workflow_results(ui, open.run.as_ref(), &mut open.st);
+        if open.runs.is_none() && !key.is_run() {
+            open.runs = Some(self.state.host.workflow_runs(&key.root, &key.id));
+        }
+        let offset = self.state.host.utc_offset_minutes();
+        let runs = open.runs.as_deref().unwrap_or_default();
+        if let Some(choice) = runs_picker(ui, runs, open.shown, open.run.is_some(), offset) {
+            open.past = match choice {
+                RunChoice::Current => None,
+                RunChoice::Kept(i) => runs.get(i).map(RunRecord::view),
+            };
+            open.shown = choice;
+            open.st.selected_result = None;
+        }
+        workflow_results(ui, open.past.as_ref().or(open.run.as_ref()), &mut open.st);
         if let Some(action) = action {
             self.on_workflow_action(&key, action, ui.ctx());
         }
@@ -519,6 +548,23 @@ impl TortugaUi {
                 }
             }
             WorkflowAction::Run => self.run_workflow(key, ctx),
+            WorkflowAction::LoadTest => {
+                let name = self
+                    .workflows
+                    .editors
+                    .get(key)
+                    .map(|o| o.draft.name.clone());
+                if let (Some(tests), Some(name)) = (self.state.addons.load_test.as_mut(), name) {
+                    tests.open(key.clone(), name);
+                    self.modal = Some(Modal::AddOn(crate::addons::AddOn::LoadTest));
+                }
+            }
+            WorkflowAction::RunFrom(start) => {
+                if let Some(open) = self.workflows.editors.get_mut(key) {
+                    open.next_start = start;
+                }
+                self.run_workflow(key, ctx);
+            }
             WorkflowAction::Cancel => {
                 if let Some(open) = self.workflows.editors.get_mut(key) {
                     open.cancel();
@@ -623,6 +669,7 @@ impl TortugaUi {
             rows,
             // Workflows pass and fail as in CI, where checking is opt-in (R-MOCK-8, D47).
             check_examples: false,
+            ..RunOptions::default()
         })
     }
 
@@ -635,9 +682,11 @@ impl TortugaUi {
         let Some(draft) = self.workflows.editors.get(key).map(|o| o.draft.clone()) else {
             return;
         };
-        let Some(options) = self.run_options(key, &draft, environment) else {
+        let Some(mut options) = self.run_options(key, &draft, environment) else {
             return;
         };
+        (options.start, options.start_values) = self.start_of_run(key);
+        let (start, start_values) = (options.start, options.start_values.clone());
         self.workflows.next_run += 1;
         let run_id = self.workflows.next_run;
         let client = self.state.client.clone();
@@ -683,7 +732,7 @@ impl TortugaUi {
                 ends: result
                     .iterations
                     .iter()
-                    .map(|i| (i.skipped, i.ended))
+                    .map(|i| (i.skipped.len(), i.ended))
                     .collect(),
             });
         });
@@ -702,15 +751,126 @@ impl TortugaUi {
                 steps_per_iteration: open.draft.steps.len(),
                 iterations_planned,
                 by_rows,
+                start,
+                start_values,
                 ..RunView::default()
             });
+            open.shown = RunChoice::Current;
+            open.past = None;
         }
+    }
+
+    /// Starts the load test its dialog asked for (R-FLOW-15): the workflow's draft with
+    /// the options a run gets, in the background. Refused when a step may change data
+    /// in a protected environment.
+    pub(super) fn start_load_test(&mut self, egui_ctx: &egui::Context) {
+        let Some((key, load)) = self
+            .state
+            .addons
+            .load_test
+            .as_mut()
+            .and_then(crate::addons::load_test::LoadTests::take_start)
+        else {
+            return;
+        };
+        let Some((collection, environment)) = self.state.collection_for_run(&key.root) else {
+            return;
+        };
+        let Some(draft) = self.workflows.editors.get(&key).map(|o| o.draft.clone()) else {
+            return;
+        };
+        let writes = draft.writes(&collection);
+        if let Some(env) = self.state.protected_environment(&key.root)
+            && !writes.is_empty()
+        {
+            self.state.notify(t!(
+                "load-test-protected",
+                env = env.as_str(),
+                steps = writes.join(", ")
+            ));
+            return;
+        }
+        let Some(options) = self.run_options(&key, &draft, environment) else {
+            return;
+        };
+        let Some(tests) = self.state.addons.load_test.as_mut() else {
+            return;
+        };
+        let (abort, registration) = futures_util::future::AbortHandle::new_pair();
+        let (id, tx) = tests.started(abort);
+        let client = self.state.client.clone();
+        let repaint = egui_ctx.clone();
+        let task = futures_util::future::Abortable::new(
+            async move {
+                let progress = tx.clone();
+                let ui = repaint.clone();
+                let report = workflow::load(&client, &collection, &draft, &options, load, |r| {
+                    // The receiver only goes away with the add-on.
+                    let _ = progress.send(Update::new(id, r.clone(), false));
+                    ui.request_repaint();
+                })
+                .await;
+                // As above.
+                let _ = tx.send(Update::new(id, report, true));
+                repaint.request_repaint();
+            },
+            registration,
+        );
+        self.state.host.spawn(Box::pin(async move {
+            // Aborted by Cancel, closing the dialog or turning the add-on off.
+            let _ = task.await;
+        }));
+    }
+
+    /// Keeps the finished run of a saved workflow with its last runs (R-FLOW-14).
+    fn keep_run(&mut self, key: &WorkflowKey) {
+        if key.is_run() {
+            return;
+        }
+        let Some(open) = self.workflows.editors.get_mut(key) else {
+            return;
+        };
+        let Some(run) = open.run.as_ref() else {
+            return;
+        };
+        let record = RunRecord::new(run, tortuga_core::history::now_ms());
+        let host = &self.state.host;
+        let runs = open
+            .runs
+            .get_or_insert_with(|| host.workflow_runs(&key.root, &key.id));
+        runs.insert(0, record);
+        runs.truncate(KEPT_RUNS);
+        host.save_workflow_runs(&key.root, &key.id, runs);
+        // The list moved down by one.
+        if let RunChoice::Kept(i) = open.shown {
+            open.shown = RunChoice::Kept(i + 1);
+        }
+    }
+
+    /// Where the run about to start begins, and with which values: those the last run
+    /// had when it reached that step (R-FLOW-13, D86). Resets the open workflow's
+    /// start to the first step for the runs after.
+    fn start_of_run(&mut self, key: &WorkflowKey) -> (Start, Vec<BTreeMap<String, String>>) {
+        let Some(open) = self.workflows.editors.get_mut(key) else {
+            return (Start::First, Vec::new());
+        };
+        let start = std::mem::take(&mut open.next_start);
+        let values = match start {
+            Start::First => Vec::new(),
+            Start::From(k) | Start::Only(k) => open
+                .run
+                .as_ref()
+                .map(|r| r.values_at(k))
+                .unwrap_or_default(),
+        };
+        (start, values)
     }
 
     /// Takes in progress from running workflows. A run that keeps variable values
     /// changes the project's runtime variables as each step finishes (R-FLOW-9).
     pub(super) fn collect_workflow_events(&mut self) {
         let mut kept = Vec::new();
+        let mut finished = Vec::new();
         while let Some(event) = self.workflow_events.try_recv() {
             let Some(open) = self.workflows.editors.get_mut(&event.key) else {
                 continue;
@@ -749,11 +909,15 @@ impl TortugaUi {
                     run.running = false;
                     run.current = None;
                     open.abort = None;
+                    finished.push(event.key.clone());
                 }
             }
         }
         for (root, changes) in kept {
             self.state.apply_runtime(Some(&root), &changes);
+        }
+        for key in finished {
+            self.keep_run(&key);
         }
     }
 
@@ -1143,6 +1307,7 @@ mod tests {
                     ..Default::default()
                 },
                 tries: None,
+                skipped_by: None,
             };
             let events = ui.workflow_events.sender();
             for kind in [
@@ -1336,6 +1501,110 @@ mod tests {
         };
         assert!(d.message.contains("POST Create order"), "{}", d.message);
         let _ = key;
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-FLOW-13, D86: "Run from here" starts with the values the last run had at
+    /// that step, and the run after it starts at the first step again.
+    #[test]
+    fn a_run_from_a_step_takes_the_last_runs_values() {
+        let (mut ui, root, _) = crate::shell::tests::setup("run-from");
+        ui.open_run(&root, Path::new(""));
+        let key = WorkflowKey::run(&root);
+        let open = ui.workflows.editors.get_mut(&key).expect("run");
+        let login = tortuga_core::workflow::StepResult {
+            index: 0,
+            name: "Log in".into(),
+            request: "log-in.toml".into(),
+            outcome: tortuga_core::runner::StepOutcome {
+                vars: [("token".to_owned(), Some("t-ü".to_owned()))].into(),
+                ..Default::default()
+            },
+            tries: None,
+            skipped_by: None,
+        };
+        open.run = Some(RunView {
+            iterations: vec![IterationView {
+                steps: vec![StepView::new(&login)],
+                ..IterationView::default()
+            }],
+            ..RunView::default()
+        });
+        open.next_start = Start::From(1);
+        let (start, values) = ui.start_of_run(&key);
+        assert_eq!(start, Start::From(1));
+        assert_eq!(
+            values,
+            Vec::<BTreeMap<String, String>>::new(),
+            "not reached: clean"
+        );
+        let open = ui.workflows.editors.get_mut(&key).expect("run");
+        open.run.as_mut().expect("run").iterations[0]
+            .steps
+            .push(StepView::new(&tortuga_core::workflow::StepResult {
+                index: 1,
+                ..login.clone()
+            }));
+        open.next_start = Start::Only(1);
+        let (start, values) = ui.start_of_run(&key);
+        assert_eq!(start, Start::Only(1));
+        assert_eq!(values[0]["token"], "t-ü");
+        assert_eq!(ui.start_of_run(&key), (Start::First, Vec::new()));
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-FLOW-14: each finished run of a saved workflow is kept, the newest first and
+    /// at most 10; an unsaved run keeps none; deleting the workflow drops them.
+    #[test]
+    fn finished_runs_are_kept() {
+        let (mut ui, root, _) = crate::shell::tests::setup("runs-kept");
+        ui.create_workflow(&root, "Nightly ü");
+        let key = ui.workflows.open.clone().expect("open");
+        for n in 0..12 {
+            let open = ui.workflows.editors.get_mut(&key).expect("open");
+            open.run = Some(RunView {
+                iterations_planned: n,
+                ..RunView::default()
+            });
+            ui.keep_run(&key);
+        }
+        let kept = ui.state.host.workflow_runs(&key.root, &key.id);
+        assert_eq!(kept.len(), KEPT_RUNS);
+        assert_eq!(kept[0].iterations_planned, 11, "newest first");
+
+        ui.open_run(&root, Path::new(""));
+        let run = WorkflowKey::run(&root);
+        ui.workflows.editors.get_mut(&run).expect("run").run = Some(RunView::default());
+        ui.keep_run(&run);
+        assert_eq!(ui.state.host.workflow_runs(&run.root, &run.id), Vec::new());
+
+        ui.delete_workflow(&key);
+        assert_eq!(ui.state.host.workflow_runs(&key.root, &key.id), Vec::new());
+        std::fs::remove_dir_all(root).expect("clean up");
+    }
+
+    /// R-ADD-7, R-FLOW-15: the Load test add-on is on only with Workflows, and "Load
+    /// test…" opens its dialog for the workflow shown.
+    #[test]
+    fn the_load_test_opens_from_a_workflow() {
+        use crate::addons::AddOn;
+        let (mut ui, root, _) = crate::shell::tests::setup("load-test");
+        ui.state.settings.addons.set_enabled(AddOn::LoadTest, true);
+        ui.state
+            .settings
+            .addons
+            .set_enabled(AddOn::Workflows, false);
+        ui.state.load_addons();
+        assert!(!ui.state.addon_on(AddOn::LoadTest), "needs Workflows");
+        assert!(ui.state.addons.load_test.is_none());
+        ui.state.settings.addons.set_enabled(AddOn::Workflows, true);
+        ui.state.load_addons();
+        assert!(ui.state.addon_on(AddOn::LoadTest));
+        ui.create_workflow(&root, "Buy");
+        let key = ui.workflows.open.clone().expect("open");
+        let ctx = egui::Context::default();
+        ui.on_workflow_action(&key, WorkflowAction::LoadTest, &ctx);
+        assert!(matches!(ui.modal, Some(Modal::AddOn(AddOn::LoadTest))));
         std::fs::remove_dir_all(root).expect("clean up");
     }
 }

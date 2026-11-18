@@ -108,7 +108,12 @@ impl TortugaUi {
 
     /// An add-on's dialog (D78). Returns whether it stays open.
     fn show_addon_dialog(&mut self, ctx: &egui::Context, addon: crate::addons::AddOn) -> bool {
-        match crate::addons::dialog(ctx, &mut self.state, addon) {
+        let shown = crate::addons::dialog(ctx, &mut self.state, addon);
+        // The shell holds the workflow and its run options (R-FLOW-15).
+        if addon == crate::addons::AddOn::LoadTest {
+            self.start_load_test(ctx);
+        }
+        match shown {
             crate::addons::DialogShown::Open => true,
             crate::addons::DialogShown::Closed => false,
             // The dialog created it (R-GEO-1).

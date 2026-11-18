@@ -215,6 +215,32 @@ struct Output {
     vars: BTreeMap<String, Option<String>>,
     headers: Vec<KeyValue>,
     flow: Option<FlowControl>,
+    /// The value of a skip condition (R-FLOW-12), set only by [`condition`].
+    #[serde(default)]
+    condition: Option<bool>,
+}
+
+/// Evaluates a workflow step's skip condition (R-FLOW-12, D85): `expression` with
+/// `vars`, `req` and `info` as a pre-request script has them. `Ok(true)` when it is
+/// truthy; the error when it throws or is not one expression.
+pub fn condition(
+    expression: &str,
+    vars: &BTreeMap<String, String>,
+    request: &Request,
+    info: ScriptInfo,
+) -> Result<bool, String> {
+    // On lines of its own, so a trailing `// comment` doesn't swallow the bracket.
+    let code = format!("__out.condition = Boolean(\n{expression}\n);");
+    let (run, value) = run_code(&code, Phase::PreRequest, vars, request, None, info);
+    if run.error.is_some() {
+        // The message without a line: the expression's lines are not the script's.
+        let message = run.console.iter().rev().find_map(|e| match e {
+            ConsoleEntry::Error { message, .. } => Some(message.clone()),
+            _ => None,
+        });
+        return Err(message.or(run.error).unwrap_or_default());
+    }
+    value.ok_or_else(|| "the condition gave no value".to_owned())
 }
 
 /// Runs `script` with the current variables. `request` is shown as `req`; `response`
@@ -256,7 +282,7 @@ pub fn run_with_breakpoints(
         .map(|(line, why)| ConsoleEntry::Note {
             message: format!("The breakpoint on line {line} was not set: {why}."),
         });
-    let mut run = run_code(&instrumented.code, phase, vars, request, response, info);
+    let (mut run, _) = run_code(&instrumented.code, phase, vars, request, response, info);
     run.console.splice(0..0, notes);
     run
 }
@@ -268,7 +294,7 @@ fn run_code(
     request: &Request,
     response: Option<&Response>,
     info: ScriptInfo,
-) -> ScriptRun {
+) -> (ScriptRun, Option<bool>) {
     let input = Input {
         phase: match phase {
             Phase::PreRequest => "pre",
@@ -282,10 +308,13 @@ fn run_code(
     let input = match serde_json::to_string(&input) {
         Ok(json) => json,
         Err(e) => {
-            return ScriptRun {
-                error: Some(e.to_string()),
-                ..ScriptRun::default()
-            };
+            return (
+                ScriptRun {
+                    error: Some(e.to_string()),
+                    ..ScriptRun::default()
+                },
+                None,
+            );
         }
     };
 
@@ -298,19 +327,25 @@ fn run_code(
         1,
         NativeFunction::from_fn_ptr(xml2json),
     ) {
-        return ScriptRun {
-            error: Some(format!("Tortuga's script setup failed: {e}")),
-            ..ScriptRun::default()
-        };
+        return (
+            ScriptRun {
+                error: Some(format!("Tortuga's script setup failed: {e}")),
+                ..ScriptRun::default()
+            },
+            None,
+        );
     }
 
     // JSON is a valid JavaScript expression, so the input goes in as a literal.
     let prelude = format!("const __input = {input};\n{PRELUDE}");
     if let Err(e) = context.eval(Source::from_bytes(&prelude).with_path(Path::new(PRELUDE_PATH))) {
-        return ScriptRun {
-            error: Some(format!("Tortuga's script setup failed: {e}")),
-            ..ScriptRun::default()
-        };
+        return (
+            ScriptRun {
+                error: Some(format!("Tortuga's script setup failed: {e}")),
+                ..ScriptRun::default()
+            },
+            None,
+        );
     }
     let error = context
         .eval(Source::from_bytes(script).with_path(Path::new(SCRIPT_PATH)))
@@ -324,6 +359,7 @@ fn run_code(
         .ok()
         .and_then(|v| v.as_string().map(|s| s.to_std_string_escaped()))
         .and_then(|json| serde_json::from_str::<Output>(&json).ok());
+    let condition = output.as_ref().and_then(|out| out.condition);
     let mut run = match output {
         Some(mut out) => {
             if out.dropped > 0 {
@@ -352,7 +388,7 @@ fn run_code(
         });
         run.console.push(ConsoleEntry::Error { message, line });
     }
-    run
+    (run, condition)
 }
 
 /// `xml2Json(text)` (R-TEST-18): XML text as an object, as Postman's gives it
@@ -1661,5 +1697,23 @@ console.log(xml2JsonIsAFunction);
         );
         assert_eq!(run.error, None);
         assert_eq!(run.vars["x"].as_deref(), Some("1"));
+    }
+
+    /// R-FLOW-12: a skip condition is any expression over `vars` and `info`; one that
+    /// throws or is not an expression is an error, without the wrapper's line.
+    #[test]
+    fn conditions_are_expressions_over_vars() {
+        let vars: BTreeMap<String, String> = [("role".to_owned(), "ü😀".to_owned())].into();
+        let req = Request::new(crate::HttpMethod::Get, "https://api.test");
+        let info = ScriptInfo::default();
+        let eval = |code: &str| condition(code, &vars, &req, info);
+        assert_eq!(eval(r#"vars.get("role") === "ü😀""#), Ok(true));
+        assert_eq!(eval("vars.get(\"missing\") // a comment"), Ok(false));
+        assert_eq!(eval("info.iteration === 0 && 1"), Ok(true));
+        assert_eq!(eval(""), Ok(false));
+        let thrown = eval("nope.x").expect_err("throws");
+        assert!(thrown.contains("nope"), "{thrown}");
+        assert!(!thrown.contains("line"), "{thrown}");
+        assert!(eval("1; while (true) {}").is_err());
     }
 }

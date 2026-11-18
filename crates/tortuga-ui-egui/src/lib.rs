@@ -25,6 +25,7 @@ mod state;
 mod theme;
 mod variables;
 
+pub use components::RunRecord;
 pub use host::{
     BoxTask, DraftConflict, Host, LocalState, McpHandle, MockHandle, OnMcpAction, OnMockHit,
     SavedDraft, SavedDrafts, SavedSplit, SavedTab, SavedTabs, SavedWorkflowDraft, SecretsWarning,
@@ -74,6 +75,9 @@ pub(crate) mod test_host {
             )
     }
 
+    /// Kept workflow runs by project and workflow id (R-FLOW-14).
+    pub type KeptRuns = std::collections::BTreeMap<(PathBuf, String), Vec<crate::RunRecord>>;
+
     /// A host that keeps nothing and runs no tasks (it counts them).
     #[derive(Debug, Default)]
     pub struct TestHost {
@@ -92,6 +96,8 @@ pub(crate) mod test_host {
                 std::collections::BTreeMap<Option<PathBuf>, Vec<tortuga_core::history::Entry>>,
             >,
         >,
+        /// Kept workflow runs by project and workflow id, newest first (R-FLOW-14).
+        pub runs: std::rc::Rc<std::cell::RefCell<KeptRuns>>,
         /// Ports a mock server can't start on (R-MOCK-2), as if taken.
         pub taken_ports: Vec<u16>,
         /// The answers of the last mock started, and how to report a request to it.
@@ -243,6 +249,21 @@ pub(crate) mod test_host {
                 .and_then(|e| e.iter().find(|e| e.summary.id == id).cloned())
                 .ok_or_else(|| "no such entry".to_owned())
         }
+        fn workflow_runs(&self, root: &std::path::Path, id: &str) -> Vec<crate::RunRecord> {
+            let key = (root.to_path_buf(), id.to_owned());
+            self.runs.borrow().get(&key).cloned().unwrap_or_default()
+        }
+
+        fn save_workflow_runs(&self, root: &std::path::Path, id: &str, runs: &[crate::RunRecord]) {
+            let key = (root.to_path_buf(), id.to_owned());
+            let mut kept = self.runs.borrow_mut();
+            if runs.is_empty() {
+                kept.remove(&key);
+            } else {
+                kept.insert(key, runs.to_vec());
+            }
+        }
+
         fn add_history(
             &self,
             root: Option<&std::path::Path>,

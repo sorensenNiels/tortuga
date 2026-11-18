@@ -1,4 +1,4 @@
-//! Add-ons (D78, D80, R-ADD-1 to R-ADD-6): parts of the app not everyone needs, off until they
+//! Add-ons (D78, D80, D87, R-ADD-1 to R-ADD-7): parts of the app not everyone needs, off until they
 //! are turned on in Settings → Add-ons.
 //!
 //! An add-on that is off is not loaded: its state in [`AddOns`] is `None`, and none of its
@@ -12,6 +12,7 @@
 //! switch is here, and the shell asks [`AppState::addon_on`].
 
 pub(crate) mod geoserver;
+pub(crate) mod load_test;
 pub(crate) mod mcp;
 pub(crate) mod mock;
 
@@ -34,6 +35,8 @@ pub struct AddOns {
     pub(crate) mock: Option<mock::Mocks>,
     /// WFS requests from capabilities and the Features tab (R-ADD-6).
     pub(crate) geoserver: Option<geoserver::GeoServer>,
+    /// Load tests of workflows (R-ADD-7).
+    pub(crate) load_test: Option<load_test::LoadTests>,
 }
 
 /// What an add-on's menu item or palette command asks for.
@@ -60,6 +63,7 @@ pub(crate) fn name(addon: AddOn) -> String {
         AddOn::Workflows => t!("addon-workflows"),
         AddOn::MockServer => t!("addon-mock-server"),
         AddOn::GeoServer => t!("addon-geoserver"),
+        AddOn::LoadTest => t!("addon-load-test"),
     }
 }
 
@@ -70,6 +74,7 @@ pub(crate) fn about(addon: AddOn) -> String {
         AddOn::Workflows => t!("addon-workflows-about"),
         AddOn::MockServer => t!("addon-mock-server-about"),
         AddOn::GeoServer => t!("addon-geoserver-about"),
+        AddOn::LoadTest => t!("addon-load-test-about"),
     }
 }
 
@@ -77,7 +82,7 @@ pub(crate) fn about(addon: AddOn) -> String {
 fn available(addon: AddOn, host: &dyn Host) -> bool {
     match addon {
         AddOn::McpServer | AddOn::MockServer => host.can_run_servers(),
-        AddOn::Workflows | AddOn::GeoServer => true,
+        AddOn::Workflows | AddOn::GeoServer | AddOn::LoadTest => true,
     }
 }
 
@@ -92,7 +97,9 @@ pub(crate) fn listed(host: &dyn Host) -> Vec<AddOn> {
 impl AppState {
     /// Whether `addon` is turned on and can work here.
     pub(crate) fn addon_on(&self, addon: AddOn) -> bool {
-        self.settings.addons.enabled(addon) && available(addon, self.host.as_ref())
+        // A load test runs a workflow (R-ADD-7).
+        let needs = addon != AddOn::LoadTest || self.settings.addons.enabled(AddOn::Workflows);
+        needs && self.settings.addons.enabled(addon) && available(addon, self.host.as_ref())
     }
 
     /// Loads the add-ons that are on and unloads those turned off, stopping what they
@@ -131,6 +138,15 @@ impl AppState {
                         self.addons.geoserver = None;
                     }
                 }
+                AddOn::LoadTest => {
+                    if on {
+                        self.addons
+                            .load_test
+                            .get_or_insert_with(load_test::LoadTests::default);
+                    } else if let Some(mut tests) = self.addons.load_test.take() {
+                        tests.stop();
+                    }
+                }
             }
         }
     }
@@ -151,6 +167,9 @@ impl AppState {
         }
         if let Some(g) = &mut self.addons.geoserver {
             g.take_fetched();
+        }
+        if let Some(tests) = &mut self.addons.load_test {
+            tests.take_updates();
         }
     }
 
@@ -405,6 +424,7 @@ pub(crate) fn dialog(ctx: &Context, state: &mut AppState, addon: AddOn) -> Dialo
         AddOn::McpServer => state.addons.mcp.is_some() && mcp::ui::dialog(ctx, state),
         AddOn::MockServer => mock::ui::dialog(ctx, state),
         AddOn::GeoServer => return geoserver::dialog(ctx, state),
+        AddOn::LoadTest => load_test::dialog_shown(ctx, state),
         AddOn::Workflows => false,
     };
     if open {

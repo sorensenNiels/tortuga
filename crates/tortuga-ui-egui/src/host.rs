@@ -443,6 +443,15 @@ pub trait Host {
     /// background.
     fn add_history(&self, _root: Option<&Path>, _entry: history::Entry, _keep: usize) {}
 
+    /// The kept runs of the workflow `id` of the project at `root`, newest first
+    /// (R-FLOW-14). Removed with the project's history.
+    fn workflow_runs(&self, _root: &Path, _id: &str) -> Vec<crate::components::RunRecord> {
+        Vec::new()
+    }
+
+    /// Keeps `runs` as the workflow's runs (R-FLOW-14); none removes them.
+    fn save_workflow_runs(&self, _root: &Path, _id: &str, _runs: &[crate::components::RunRecord]) {}
+
     /// Removes the history of a project (`None`: the scratch request) (R-HIST-3).
     fn clear_history(&self, _root: Option<&Path>) -> Result<(), String> {
         Ok(())

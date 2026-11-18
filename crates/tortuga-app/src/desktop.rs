@@ -10,8 +10,8 @@ use tortuga_core::history::{self, HistoryStore};
 use tortuga_core::secrets::SecretStore;
 use tortuga_core::storage::{FsStorage, Storage};
 use tortuga_ui_egui::{
-    BoxTask, Host, LocalState, McpHandle, MockHandle, OnMcpAction, OnMockHit, SecretsWarning,
-    TortugaUi,
+    BoxTask, Host, LocalState, McpHandle, MockHandle, OnMcpAction, OnMockHit, RunRecord,
+    SecretsWarning, TortugaUi,
 };
 
 use crate::{App, dialogs, discover, folders, git, local_store, secret_store, watch};
@@ -395,6 +395,45 @@ impl Host for DesktopHost {
         HistoryStore::new(&local_store::PrivateStorage, dir)
             .clear()
             .map_err(|e| e.to_string())
+    }
+
+    fn workflow_runs(&self, root: &std::path::Path, id: &str) -> Vec<RunRecord> {
+        let Some(path) = local_store::workflow_runs_path(root, id) else {
+            return Vec::new();
+        };
+        let Ok(text) = local_store::PrivateStorage.read_to_string(&path) else {
+            return Vec::new(); // none kept yet
+        };
+        serde_json::from_str(&text).unwrap_or_else(|e| {
+            eprintln!("tortuga: {}: {e}", path.display());
+            Vec::new()
+        })
+    }
+
+    fn save_workflow_runs(&self, root: &std::path::Path, id: &str, runs: &[RunRecord]) {
+        let Some(path) = local_store::workflow_runs_path(root, id) else {
+            return;
+        };
+        let _one_at_a_time = self
+            .history_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let storage = local_store::PrivateStorage;
+        let saved = if runs.is_empty() {
+            match storage.remove_file(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                other => other,
+            }
+        } else {
+            let json = serde_json::to_string(runs).map_err(std::io::Error::other);
+            path.parent()
+                .map_or(Ok(()), |dir| storage.create_dir_all(dir))
+                .and(json)
+                .and_then(|json| storage.write(&path, &json))
+        };
+        if let Err(e) = saved {
+            eprintln!("tortuga: could not keep the workflow's runs: {e}");
+        }
     }
 
     fn clear_all_history(&self) -> Result<(), String> {

@@ -11,13 +11,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use web_time::Instant;
 
 use crate::collection::{Collection, Item};
-use crate::cookies::CookieJar;
-use crate::runner::{self, Extra, StepOutcome};
-use crate::script::{FlowControl, ScriptInfo};
-use crate::{Client, vars};
+use crate::runner::StepOutcome;
+
+mod execute;
+mod load;
+
+pub use execute::run;
+pub use load::{LoadLimit, LoadOptions, LoadReport, MAX_USERS, StepStats, load};
 
 /// Steps one iteration may run, so a `workflow.next(…)` loop that never ends stops
 /// (R-FLOW-6).
@@ -74,6 +76,12 @@ pub struct Step {
     /// Send again until a try passes (R-FLOW-10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat: Option<Repeat>,
+    /// Run even after the iteration ended early, for teardown (R-FLOW-11).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub always: bool,
+    /// A JavaScript expression; the step is not sent when it is true (R-FLOW-12).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub skip_when: String,
 }
 
 /// How a step repeats until it passes (R-FLOW-10, D84).
@@ -230,6 +238,34 @@ pub struct RunOptions {
     pub rows: Vec<BTreeMap<String, String>>,
     /// Compare each response with its request's examples (R-MOCK-8, `--check-examples`).
     pub check_examples: bool,
+    /// Where each iteration starts (R-FLOW-13).
+    pub start: Start,
+    /// What a run that starts at a step begins with, per iteration (R-FLOW-13, D86);
+    /// an iteration past the end gets the first one's.
+    pub start_values: Vec<BTreeMap<String, String>>,
+}
+
+impl RunOptions {
+    /// The values iteration `n` starts with (R-FLOW-13).
+    fn start_values(&self, n: usize) -> BTreeMap<String, String> {
+        self.start_values
+            .get(n)
+            .or_else(|| self.start_values.first())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// Where a run starts (R-FLOW-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Start {
+    /// At the first step, as every run did before.
+    #[default]
+    First,
+    /// At this step, going on from there.
+    From(usize),
+    /// Only this step.
+    Only(usize),
 }
 
 /// A step that ran (or could not).
@@ -244,6 +280,15 @@ pub struct StepResult {
     pub outcome: StepOutcome,
     /// How often a repeating step was sent (R-FLOW-10); `None` for other steps.
     pub tries: Option<Tries>,
+    /// The skip condition that held (R-FLOW-12): the step was not sent.
+    pub skipped_by: Option<String>,
+}
+
+impl StepResult {
+    /// Whether the step failed; a skipped step never does (R-FLOW-12).
+    pub fn failed(&self) -> bool {
+        self.skipped_by.is_none() && self.outcome.failed()
+    }
 }
 
 /// The tries of a step that repeats until it passes (R-FLOW-10).
@@ -272,8 +317,9 @@ pub struct Iteration {
     /// The data row, for data-driven runs.
     pub row: Option<BTreeMap<String, String>>,
     pub steps: Vec<StepResult>,
-    /// Steps not run because an earlier one failed: the ones after it.
-    pub skipped: usize,
+    /// Steps not run because an earlier one failed, by index: the ones after it
+    /// that don't always run (R-FLOW-11).
+    pub skipped: Vec<usize>,
     /// How a script ended the iteration early (R-FLOW-6).
     pub ended: Option<FlowEnd>,
 }
@@ -306,13 +352,20 @@ impl FlowEnd {
             Self::TooManySteps => "too_many_steps",
         }
     }
+
+    /// The end with this [`FlowEnd::id`], for runs read back (R-FLOW-14).
+    pub fn from_id(id: &str) -> Option<Self> {
+        [Self::Stopped, Self::TooManySteps]
+            .into_iter()
+            .find(|end| end.id() == id)
+    }
 }
 
 impl Iteration {
     pub fn failed(&self) -> bool {
-        self.skipped > 0
+        !self.skipped.is_empty()
             || self.ended == Some(FlowEnd::TooManySteps)
-            || self.steps.iter().any(|s| s.outcome.failed())
+            || self.steps.iter().any(StepResult::failed)
     }
 }
 
@@ -335,7 +388,7 @@ impl RunResult {
             (
                 p + step.outcome.tests.len() - failed,
                 f + failed,
-                s + usize::from(step.outcome.failed()),
+                s + usize::from(step.failed()),
             )
         })
     }
@@ -354,226 +407,6 @@ pub enum Progress<'a> {
         iteration: usize,
         step: &'a StepResult,
     },
-}
-
-/// Runs `workflow` (R-FLOW-3, R-FLOW-4): once per data row, else `iterations` times
-/// (R-FLOW-8); each iteration starts with no captured values and an empty cookie jar,
-/// apart from the variables a workflow keeps (R-FLOW-9); a failed step ends the
-/// iteration unless the workflow continues after failures. `delay_ms` passes between
-/// steps. A step that repeats is sent until a try passes (R-FLOW-10).
-pub async fn run(
-    client: &Client,
-    collection: &Collection,
-    workflow: &Workflow,
-    options: &RunOptions,
-    mut progress: impl FnMut(Progress<'_>) + Send,
-) -> RunResult {
-    let rows: Vec<Option<&BTreeMap<String, String>>> = if options.rows.is_empty() {
-        vec![None; workflow.iterations.max(1) as usize]
-    } else {
-        options.rows.iter().map(Some).collect()
-    };
-    let names = step_names(collection, workflow);
-    let iterations = rows.len();
-    let delay = Duration::from_millis(workflow.delay_ms);
-    let mut kept = if workflow.keep_variables {
-        options.runtime.clone()
-    } else {
-        BTreeMap::new()
-    };
-    let mut result = RunResult::default();
-    for (n, row) in rows.into_iter().enumerate() {
-        let jar = CookieJar::default();
-        let mut captured: BTreeMap<String, String> = BTreeMap::new();
-        let mut iteration = Iteration {
-            row: row.cloned(),
-            ..Iteration::default()
-        };
-        let mut i = 0;
-        while let Some(step) = workflow.steps.get(i) {
-            if iteration.steps.len() == MAX_STEPS {
-                iteration.ended = Some(FlowEnd::TooManySteps);
-                break;
-            }
-            if !delay.is_zero() && (n, iteration.steps.len()) != (0, 0) {
-                pause(delay).await;
-            }
-            let mut changes = BTreeMap::new();
-            let started = Instant::now();
-            let repeat = step.repeat.filter(|r| r.times > 1);
-            let mut attempt = 1;
-            let mut outcome = loop {
-                progress(Progress::Started {
-                    iteration: n,
-                    step: i,
-                    attempt,
-                });
-                let at = StepRun {
-                    variables: step_variables(&kept, &options.overrides, row, &captured),
-                    jar: &jar,
-                    info: ScriptInfo {
-                        iteration: n,
-                        iterations,
-                    },
-                };
-                let mut outcome = run_one(client, collection, step, options, at).await;
-                runner::apply_changes(&mut captured, &outcome.vars);
-                if workflow.keep_variables {
-                    runner::apply_changes(&mut kept, &outcome.vars);
-                }
-                changes.extend(outcome.vars.clone());
-                if !another_try(repeat, attempt, &mut outcome) {
-                    break outcome;
-                }
-                attempt += 1;
-                if let Some(wait) = repeat.map(|r| r.wait_ms).filter(|ms| *ms > 0) {
-                    pause(Duration::from_millis(wait)).await;
-                }
-            };
-            // Every try's changes, so a run that keeps variables loses none (R-FLOW-9).
-            outcome.vars = changes;
-            let tries = repeat.map(|_| Tries {
-                count: attempt,
-                elapsed: started.elapsed(),
-            });
-            let next = next_step(&mut outcome, &names, i);
-            let done = StepResult {
-                index: i,
-                name: names[i].clone(),
-                request: step.request.clone(),
-                outcome,
-                tries,
-            };
-            progress(Progress::Finished {
-                iteration: n,
-                step: &done,
-            });
-            let failed = done.outcome.failed();
-            iteration.steps.push(done);
-            if failed && !workflow.continue_on_failure {
-                iteration.skipped = workflow.steps.len() - i - 1;
-                break;
-            }
-            let Some(next) = next else {
-                if !failed {
-                    iteration.ended = Some(FlowEnd::Stopped);
-                }
-                break;
-            };
-            i = next;
-        }
-        result.iterations.push(iteration);
-    }
-    result
-}
-
-/// A step's variables on top of the project's: values kept from earlier iterations
-/// (R-FLOW-9) below the data row; this iteration's own above it.
-fn step_variables(
-    kept: &BTreeMap<String, String>,
-    overrides: &BTreeMap<String, String>,
-    row: Option<&BTreeMap<String, String>>,
-    captured: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut variables = kept.clone();
-    variables.extend(overrides.clone());
-    variables.extend(row.cloned().unwrap_or_default());
-    variables.extend(captured.clone());
-    variables
-}
-
-/// Whether a repeating step is sent again after a try with `outcome` (R-FLOW-10): not
-/// once a try passed or a script chose what runs next. When the last try fails, its
-/// outcome says that no try passed.
-fn another_try(repeat: Option<Repeat>, attempt: u32, outcome: &mut StepOutcome) -> bool {
-    let Some(repeat) = repeat else {
-        return false;
-    };
-    if !outcome.failed() || outcome.flow.is_some() {
-        return false;
-    }
-    if attempt >= repeat.times {
-        outcome
-            .errors
-            .push(format!("No try passed in {} tries.", repeat.times));
-        return false;
-    }
-    true
-}
-
-/// Waits between steps (R-FLOW-8) and between a repeating step's tries (R-FLOW-10).
-#[cfg(not(target_arch = "wasm32"))]
-async fn pause(delay: Duration) {
-    tokio::time::sleep(delay).await;
-}
-
-/// The web version has no timer in the engine yet (D6): no wait.
-#[cfg(target_arch = "wasm32")]
-fn pause(_: Duration) -> std::future::Ready<()> {
-    std::future::ready(())
-}
-
-/// Where a step runs: the variables it gets on top of the project's (overrides, the
-/// data row, captured values), the iteration's cookie jar, and the iteration.
-struct StepRun<'a> {
-    variables: BTreeMap<String, String>,
-    jar: &'a CookieJar,
-    info: ScriptInfo,
-}
-
-/// Runs one step.
-async fn run_one(
-    client: &Client,
-    collection: &Collection,
-    step: &Step,
-    options: &RunOptions,
-    at: StepRun<'_>,
-) -> StepOutcome {
-    let path = step.request_path();
-    let Some(item) = collection.request(&path) else {
-        return StepOutcome {
-            errors: vec![format!(
-                "The request {} is not in the project.",
-                step.request
-            )],
-            ..StepOutcome::default()
-        };
-    };
-    let mut ctx =
-        vars::Context::for_request(collection, options.environment.as_deref(), Some(&path))
-            .with_workspace_defaults(&options.workspace_defaults)
-            .with_secrets(options.secrets.clone())
-            .with_workspace(&options.workspace, &options.secret_names);
-    ctx.secrets.extend(options.secret_names.iter().cloned());
-    ctx.variables.extend(at.variables);
-    let extra = Extra {
-        capture: Some(&step.capture),
-        tests: Some(step.tests.as_str()),
-        breakpoints: None,
-        check_examples: options.check_examples,
-        info: at.info,
-    };
-    runner::run_step(client, Some(at.jar), &item.request, &ctx, extra).await
-}
-
-/// The index of the step to run after step `i`, by what its scripts asked (R-FLOW-6);
-/// `None` ends the iteration. A step name the workflow doesn't have is an error of the
-/// step.
-fn next_step(outcome: &mut StepOutcome, names: &[String], i: usize) -> Option<usize> {
-    let Some(flow) = &outcome.flow else {
-        return Some(i + 1);
-    };
-    let name = match flow {
-        FlowControl::Stop => return None,
-        FlowControl::Next(name) => name,
-    };
-    let found = names.iter().position(|n| n == name);
-    if found.is_none() {
-        outcome.errors.push(format!(
-            "workflow.next(\"{name}\"): the workflow has no step called “{name}”."
-        ));
-    }
-    found
 }
 
 /// What each step is called in a run and by `workflow.next(…)`: its own name, else its
@@ -630,6 +463,12 @@ mod tests {
                     }),
                     ..Step::default()
                 },
+                Step {
+                    request: "users/delete-user.toml".into(),
+                    always: true,
+                    skip_when: "vars.get(\"keep\") === \"yes\"".into(),
+                    ..Step::default()
+                },
             ],
         };
         let text = crate::format::write_workflow(&wf);
@@ -667,6 +506,11 @@ state = "$.state"
 [steps.repeat]
 times = 30
 wait_ms = 2000
+
+[[steps]]
+request = "users/delete-user.toml"
+always = true
+skip_when = 'vars.get("keep") === "yes"'
 "#
         );
         let back = crate::format::parse_workflow(&text, "lifecycle").expect("parse");
@@ -745,7 +589,7 @@ wait_ms = 2000
             ..Workflow::default()
         };
         let result = run(
-            &Client::default(),
+            &crate::Client::default(),
             &col,
             &wf,
             &RunOptions::default(),
