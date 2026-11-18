@@ -4,6 +4,8 @@ What changes in each release of Tortuga, for the people who use it. The newest r
 
 ## Unreleased
 
+## 0.23.0 — 2026-11-18
+
 ### Added
 
 - **Always run** for workflow steps, so clean-up steps run even after a failure.
